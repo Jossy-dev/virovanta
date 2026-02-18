@@ -1,0 +1,6 @@
+{
+  "watch": ["index.js", "src"],
+  "ext": "js,mjs,cjs,json",
+  "ignore": ["data/*", "data/**/*", "node_modules/*", "../client/dist/*", "*.log", ".env"],
+  "delay": "200"
+}
