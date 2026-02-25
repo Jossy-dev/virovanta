@@ -245,6 +245,17 @@ export default function App() {
   useEffect(() => {
     if (typeof document !== "undefined") {
       document.title = APP_NAME;
+      const iconLink =
+        document.querySelector("link[rel='icon']") ||
+        document.querySelector("link[rel='shortcut icon']") ||
+        (() => {
+          const link = document.createElement("link");
+          link.setAttribute("rel", "icon");
+          link.setAttribute("type", "image/png");
+          document.head.appendChild(link);
+          return link;
+        })();
+      iconLink.setAttribute("href", BRAND_MARKS.lightSurface);
     }
   }, []);
 
