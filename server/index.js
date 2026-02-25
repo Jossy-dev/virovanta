@@ -20,11 +20,11 @@ async function start() {
   }
 
   app.listen(config.port, () => {
-    logger.info({ port: config.port }, `ViroVanta API listening on http://localhost:${config.port}`);
+    logger.info({ port: config.port, service: config.serviceName }, `${config.apiTitle} listening on port ${config.port}`);
   });
 }
 
 start().catch((error) => {
-  console.error("Failed to start ViroVanta", error);
+  console.error("Failed to start service", error);
   process.exit(1);
 });

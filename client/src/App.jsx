@@ -1,6 +1,14 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-
-const TOKEN_STORAGE_KEY = "virovanta-session";
+import {
+  APP_NAME,
+  APP_TAGLINE,
+  BRAND_MARKS,
+  HERO_BG_DEFAULT,
+  HERO_BG_VARIANTS,
+  LOGO_ALT_TEXT,
+  SESSION_STORAGE_KEY,
+  buildApiUrl
+} from "./appConfig";
 
 const VERDICT_META = {
   clean: { label: "Clean", tone: "clean" },
@@ -14,40 +22,9 @@ const RISK_META = {
   high: { label: "High risk", tone: "risk-high" }
 };
 
-const BRAND_MARKS = {
-  darkSurface: "/brand/virovanta-mark-dark-bg.png",
-  lightSurface: "/brand/virovanta-mark-light-bg.png"
-};
 const HERO_HEADLINE = "Scan suspicious files in seconds before they hit your systems.";
 const HERO_TYPE_SPEED_MS = 210;
 const HERO_CYCLE_PAUSE_MS = 3200;
-const HERO_BG_DEFAULT = "classic";
-const HERO_BG_VARIANTS = {
-  classic: {
-    videoSrc: "/media/virovanta-hero-loop-smooth.mp4",
-    posterSrc: "/media/virovanta-hero-poster-smooth.jpg"
-  },
-  cinematic: {
-    videoSrc: "/media/virovanta-hero-loop-cinematic.mp4",
-    posterSrc: "/media/virovanta-hero-poster-cinematic.jpg"
-  }
-};
-
-const API_ENV = (import.meta.env.VITE_APP_ENV || "local").trim().toLowerCase();
-const API_BASE_URL = API_ENV === "prod" ? "https://virovanta.onrender.com" : "http://localhost:3001";
-
-function buildApiUrl(path) {
-  if (!path) {
-    return API_BASE_URL;
-  }
-
-  if (/^https?:\/\//i.test(path)) {
-    return path;
-  }
-
-  const normalizedPath = path.startsWith("/") ? path : `/${path}`;
-  return `${API_BASE_URL}${normalizedPath}`;
-}
 
 function resolveHeroBackgroundVariant() {
   if (typeof window === "undefined") {
@@ -266,10 +243,16 @@ export default function App() {
   }, [reports]);
 
   useEffect(() => {
+    if (typeof document !== "undefined") {
+      document.title = APP_NAME;
+    }
+  }, []);
+
+  useEffect(() => {
     let cancelled = false;
 
     async function bootstrap() {
-      const stored = localStorage.getItem(TOKEN_STORAGE_KEY);
+      const stored = localStorage.getItem(SESSION_STORAGE_KEY);
       if (!stored) {
         if (!cancelled) {
           setAuthLoading(false);
@@ -288,7 +271,7 @@ export default function App() {
           await loadDashboard(parsed);
         }
       } catch (_error) {
-        localStorage.removeItem(TOKEN_STORAGE_KEY);
+        localStorage.removeItem(SESSION_STORAGE_KEY);
         if (!cancelled) {
           setSession(null);
         }
@@ -485,7 +468,7 @@ export default function App() {
     };
 
     setSession(nextSession);
-    localStorage.setItem(TOKEN_STORAGE_KEY, JSON.stringify(nextSession));
+    localStorage.setItem(SESSION_STORAGE_KEY, JSON.stringify(nextSession));
     return nextSession;
   }
 
@@ -499,7 +482,7 @@ export default function App() {
     };
 
     setSession(nextSession);
-    localStorage.setItem(TOKEN_STORAGE_KEY, JSON.stringify(nextSession));
+    localStorage.setItem(SESSION_STORAGE_KEY, JSON.stringify(nextSession));
 
     await Promise.all([refreshJobs(nextSession), refreshReports(nextSession), refreshApiKeys(nextSession)]);
   }
@@ -565,7 +548,7 @@ export default function App() {
       };
 
       setSession(nextSession);
-      localStorage.setItem(TOKEN_STORAGE_KEY, JSON.stringify(nextSession));
+      localStorage.setItem(SESSION_STORAGE_KEY, JSON.stringify(nextSession));
       await loadDashboard(nextSession);
     } catch (error) {
       setAuthError(error.message);
@@ -600,7 +583,7 @@ export default function App() {
     });
     setShareError("");
     setShareCopied(false);
-    localStorage.removeItem(TOKEN_STORAGE_KEY);
+    localStorage.removeItem(SESSION_STORAGE_KEY);
   }
 
   async function submitScan() {
@@ -642,7 +625,7 @@ export default function App() {
           }
         };
 
-        localStorage.setItem(TOKEN_STORAGE_KEY, JSON.stringify(next));
+        localStorage.setItem(SESSION_STORAGE_KEY, JSON.stringify(next));
         return next;
       });
 
@@ -808,8 +791,8 @@ export default function App() {
       <main className="app-shell centered">
         <section className="card loading-card">
           <div className="brand-lockup">
-            <img src={BRAND_MARKS.lightSurface} alt="ViroVanta logo" className="brand-mark brand-mark-small" />
-            <h1>ViroVanta</h1>
+            <img src={BRAND_MARKS.lightSurface} alt={LOGO_ALT_TEXT} className="brand-mark brand-mark-small" />
+            <h1>{APP_NAME}</h1>
           </div>
           <p>Loading secure session...</p>
         </section>
@@ -840,10 +823,10 @@ export default function App() {
           </video>
           <div className="landing-hero-content">
             <div className="landing-hero-top">
-              <img src={BRAND_MARKS.darkSurface} alt="ViroVanta logo" className="landing-hero-logo" />
+              <img src={BRAND_MARKS.darkSurface} alt={LOGO_ALT_TEXT} className="landing-hero-logo" />
               <div className="landing-hero-brand">
-                <strong>ViroVanta</strong>
-                <span>Smart file malware and anomaly scanning</span>
+                <strong>{APP_NAME}</strong>
+                <span>{APP_TAGLINE}</span>
               </div>
             </div>
             <div className="landing-copy">
@@ -853,7 +836,7 @@ export default function App() {
                 <span className="typing-caret" aria-hidden="true" />
               </h1>
               <p className="subtext">
-                ViroVanta analyzes uploaded files using layered heuristics and security engines, then returns a clear
+                {APP_NAME} analyzes uploaded files using layered heuristics and security engines, then returns a clear
                 risk score, findings, and actionable recommendations.
               </p>
               <ul className="hero-points">
@@ -1032,8 +1015,8 @@ export default function App() {
 
         <footer className="landing-footer">
           <div className="footer-brand">
-            <img src={BRAND_MARKS.lightSurface} alt="ViroVanta logo" className="footer-logo" />
-            <p>&copy; {new Date().getFullYear()} ViroVanta</p>
+            <img src={BRAND_MARKS.lightSurface} alt={LOGO_ALT_TEXT} className="footer-logo" />
+            <p>&copy; {new Date().getFullYear()} {APP_NAME}</p>
           </div>
           <p>Secure malware and anomaly scanning for teams and daily operations.</p>
         </footer>
@@ -1049,10 +1032,10 @@ export default function App() {
 
       <header className="topbar card topbar-card">
         <div className="topbar-brand">
-          <img src={BRAND_MARKS.lightSurface} alt="ViroVanta logo" className="topbar-logo" />
+          <img src={BRAND_MARKS.lightSurface} alt={LOGO_ALT_TEXT} className="topbar-logo" />
           <div>
             <p className="eyebrow">Secure Threat Intelligence Workspace</p>
-            <h1>ViroVanta</h1>
+            <h1>{APP_NAME}</h1>
             <p className="subtext">
               Signed in as <strong>{session.user?.email}</strong> ({session.user?.role})
             </p>

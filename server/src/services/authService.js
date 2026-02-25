@@ -66,8 +66,8 @@ export class AuthService {
       {
         algorithm: TOKEN_ALGORITHM,
         expiresIn: `${this.config.accessTokenTtlMinutes}m`,
-        issuer: "virovanta",
-        audience: "virovanta-client"
+        issuer: this.config.jwtIssuer,
+        audience: this.config.jwtAudience
       }
     );
   }
@@ -76,8 +76,8 @@ export class AuthService {
     try {
       const payload = jwt.verify(token, this.config.jwtAccessSecret, {
         algorithms: [TOKEN_ALGORITHM],
-        issuer: "virovanta",
-        audience: "virovanta-client"
+        issuer: this.config.jwtIssuer,
+        audience: this.config.jwtAudience
       });
 
       const user = await this.store.read((state) => state.users.find((candidate) => candidate.id === payload.sub) || null);

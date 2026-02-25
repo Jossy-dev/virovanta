@@ -2,8 +2,6 @@ import jwt from "jsonwebtoken";
 import { HttpError } from "./httpError.js";
 
 const SHARE_TOKEN_ALGORITHM = "HS256";
-const SHARE_ISSUER = "virovanta";
-const SHARE_AUDIENCE = "virovanta-shared-report";
 
 export function createReportShareToken({ reportId, ownerUserId, config }) {
   const ttlMinutes = config.reportShareTokenTtlMinutes;
@@ -18,8 +16,8 @@ export function createReportShareToken({ reportId, ownerUserId, config }) {
     {
       algorithm: SHARE_TOKEN_ALGORITHM,
       expiresIn: `${ttlMinutes}m`,
-      issuer: SHARE_ISSUER,
-      audience: SHARE_AUDIENCE
+      issuer: config.reportShareTokenIssuer,
+      audience: config.reportShareTokenAudience
     }
   );
 
@@ -33,8 +31,8 @@ export function verifyReportShareToken(token, config) {
   try {
     const payload = jwt.verify(token, config.reportShareTokenSecret, {
       algorithms: [SHARE_TOKEN_ALGORITHM],
-      issuer: SHARE_ISSUER,
-      audience: SHARE_AUDIENCE
+      issuer: config.reportShareTokenIssuer,
+      audience: config.reportShareTokenAudience
     });
 
     if (!payload?.rid || !payload?.oid) {

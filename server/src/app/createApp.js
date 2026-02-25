@@ -18,17 +18,17 @@ import { AuthService } from "../services/authService.js";
 import { ScanQueueService } from "../services/scanQueueService.js";
 import { PersistentStore } from "../store/persistentStore.js";
 
-function buildOpenApiSpec() {
+function buildOpenApiSpec(runtimeConfig) {
   return {
     openapi: "3.1.0",
     info: {
-      title: "ViroVanta API",
-      version: "2.0.0",
+      title: runtimeConfig.apiTitle,
+      version: runtimeConfig.apiVersion,
       description: "Authenticated file-scanning API with async job processing and structured threat reports."
     },
     servers: [
       {
-        url: "http://localhost:3001"
+        url: runtimeConfig.apiBaseUrl
       }
     ],
     components: {
@@ -112,7 +112,7 @@ export async function createApp(options = {}) {
   app.use(
     cors({
       origin(origin, callback) {
-        if (isCorsOriginAllowed(origin)) {
+        if (isCorsOriginAllowed(origin, runtimeConfig.corsOrigins)) {
           return callback(null, true);
         }
 
@@ -140,8 +140,8 @@ export async function createApp(options = {}) {
 
     res.json({
       status: "ok",
-      service: "virovanta",
-      version: "2.0.0",
+      service: runtimeConfig.serviceName,
+      version: runtimeConfig.apiVersion,
       uptimeSeconds: Number(process.uptime().toFixed(1)),
       capabilities: {
         auth: true,
@@ -155,7 +155,7 @@ export async function createApp(options = {}) {
   });
 
   app.get("/api/openapi.json", (_req, res) => {
-    res.json(buildOpenApiSpec());
+    res.json(buildOpenApiSpec(runtimeConfig));
   });
 
   app.use(
