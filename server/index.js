@@ -11,11 +11,21 @@ async function start() {
     const __filename = fileURLToPath(import.meta.url);
     const __dirname = path.dirname(__filename);
     const clientDistPath = path.resolve(__dirname, "../client/dist");
+    const indexFilePath = path.join(clientDistPath, "index.html");
+    const notFoundFilePath = path.join(clientDistPath, "404.html");
 
     app.use(express.static(clientDistPath));
 
-    app.get(/^\/(?!api).*/, (_req, res) => {
-      res.sendFile(path.join(clientDistPath, "index.html"));
+    app.get("/", (_req, res) => {
+      res.sendFile(indexFilePath);
+    });
+
+    app.get("/index.html", (_req, res) => {
+      res.sendFile(indexFilePath);
+    });
+
+    app.get(/^\/(?!api).+/, (_req, res) => {
+      res.status(404).sendFile(notFoundFilePath);
     });
   }
 

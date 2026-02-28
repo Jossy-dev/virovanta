@@ -1,0 +1,16 @@
+{
+  "name": "ViroVanta",
+  "short_name": "ViroVanta",
+  "description": "File malware and anomaly scanning with plain-language threat reports.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#f5faf7",
+  "theme_color": "#1f8f5c",
+  "icons": [
+    {
+      "src": "/brand/virovanta-mark-light-bg.png",
+      "sizes": "512x512",
+      "type": "image/png"
+    }
+  ]
+}

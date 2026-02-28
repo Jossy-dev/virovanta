@@ -6,8 +6,13 @@ import {
   HERO_BG_DEFAULT,
   HERO_BG_VARIANTS,
   LOGO_ALT_TEXT,
+  SEO_DEFAULT_DESCRIPTION,
+  SEO_DEFAULT_TITLE,
+  SEO_SOCIAL_IMAGE_PATH,
+  SEO_TWITTER_HANDLE,
   SESSION_STORAGE_KEY,
-  buildApiUrl
+  buildApiUrl,
+  buildSiteUrl
 } from "./appConfig";
 
 const VERDICT_META = {
@@ -244,7 +249,68 @@ export default function App() {
 
   useEffect(() => {
     if (typeof document !== "undefined") {
-      document.title = APP_NAME;
+      document.title = SEO_DEFAULT_TITLE;
+
+      const upsertMeta = (attribute, key, content) => {
+        if (!content) {
+          return;
+        }
+
+        let element = document.head.querySelector(`meta[${attribute}="${key}"]`);
+        if (!element) {
+          element = document.createElement("meta");
+          element.setAttribute(attribute, key);
+          document.head.appendChild(element);
+        }
+        element.setAttribute("content", content);
+      };
+
+      const upsertLink = (rel, href, options = {}) => {
+        if (!href) {
+          return;
+        }
+
+        const selectorParts = [`link[rel="${rel}"]`];
+        if (options.hreflang) {
+          selectorParts.push(`[hreflang="${options.hreflang}"]`);
+        }
+        const selector = selectorParts.join("");
+
+        let element = document.head.querySelector(selector);
+        if (!element) {
+          element = document.createElement("link");
+          element.setAttribute("rel", rel);
+          if (options.hreflang) {
+            element.setAttribute("hreflang", options.hreflang);
+          }
+          document.head.appendChild(element);
+        }
+        element.setAttribute("href", href);
+      };
+
+      const canonicalUrl = buildSiteUrl("/");
+      const ogImageUrl = buildSiteUrl(SEO_SOCIAL_IMAGE_PATH);
+      const absoluteFaviconUrl = buildSiteUrl(BRAND_MARKS.lightSurface);
+
+      upsertMeta("name", "description", SEO_DEFAULT_DESCRIPTION);
+      upsertMeta("name", "robots", "index,follow,max-image-preview:large,max-snippet:-1,max-video-preview:-1");
+      upsertMeta("property", "og:type", "website");
+      upsertMeta("property", "og:site_name", APP_NAME);
+      upsertMeta("property", "og:title", SEO_DEFAULT_TITLE);
+      upsertMeta("property", "og:description", SEO_DEFAULT_DESCRIPTION);
+      upsertMeta("property", "og:url", canonicalUrl);
+      upsertMeta("property", "og:image", ogImageUrl);
+      upsertMeta("name", "twitter:card", "summary_large_image");
+      upsertMeta("name", "twitter:title", SEO_DEFAULT_TITLE);
+      upsertMeta("name", "twitter:description", SEO_DEFAULT_DESCRIPTION);
+      upsertMeta("name", "twitter:image", ogImageUrl);
+      upsertMeta("name", "twitter:site", SEO_TWITTER_HANDLE);
+      upsertMeta("name", "twitter:creator", SEO_TWITTER_HANDLE);
+
+      upsertLink("canonical", canonicalUrl);
+      upsertLink("alternate", canonicalUrl, { hreflang: "en" });
+      upsertLink("alternate", canonicalUrl, { hreflang: "x-default" });
+
       const iconLink =
         document.querySelector("link[rel='icon']") ||
         document.querySelector("link[rel='shortcut icon']") ||
@@ -255,7 +321,7 @@ export default function App() {
           document.head.appendChild(link);
           return link;
         })();
-      iconLink.setAttribute("href", BRAND_MARKS.lightSurface);
+      iconLink.setAttribute("href", absoluteFaviconUrl);
     }
   }, []);
 
