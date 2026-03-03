@@ -41,7 +41,11 @@ export const SEO_DEFAULT_DESCRIPTION = envString(
   "VITE_SEO_DESCRIPTION",
   `${APP_NAME} scans suspicious files with malware and anomaly detection, then returns plain-language risk reports in seconds.`
 );
-export const SEO_SOCIAL_IMAGE_PATH = envString("VITE_SEO_IMAGE_PATH", "/media/virovanta-hero-poster-smooth.jpg");
+const rawSocialImagePath = envString("VITE_SEO_IMAGE_PATH", "");
+export const SEO_SOCIAL_IMAGE_PATH =
+  rawSocialImagePath && rawSocialImagePath !== "/media/virovanta-hero-poster-smooth.jpg"
+    ? rawSocialImagePath
+    : "/media/virovanta-social-card.jpg";
 export const SEO_TWITTER_HANDLE = envString("VITE_SEO_TWITTER_HANDLE", "");
 
 export const BRAND_MARKS = Object.freeze({
