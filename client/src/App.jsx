@@ -1,4 +1,7 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { Suspense, lazy, useEffect, useMemo, useRef, useState } from "react";
+import { AnimatePresence, motion, useReducedMotion } from "framer-motion";
+import { BrowserRouter, Navigate, Route, Routes, useLocation, useNavigate } from "react-router-dom";
+import { Toaster, toast } from "sonner";
 import {
   APP_NAME,
   APP_TAGLINE,
@@ -6,168 +9,137 @@ import {
   HERO_BG_DEFAULT,
   HERO_BG_VARIANTS,
   LOGO_ALT_TEXT,
-  SEO_DEFAULT_DESCRIPTION,
-  SEO_DEFAULT_TITLE,
-  SEO_SOCIAL_IMAGE_PATH,
-  SEO_TWITTER_HANDLE,
   SESSION_STORAGE_KEY,
   buildApiUrl,
   buildSiteUrl
 } from "./appConfig";
+import { buildAnalyticsData } from "./dashboard/dashboardUtils";
+import { getSeoForPath } from "./seo/routeSeo";
+import {
+  HERO_CYCLE_PAUSE_MS,
+  HERO_HEADLINE,
+  HERO_TYPE_SPEED_MS,
+  formatBytes,
+  formatDateTime,
+  formatVerdictLabel,
+  getDisplayFileType,
+  getRiskMeta,
+  getThemePalette,
+  motionPreset,
+  parseErrorMessage,
+  pluralize,
+  readResetFlowState,
+  resolveHeroBackgroundVariant,
+  resolveTheme,
+  selectHighlightedJob
+} from "./appUtils";
 
-const VERDICT_META = {
-  clean: { label: "Clean", tone: "clean" },
-  suspicious: { label: "Suspicious", tone: "suspicious" },
-  malicious: { label: "Malicious", tone: "malicious" }
-};
+const LandingPage = lazy(() => import("./pages/LandingPage"));
+const SignInPage = lazy(() => import("./pages/SignInPage"));
+const SignUpPage = lazy(() => import("./pages/SignUpPage"));
+const ForgotPasswordPage = lazy(() => import("./pages/ForgotPasswordPage"));
+const ResetPasswordPage = lazy(() => import("./pages/ResetPasswordPage"));
+const SharedReportPage = lazy(() => import("./pages/SharedReportPage"));
+const DashboardShell = lazy(() => import("./dashboard/DashboardShell"));
 
-const RISK_META = {
-  low: { label: "Low risk", tone: "risk-low" },
-  medium: { label: "Medium risk", tone: "risk-medium" },
-  high: { label: "High risk", tone: "risk-high" }
-};
+const DEFAULT_SCAN_LIMITS = Object.freeze({
+  maxFilesPerBatch: 10,
+  maxUploadMb: 25
+});
 
-const HERO_HEADLINE = "Scan suspicious files in seconds before they hit your systems.";
-const HERO_TYPE_SPEED_MS = 210;
-const HERO_CYCLE_PAUSE_MS = 3200;
+const SESSION_PERSISTENCE_LOCAL = "local";
+const SESSION_PERSISTENCE_SESSION = "session";
 
-function resolveHeroBackgroundVariant() {
+function getBrowserStorage(mode) {
   if (typeof window === "undefined") {
-    return HERO_BG_DEFAULT;
+    return null;
   }
 
-  const value = new URLSearchParams(window.location.search).get("hero");
-  if (value && HERO_BG_VARIANTS[value]) {
-    return value;
-  }
-
-  return HERO_BG_DEFAULT;
+  return mode === SESSION_PERSISTENCE_SESSION ? window.sessionStorage : window.localStorage;
 }
 
-function formatDateTime(value) {
-  if (!value) {
-    return "-";
+function readPersistedSession() {
+  const localStore = getBrowserStorage(SESSION_PERSISTENCE_LOCAL);
+  const sessionStore = getBrowserStorage(SESSION_PERSISTENCE_SESSION);
+
+  const localValue = localStore?.getItem(SESSION_STORAGE_KEY);
+  if (localValue) {
+    return { raw: localValue, mode: SESSION_PERSISTENCE_LOCAL };
   }
 
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) {
-    return "-";
+  const sessionValue = sessionStore?.getItem(SESSION_STORAGE_KEY);
+  if (sessionValue) {
+    return { raw: sessionValue, mode: SESSION_PERSISTENCE_SESSION };
   }
 
-  return new Intl.DateTimeFormat(undefined, {
-    year: "numeric",
-    month: "short",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit"
-  }).format(date);
+  return null;
 }
 
-function formatBytes(bytes) {
-  if (!Number.isFinite(bytes) || bytes < 0) {
-    return "0 B";
+function persistSessionSnapshot(nextSession) {
+  const mode = nextSession?.persistenceMode === SESSION_PERSISTENCE_SESSION ? SESSION_PERSISTENCE_SESSION : SESSION_PERSISTENCE_LOCAL;
+  const activeStore = getBrowserStorage(mode);
+  const inactiveStore = getBrowserStorage(mode === SESSION_PERSISTENCE_SESSION ? SESSION_PERSISTENCE_LOCAL : SESSION_PERSISTENCE_SESSION);
+
+  if (!activeStore) {
+    return;
   }
 
-  const units = ["B", "KB", "MB", "GB"];
-  let value = bytes;
-  let unitIndex = 0;
-
-  while (value >= 1024 && unitIndex < units.length - 1) {
-    value /= 1024;
-    unitIndex += 1;
-  }
-
-  return `${value.toFixed(value >= 10 ? 1 : 2)} ${units[unitIndex]}`;
+  activeStore.setItem(
+    SESSION_STORAGE_KEY,
+    JSON.stringify({
+      ...nextSession,
+      persistenceMode: mode
+    })
+  );
+  inactiveStore?.removeItem(SESSION_STORAGE_KEY);
 }
 
-function parseErrorMessage(payload, fallback) {
-  if (payload?.error?.message) {
-    return payload.error.message;
-  }
-
-  if (payload?.error && typeof payload.error === "string") {
-    return payload.error;
-  }
-
-  if (typeof payload?.message === "string") {
-    return payload.message;
-  }
-
-  return fallback;
+function clearPersistedSession() {
+  getBrowserStorage(SESSION_PERSISTENCE_LOCAL)?.removeItem(SESSION_STORAGE_KEY);
+  getBrowserStorage(SESSION_PERSISTENCE_SESSION)?.removeItem(SESSION_STORAGE_KEY);
 }
 
-function getRiskMeta(score) {
-  if (!Number.isFinite(score)) {
-    return RISK_META.medium;
-  }
+function SessionLoading({ message = "Loading secure session..." }) {
+  const prefersReducedMotion = useReducedMotion();
 
-  if (score >= 75) {
-    return RISK_META.high;
-  }
-
-  if (score >= 40) {
-    return RISK_META.medium;
-  }
-
-  return RISK_META.low;
+  return (
+    <motion.main className="app-shell centered" {...motionPreset(prefersReducedMotion)}>
+      <motion.section className="card loading-card" {...motionPreset(prefersReducedMotion, 0.03)}>
+        <div className="brand-lockup">
+          <img src={BRAND_MARKS.lightSurface} alt={LOGO_ALT_TEXT} className="brand-mark brand-mark-small" />
+          <h1>{APP_NAME}</h1>
+        </div>
+        <p>{message}</p>
+      </motion.section>
+    </motion.main>
+  );
 }
 
-function getDisplayFileType(file) {
-  if (!file) {
-    return "-";
+function PublicOnlyRoute({ session, children }) {
+  if (session?.accessToken) {
+    return <Navigate to="/app/dashboard" replace />;
   }
 
-  const magicType = file.magicType?.trim();
-  if (magicType && magicType.toLowerCase() !== "unknown") {
-    return magicType;
-  }
-
-  const extension = file.extension?.trim();
-  if (extension && extension !== "(none)") {
-    return `${extension.replace(/^\./, "").toUpperCase()} file`;
-  }
-
-  return "Unidentified file";
+  return children;
 }
 
-function getPlainFindingNote(finding) {
-  if (finding?.id === "obfuscated_javascript") {
-    return "This script looks intentionally hidden, which is a common way to mask harmful actions.";
+function RequireAuth({ session, children }) {
+  if (!session?.accessToken) {
+    return <Navigate to="/signin" replace />;
   }
 
-  return finding?.description || "Potentially risky behavior detected in this file.";
+  return children;
 }
 
-function formatVerdictLabel(value) {
-  if (!value) {
-    return "-";
-  }
-
-  const normalized = String(value).trim().toLowerCase();
-  if (!normalized) {
-    return "-";
-  }
-
-  return normalized.charAt(0).toUpperCase() + normalized.slice(1);
-}
-
-export default function App() {
-  const [authMode, setAuthMode] = useState("login");
-  const [authForm, setAuthForm] = useState({
-    email: "",
-    password: "",
-    name: ""
-  });
+function AppContent() {
+  const prefersReducedMotion = useReducedMotion();
+  const navigate = useNavigate();
+  const location = useLocation();
+  const [resetFlow, setResetFlow] = useState(() => readResetFlowState());
+  const [resetAccessToken, setResetAccessToken] = useState(() => readResetFlowState().accessToken);
+  const [resetEmail, setResetEmail] = useState(() => readResetFlowState().email);
   const [authLoading, setAuthLoading] = useState(true);
-  const [authSubmitting, setAuthSubmitting] = useState(false);
   const [session, setSession] = useState(null);
-  const [authError, setAuthError] = useState("");
-  const [globalError, setGlobalError] = useState("");
-  const [guestFile, setGuestFile] = useState(null);
-  const [isGuestScanning, setIsGuestScanning] = useState(false);
-  const [guestReport, setGuestReport] = useState(null);
-  const [guestError, setGuestError] = useState("");
-  const [isGuestDragActive, setIsGuestDragActive] = useState(false);
   const [guestStatus, setGuestStatus] = useState({
     loading: true,
     enabled: true,
@@ -175,12 +147,14 @@ export default function App() {
     message: ""
   });
   const [typedHeroHeadline, setTypedHeroHeadline] = useState("");
-
-  const [selectedFile, setSelectedFile] = useState(null);
+  const [selectedFiles, setSelectedFiles] = useState([]);
   const [isSubmittingScan, setIsSubmittingScan] = useState(false);
   const [activeJob, setActiveJob] = useState(null);
+  const [scanLimits, setScanLimits] = useState(DEFAULT_SCAN_LIMITS);
   const [jobs, setJobs] = useState([]);
   const [reports, setReports] = useState([]);
+  const [analytics, setAnalytics] = useState(() => buildAnalyticsData());
+  const [notifications, setNotifications] = useState([]);
   const [activeReport, setActiveReport] = useState(null);
   const [apiKeys, setApiKeys] = useState([]);
   const [newApiKey, setNewApiKey] = useState("");
@@ -193,144 +167,190 @@ export default function App() {
   const [shareError, setShareError] = useState("");
   const [isCreatingShare, setIsCreatingShare] = useState(false);
   const [shareCopied, setShareCopied] = useState(false);
-
-  const fileInputRef = useRef(null);
-  const guestFileInputRef = useRef(null);
-
-  const verdict = activeReport?.verdict || "clean";
-  const verdictMeta = useMemo(() => VERDICT_META[verdict] || VERDICT_META.clean, [verdict]);
-  const guestVerdictMeta = useMemo(() => VERDICT_META[guestReport?.verdict] || VERDICT_META.clean, [guestReport]);
-  const guestRiskMeta = useMemo(() => getRiskMeta(guestReport?.riskScore), [guestReport?.riskScore]);
-  const activeRiskMeta = useMemo(() => getRiskMeta(activeReport?.riskScore), [activeReport?.riskScore]);
+  const [searchQuery, setSearchQuery] = useState("");
+  const [dashboardTheme, setDashboardTheme] = useState(resolveTheme);
+  const redirectTimerRef = useRef(null);
   const activeReportId = activeReport?.id || null;
-  const reportIntel = activeReport?.intel || null;
+
   const heroBackground = useMemo(() => {
-    const variant = resolveHeroBackgroundVariant();
+    const variant = resolveHeroBackgroundVariant(HERO_BG_DEFAULT, HERO_BG_VARIANTS);
     return HERO_BG_VARIANTS[variant] || HERO_BG_VARIANTS[HERO_BG_DEFAULT];
   }, []);
 
+  const activeRiskMeta = useMemo(() => getRiskMeta(activeReport?.riskScore), [activeReport?.riskScore]);
   const quotaText = useMemo(() => {
     if (!session?.usage) {
       return "Usage unavailable";
     }
 
     if (session.usage.limit == null) {
-      return "Unlimited quota (admin)";
+      return "Unlimited quota";
     }
 
-    return `${session.usage.used}/${session.usage.limit} scans used today`;
+    return `${session.usage.used}/${session.usage.limit} scans used in the last 24 hours`;
   }, [session]);
-
-  const queueMetrics = useMemo(() => {
-    return jobs.reduce(
-      (accumulator, job) => {
-        if (job.status === "queued") {
-          accumulator.queued += 1;
-        } else if (job.status === "processing") {
-          accumulator.processing += 1;
-        } else if (job.status === "completed") {
-          accumulator.completed += 1;
-        }
-
-        return accumulator;
-      },
-      {
-        queued: 0,
-        processing: 0,
-        completed: 0
-      }
-    );
-  }, [jobs]);
-
-  const latestReportLabel = useMemo(() => {
-    const latest = reports[0]?.completedAt;
-    return latest ? formatDateTime(latest) : "No reports yet";
-  }, [reports]);
+  const currentDateLabel = useMemo(
+    () =>
+      new Intl.DateTimeFormat(undefined, {
+        weekday: "long",
+        month: "long",
+        day: "numeric",
+        year: "numeric"
+      }).format(new Date()),
+    []
+  );
+  const themePalette = useMemo(() => getThemePalette(dashboardTheme), [dashboardTheme]);
 
   useEffect(() => {
-    if (typeof document !== "undefined") {
-      document.title = SEO_DEFAULT_TITLE;
+    const syncResetFlow = () => {
+      const next = readResetFlowState();
+      setResetFlow(next);
+      if (next.accessToken) {
+        setResetAccessToken(next.accessToken);
+      }
+      if (next.email) {
+        setResetEmail(next.email);
+      }
+    };
 
-      const upsertMeta = (attribute, key, content) => {
-        if (!content) {
-          return;
-        }
+    syncResetFlow();
 
-        let element = document.head.querySelector(`meta[${attribute}="${key}"]`);
-        if (!element) {
-          element = document.createElement("meta");
-          element.setAttribute(attribute, key);
-          document.head.appendChild(element);
-        }
-        element.setAttribute("content", content);
-      };
-
-      const upsertLink = (rel, href, options = {}) => {
-        if (!href) {
-          return;
-        }
-
-        const selectorParts = [`link[rel="${rel}"]`];
-        if (options.hreflang) {
-          selectorParts.push(`[hreflang="${options.hreflang}"]`);
-        }
-        const selector = selectorParts.join("");
-
-        let element = document.head.querySelector(selector);
-        if (!element) {
-          element = document.createElement("link");
-          element.setAttribute("rel", rel);
-          if (options.hreflang) {
-            element.setAttribute("hreflang", options.hreflang);
-          }
-          document.head.appendChild(element);
-        }
-        element.setAttribute("href", href);
-      };
-
-      const canonicalUrl = buildSiteUrl("/");
-      const ogImageUrl = buildSiteUrl(SEO_SOCIAL_IMAGE_PATH);
-      const absoluteFaviconUrl = buildSiteUrl(BRAND_MARKS.lightSurface);
-
-      upsertMeta("name", "description", SEO_DEFAULT_DESCRIPTION);
-      upsertMeta("name", "robots", "index,follow,max-image-preview:large,max-snippet:-1,max-video-preview:-1");
-      upsertMeta("property", "og:type", "website");
-      upsertMeta("property", "og:site_name", APP_NAME);
-      upsertMeta("property", "og:title", SEO_DEFAULT_TITLE);
-      upsertMeta("property", "og:description", SEO_DEFAULT_DESCRIPTION);
-      upsertMeta("property", "og:url", canonicalUrl);
-      upsertMeta("property", "og:image", ogImageUrl);
-      upsertMeta("name", "twitter:card", "summary_large_image");
-      upsertMeta("name", "twitter:title", SEO_DEFAULT_TITLE);
-      upsertMeta("name", "twitter:description", SEO_DEFAULT_DESCRIPTION);
-      upsertMeta("name", "twitter:image", ogImageUrl);
-      upsertMeta("name", "twitter:site", SEO_TWITTER_HANDLE);
-      upsertMeta("name", "twitter:creator", SEO_TWITTER_HANDLE);
-
-      upsertLink("canonical", canonicalUrl);
-      upsertLink("alternate", canonicalUrl, { hreflang: "en" });
-      upsertLink("alternate", canonicalUrl, { hreflang: "x-default" });
-
-      const iconLink =
-        document.querySelector("link[rel='icon']") ||
-        document.querySelector("link[rel='shortcut icon']") ||
-        (() => {
-          const link = document.createElement("link");
-          link.setAttribute("rel", "icon");
-          link.setAttribute("type", "image/png");
-          document.head.appendChild(link);
-          return link;
-        })();
-      iconLink.setAttribute("href", absoluteFaviconUrl);
+    if (typeof window === "undefined") {
+      return undefined;
     }
+
+    window.addEventListener("popstate", syncResetFlow);
+    window.addEventListener("hashchange", syncResetFlow);
+
+    return () => {
+      window.removeEventListener("popstate", syncResetFlow);
+      window.removeEventListener("hashchange", syncResetFlow);
+    };
   }, []);
+
+  useEffect(() => {
+    if (!resetFlow.active) {
+      return;
+    }
+
+    const query = resetEmail ? `?email=${encodeURIComponent(resetEmail)}` : "";
+
+    if (location.pathname !== "/reset-password") {
+      navigate(`/reset-password${query}`, { replace: true });
+      return;
+    }
+
+    const hasSensitiveHash = String(window.location.hash || "").includes("access_token=");
+    if (hasSensitiveHash) {
+      window.history.replaceState({}, "", `/reset-password${query}`);
+    }
+  }, [location.pathname, navigate, resetEmail, resetFlow.active]);
+
+  useEffect(() => {
+    if (typeof document === "undefined") {
+      return;
+    }
+
+    document.documentElement.classList.toggle("dark", dashboardTheme === "dark");
+    window.localStorage.setItem("virovanta-dashboard-theme", dashboardTheme);
+  }, [dashboardTheme]);
+
+  useEffect(() => {
+    if (typeof document === "undefined") {
+      return;
+    }
+
+    const seo = getSeoForPath(location.pathname || "/");
+    document.title = seo.title;
+
+    const upsertMeta = (attribute, key, content) => {
+      if (!content) {
+        return;
+      }
+
+      let element = document.head.querySelector(`meta[${attribute}="${key}"]`);
+      if (!element) {
+        element = document.createElement("meta");
+        element.setAttribute(attribute, key);
+        document.head.appendChild(element);
+      }
+      element.setAttribute("content", content);
+    };
+
+    const upsertLink = (rel, href, options = {}) => {
+      if (!href) {
+        return;
+      }
+
+      const selectorParts = [`link[rel="${rel}"]`];
+      if (options.hreflang) {
+        selectorParts.push(`[hreflang="${options.hreflang}"]`);
+      }
+      const selector = selectorParts.join("");
+
+      let element = document.head.querySelector(selector);
+      if (!element) {
+        element = document.createElement("link");
+        element.setAttribute("rel", rel);
+        if (options.hreflang) {
+          element.setAttribute("hreflang", options.hreflang);
+        }
+        document.head.appendChild(element);
+      }
+      element.setAttribute("href", href);
+    };
+
+    upsertMeta("name", "description", seo.description);
+    upsertMeta("name", "robots", seo.robots);
+    upsertMeta("name", "googlebot", seo.robots);
+    upsertMeta("name", "theme-color", "#1f8f5c");
+    upsertMeta("property", "og:type", seo.ogType);
+    upsertMeta("property", "og:site_name", APP_NAME);
+    upsertMeta("property", "og:title", seo.title);
+    upsertMeta("property", "og:description", seo.description);
+    upsertMeta("property", "og:url", seo.canonicalUrl);
+    upsertMeta("property", "og:image", seo.imageUrl);
+    upsertMeta("property", "og:image:secure_url", seo.imageUrl);
+    upsertMeta("property", "og:image:width", "1200");
+    upsertMeta("property", "og:image:height", "630");
+    upsertMeta("property", "og:image:alt", seo.imageAlt);
+    upsertMeta("property", "og:locale", seo.locale);
+    upsertMeta("name", "twitter:card", "summary_large_image");
+    upsertMeta("name", "twitter:title", seo.title);
+    upsertMeta("name", "twitter:description", seo.description);
+    upsertMeta("name", "twitter:image", seo.imageUrl);
+    upsertMeta("name", "twitter:image:alt", seo.imageAlt);
+
+    upsertLink("canonical", seo.canonicalUrl);
+    upsertLink("alternate", seo.canonicalUrl, { hreflang: "en" });
+    upsertLink("alternate", seo.canonicalUrl, { hreflang: "x-default" });
+    upsertLink("icon", seo.faviconUrl);
+    upsertLink("apple-touch-icon", seo.logoUrl);
+
+    const structuredDataId = "virovanta-structured-data";
+    const existingStructuredData = document.getElementById(structuredDataId);
+    if (seo.structuredDataGraph?.length) {
+      const serialized = JSON.stringify(seo.structuredDataGraph[0]);
+      if (existingStructuredData) {
+        existingStructuredData.textContent = serialized;
+      } else {
+        const script = document.createElement("script");
+        script.id = structuredDataId;
+        script.type = "application/ld+json";
+        script.textContent = serialized;
+        document.head.appendChild(script);
+      }
+    } else if (existingStructuredData) {
+      existingStructuredData.remove();
+    }
+  }, [location.pathname]);
 
   useEffect(() => {
     let cancelled = false;
 
     async function bootstrap() {
-      const stored = localStorage.getItem(SESSION_STORAGE_KEY);
-      if (!stored) {
+      const stored = readPersistedSession();
+      if (!stored?.raw) {
         if (!cancelled) {
           setAuthLoading(false);
         }
@@ -338,17 +358,22 @@ export default function App() {
       }
 
       try {
-        const parsed = JSON.parse(stored);
+        const parsed = JSON.parse(stored.raw);
         if (!parsed?.accessToken || !parsed?.refreshToken) {
           throw new Error("Invalid session format");
         }
 
+        const hydratedSession = {
+          ...parsed,
+          persistenceMode: parsed.persistenceMode || stored.mode
+        };
+
         if (!cancelled) {
-          setSession(parsed);
-          await loadDashboard(parsed);
+          setSession(hydratedSession);
+          await loadDashboard(hydratedSession);
         }
       } catch (_error) {
-        localStorage.removeItem(SESSION_STORAGE_KEY);
+        clearPersistedSession();
         if (!cancelled) {
           setSession(null);
         }
@@ -359,7 +384,7 @@ export default function App() {
       }
     }
 
-    bootstrap();
+    void bootstrap();
 
     return () => {
       cancelled = true;
@@ -398,7 +423,7 @@ export default function App() {
       }
     }
 
-    loadGuestStatus();
+    void loadGuestStatus();
 
     return () => {
       mounted = false;
@@ -468,14 +493,16 @@ export default function App() {
         });
 
         setActiveJob(payload.job);
-        await refreshJobs(session);
+        await Promise.all([refreshJobs(session), refreshAnalytics(session)]);
 
         if (payload.job.status === "completed" && payload.job.reportId) {
           await openReport(payload.job.reportId, session);
-          await refreshReports(session);
+          await Promise.all([refreshReports(session), refreshNotifications(session), refreshAnalytics(session)]);
+        } else if (payload.job.status === "failed") {
+          await Promise.all([refreshNotifications(session), refreshAnalytics(session)]);
         }
       } catch (error) {
-        setGlobalError(error.message);
+        toast.error(error.message || "Could not refresh scan job.");
       }
     }, 1400);
 
@@ -483,18 +510,24 @@ export default function App() {
   }, [activeJob, session]);
 
   useEffect(() => {
-    setShareState({
-      url: "",
-      expiresAt: ""
-    });
+    setShareState({ url: "", expiresAt: "" });
     setShareError("");
     setShareCopied(false);
   }, [activeReportId]);
 
+  useEffect(() => {
+    return () => {
+      if (redirectTimerRef.current) {
+        clearTimeout(redirectTimerRef.current);
+      }
+    };
+  }, []);
+
   async function apiRequest(path, { method = "GET", body, formData, authSession = null, retry = true } = {}) {
+    const normalizedMethod = String(method || "GET").toUpperCase();
     const headers = {};
 
-    if (!formData) {
+    if (!formData && body !== undefined) {
       headers["Content-Type"] = "application/json";
     }
 
@@ -503,7 +536,7 @@ export default function App() {
     }
 
     const response = await fetch(buildApiUrl(path), {
-      method,
+      method: normalizedMethod,
       headers,
       body: formData || (body ? JSON.stringify(body) : undefined)
     });
@@ -512,9 +545,9 @@ export default function App() {
     const payload = isJson ? await response.json() : null;
 
     if (response.status === 401 && authSession?.refreshToken && retry) {
-      const refreshedSession = await refreshAuthSession(authSession.refreshToken);
+      const refreshedSession = await refreshAuthSession(authSession.refreshToken, authSession);
       return apiRequest(path, {
-        method,
+        method: normalizedMethod,
         body,
         formData,
         authSession: refreshedSession,
@@ -523,13 +556,17 @@ export default function App() {
     }
 
     if (!response.ok) {
-      throw new Error(parseErrorMessage(payload, `${method} ${path} failed with ${response.status}`));
+      const requestError = new Error(parseErrorMessage(payload, `${normalizedMethod} ${path} failed with ${response.status}`));
+      requestError.status = response.status;
+      requestError.code = payload?.error?.code || "";
+      requestError.details = payload?.error?.details || null;
+      throw requestError;
     }
 
     return payload;
   }
 
-  async function refreshAuthSession(refreshToken) {
+  async function refreshAuthSession(refreshToken, currentSession = session) {
     const payload = await apiRequest("/api/auth/refresh", {
       method: "POST",
       body: { refreshToken },
@@ -541,11 +578,12 @@ export default function App() {
       accessToken: payload.accessToken,
       refreshToken: payload.refreshToken,
       user: payload.user,
-      usage: null
+      usage: null,
+      persistenceMode: currentSession?.persistenceMode || SESSION_PERSISTENCE_LOCAL
     };
 
     setSession(nextSession);
-    localStorage.setItem(SESSION_STORAGE_KEY, JSON.stringify(nextSession));
+    persistSessionSnapshot(nextSession);
     return nextSession;
   }
 
@@ -555,13 +593,24 @@ export default function App() {
     const nextSession = {
       ...activeSession,
       user: mePayload.user,
-      usage: mePayload.usage
+      usage: mePayload.usage,
+      persistenceMode: activeSession?.persistenceMode || SESSION_PERSISTENCE_LOCAL
     };
 
+    setScanLimits({
+      maxFilesPerBatch: Number(mePayload?.scanLimits?.maxFilesPerBatch) || DEFAULT_SCAN_LIMITS.maxFilesPerBatch,
+      maxUploadMb: Number(mePayload?.scanLimits?.maxUploadMb) || DEFAULT_SCAN_LIMITS.maxUploadMb
+    });
     setSession(nextSession);
-    localStorage.setItem(SESSION_STORAGE_KEY, JSON.stringify(nextSession));
+    persistSessionSnapshot(nextSession);
 
-    await Promise.all([refreshJobs(nextSession), refreshReports(nextSession), refreshApiKeys(nextSession)]);
+    await Promise.all([
+      refreshJobs(nextSession),
+      refreshReports(nextSession),
+      refreshApiKeys(nextSession),
+      refreshNotifications(nextSession),
+      refreshAnalytics(nextSession)
+    ]);
   }
 
   async function refreshJobs(activeSession = session) {
@@ -570,7 +619,9 @@ export default function App() {
     }
 
     const payload = await apiRequest("/api/scans/jobs?limit=12", { authSession: activeSession });
-    setJobs(payload.jobs || []);
+    const nextJobs = Array.isArray(payload?.jobs) ? payload.jobs : [];
+    setJobs(nextJobs);
+    setActiveJob((current) => selectHighlightedJob(nextJobs, current?.id || ""));
   }
 
   async function refreshReports(activeSession = session) {
@@ -579,7 +630,27 @@ export default function App() {
     }
 
     const payload = await apiRequest("/api/scans/reports?limit=20", { authSession: activeSession });
-    setReports(payload.reports || []);
+    const nextReports = Array.isArray(payload?.reports) ? payload.reports : [];
+    setReports(nextReports);
+
+    if (nextReports.length === 0) {
+      setActiveReport(null);
+      return;
+    }
+
+    if (!activeReportId || !nextReports.some((report) => report.id === activeReportId)) {
+      await openReport(nextReports[0].id, activeSession);
+    }
+  }
+
+  async function refreshAnalytics(activeSession = session) {
+    if (!activeSession) {
+      setAnalytics(buildAnalyticsData());
+      return;
+    }
+
+    const payload = await apiRequest("/api/scans/analytics", { authSession: activeSession });
+    setAnalytics(buildAnalyticsData(payload?.analytics));
   }
 
   async function refreshApiKeys(activeSession = session) {
@@ -591,6 +662,15 @@ export default function App() {
     setApiKeys(payload.keys || []);
   }
 
+  async function refreshNotifications(activeSession = session) {
+    if (!activeSession) {
+      return;
+    }
+
+    const payload = await apiRequest("/api/auth/notifications?limit=20", { authSession: activeSession });
+    setNotifications(Array.isArray(payload?.notifications) ? payload.notifications : []);
+  }
+
   async function openReport(reportId, activeSession = session) {
     if (!activeSession) {
       return;
@@ -600,38 +680,150 @@ export default function App() {
     setActiveReport(payload.report || null);
   }
 
-  async function submitAuth() {
-    setAuthSubmitting(true);
-    setAuthError("");
+  async function loginUser({ email, password, rememberMe = true }) {
+    const normalizedEmail = String(email || "").trim().toLowerCase();
+    const payload = await apiRequest("/api/auth/login", {
+      method: "POST",
+      body: {
+        email: normalizedEmail,
+        password: String(password || "")
+      },
+      authSession: null,
+      retry: false
+    });
 
-    try {
-      const endpoint = authMode === "register" ? "/api/auth/register" : "/api/auth/login";
-      const payload = await apiRequest(endpoint, {
-        method: "POST",
-        body: {
-          email: authForm.email,
-          password: authForm.password,
-          ...(authMode === "register" ? { name: authForm.name } : {})
-        },
-        authSession: null,
-        retry: false
-      });
+    const nextSession = {
+      accessToken: payload.accessToken,
+      refreshToken: payload.refreshToken,
+      user: payload.user,
+      usage: null,
+      persistenceMode: rememberMe ? SESSION_PERSISTENCE_LOCAL : SESSION_PERSISTENCE_SESSION
+    };
 
-      const nextSession = {
-        accessToken: payload.accessToken,
-        refreshToken: payload.refreshToken,
-        user: payload.user,
-        usage: null
-      };
+    setSession(nextSession);
+    persistSessionSnapshot(nextSession);
+    await loadDashboard(nextSession);
+    return payload;
+  }
 
-      setSession(nextSession);
-      localStorage.setItem(SESSION_STORAGE_KEY, JSON.stringify(nextSession));
-      await loadDashboard(nextSession);
-    } catch (error) {
-      setAuthError(error.message);
-    } finally {
-      setAuthSubmitting(false);
+  async function registerUser({ email, password, username }) {
+    const normalizedEmail = String(email || "").trim().toLowerCase();
+    const payload = await apiRequest("/api/auth/register", {
+      method: "POST",
+      body: {
+        email: normalizedEmail,
+        password: String(password || ""),
+        name: String(username || "").trim()
+      },
+      authSession: null,
+      retry: false
+    });
+
+    if (payload?.requiresEmailConfirmation) {
+      return payload;
     }
+
+    const nextSession = {
+      accessToken: payload.accessToken,
+      refreshToken: payload.refreshToken,
+      user: payload.user,
+      usage: null,
+      persistenceMode: SESSION_PERSISTENCE_LOCAL
+    };
+
+    setSession(nextSession);
+    persistSessionSnapshot(nextSession);
+    await loadDashboard(nextSession);
+    return payload;
+  }
+
+  async function checkUsernameAvailability(username) {
+    return apiRequest(`/api/auth/username-availability?username=${encodeURIComponent(username)}`, {
+      authSession: null,
+      retry: false
+    });
+  }
+
+  async function requestForgotPassword(email) {
+    return apiRequest("/api/auth/forgot-password", {
+      method: "POST",
+      body: { email: String(email || "").trim().toLowerCase() },
+      authSession: null,
+      retry: false
+    });
+  }
+
+  async function submitPasswordReset({ accessToken, password, email }) {
+    const payload = await apiRequest("/api/auth/reset-password", {
+      method: "POST",
+      body: {
+        accessToken,
+        password,
+        ...(email ? { email } : {})
+      },
+      authSession: null,
+      retry: false
+    });
+
+    const query = email ? `?email=${encodeURIComponent(email)}` : "";
+    if (typeof window !== "undefined") {
+      if (redirectTimerRef.current) {
+        clearTimeout(redirectTimerRef.current);
+      }
+
+      redirectTimerRef.current = setTimeout(() => {
+        window.history.replaceState({}, "", `/signin${query}`);
+        setResetAccessToken("");
+        setResetFlow({
+          active: false,
+          accessToken: "",
+          email
+        });
+      }, 900);
+    }
+
+    return payload;
+  }
+
+  async function runGuestQuickScan(file) {
+    if (!file) {
+      throw new Error("Select a file first.");
+    }
+
+    if (!guestStatus.enabled) {
+      throw new Error("Guest quick scan is currently unavailable.");
+    }
+
+    const formData = new FormData();
+    formData.append("file", file);
+
+    const payload = await apiRequest("/api/public/quick-scan", {
+      method: "POST",
+      formData,
+      authSession: null,
+      retry: false
+    });
+
+    return payload.report || null;
+  }
+
+  function clearSelectedFiles() {
+    setSelectedFiles([]);
+  }
+
+  function handleSelectedFiles(fileList) {
+    const nextFiles = Array.from(fileList || []).filter(Boolean);
+    if (nextFiles.length === 0) {
+      clearSelectedFiles();
+      return;
+    }
+
+    const maxFilesPerBatch = Number(scanLimits?.maxFilesPerBatch) || DEFAULT_SCAN_LIMITS.maxFilesPerBatch;
+    if (nextFiles.length > maxFilesPerBatch) {
+      toast.error(`You can queue up to ${maxFilesPerBatch} files at once.`);
+    }
+
+    setSelectedFiles(nextFiles.slice(0, maxFilesPerBatch));
   }
 
   async function logout() {
@@ -640,7 +832,7 @@ export default function App() {
         await apiRequest("/api/auth/logout", {
           method: "POST",
           body: { refreshToken: session.refreshToken },
-          authSession: null,
+          authSession: session,
           retry: false
         });
       } catch (_error) {
@@ -649,31 +841,36 @@ export default function App() {
     }
 
     setSession(null);
+    setScanLimits(DEFAULT_SCAN_LIMITS);
     setActiveReport(null);
     setReports([]);
+    setNotifications([]);
     setJobs([]);
+    setAnalytics(buildAnalyticsData());
+    setActiveJob(null);
     setApiKeys([]);
     setNewApiKey("");
-    setShareState({
-      url: "",
-      expiresAt: ""
-    });
+    setSearchQuery("");
+    clearSelectedFiles();
+    setShareState({ url: "", expiresAt: "" });
     setShareError("");
     setShareCopied(false);
-    localStorage.removeItem(SESSION_STORAGE_KEY);
+    clearPersistedSession();
+    navigate("/signin", { replace: true });
   }
 
   async function submitScan() {
-    if (!session || !selectedFile || isSubmittingScan) {
+    if (!session || selectedFiles.length === 0 || isSubmittingScan) {
       return;
     }
 
-    setGlobalError("");
     setIsSubmittingScan(true);
 
     try {
       const formData = new FormData();
-      formData.append("file", selectedFile);
+      selectedFiles.forEach((file) => {
+        formData.append("files", file);
+      });
 
       const payload = await apiRequest("/api/scans/jobs", {
         method: "POST",
@@ -681,11 +878,9 @@ export default function App() {
         authSession: session
       });
 
-      setActiveJob(payload.job);
-      setSelectedFile(null);
-      if (fileInputRef.current) {
-        fileInputRef.current.value = "";
-      }
+      const queuedJobs = Array.isArray(payload?.jobs) ? payload.jobs : payload?.job ? [payload.job] : [];
+      setActiveJob(queuedJobs[0] || null);
+      clearSelectedFiles();
 
       setSession((current) => {
         if (!current) {
@@ -695,20 +890,29 @@ export default function App() {
         const next = {
           ...current,
           usage: {
-            day: current.usage?.day || new Date().toISOString().slice(0, 10),
+            windowStartedAt:
+              payload.quota?.windowStartedAt ||
+              current.usage?.windowStartedAt ||
+              new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString(),
             used: payload.quota?.used ?? current.usage?.used,
             remaining: payload.quota?.remaining ?? current.usage?.remaining,
             limit: payload.quota?.limit ?? current.usage?.limit
           }
         };
 
-        localStorage.setItem(SESSION_STORAGE_KEY, JSON.stringify(next));
+        persistSessionSnapshot(next);
         return next;
       });
 
-      await refreshJobs(session);
+      toast.success(queuedJobs.length > 1 ? `${pluralize("scan job", queuedJobs.length)} queued.` : "Scan job queued.");
+      await Promise.all([refreshJobs(session), refreshNotifications(session), refreshAnalytics(session)]);
+      navigate("/app/projects", { replace: false });
     } catch (error) {
-      setGlobalError(error.message);
+      if (session && error?.code === "SCAN_QUOTA_EXCEEDED") {
+        await refreshNotifications(session);
+      }
+      toast.error(error.message || "Could not queue scan jobs.");
+      throw error;
     } finally {
       setIsSubmittingScan(false);
     }
@@ -720,7 +924,6 @@ export default function App() {
     }
 
     setIsCreatingKey(true);
-    setGlobalError("");
     setNewApiKey("");
 
     try {
@@ -733,11 +936,35 @@ export default function App() {
       });
 
       setNewApiKey(payload.apiKey || "");
-      await refreshApiKeys(session);
+      await Promise.all([refreshApiKeys(session), refreshNotifications(session)]);
     } catch (error) {
-      setGlobalError(error.message);
+      toast.error(error.message || "Could not create API key.");
     } finally {
       setIsCreatingKey(false);
+    }
+  }
+
+  async function markNotificationsViewed() {
+    if (!session) {
+      return;
+    }
+
+    const unreadCount = notifications.filter((item) => !item.readAt).length;
+    if (unreadCount === 0) {
+      return;
+    }
+
+    const readAt = new Date().toISOString();
+    setNotifications((current) => current.map((item) => (item.readAt ? item : { ...item, readAt })));
+
+    try {
+      await apiRequest("/api/auth/notifications/read", {
+        method: "POST",
+        body: {},
+        authSession: session
+      });
+    } catch (_error) {
+      await refreshNotifications(session);
     }
   }
 
@@ -746,17 +973,15 @@ export default function App() {
       return;
     }
 
-    setGlobalError("");
-
     try {
       await apiRequest(`/api/auth/api-keys/${keyId}`, {
         method: "DELETE",
         authSession: session
       });
 
-      await refreshApiKeys(session);
+      await Promise.all([refreshApiKeys(session), refreshNotifications(session)]);
     } catch (error) {
-      setGlobalError(error.message);
+      toast.error(error.message || "Could not revoke API key.");
     }
   }
 
@@ -775,13 +1000,15 @@ export default function App() {
         authSession: session
       });
 
-      const baseOrigin = typeof window !== "undefined" ? window.location.origin : "";
-      const resolvedUrl = payload.shareUrl || (payload.publicApiPath ? `${baseOrigin}${payload.publicApiPath}` : "");
+      const resolvedUrl = payload.shareToken
+        ? buildSiteUrl(`/report/${payload.shareToken}`)
+        : payload.shareUrl || (payload.publicApiPath ? buildSiteUrl(payload.publicApiPath) : "");
 
       setShareState({
         url: resolvedUrl,
         expiresAt: payload.expiresAt || ""
       });
+      await refreshNotifications(session);
     } catch (error) {
       setShareError(error.message || "Failed to generate share link.");
     } finally {
@@ -807,601 +1034,178 @@ export default function App() {
     }
   }
 
-  function handleGuestFile(file) {
-    if (!file) {
-      return;
-    }
-
-    if (!guestStatus.enabled) {
-      setGuestError("Guest quick scan is currently disabled.");
-      return;
-    }
-
-    const maxUploadBytes = guestStatus.maxUploadMb * 1024 * 1024;
-    if (file.size > maxUploadBytes) {
-      setGuestFile(null);
-      setGuestReport(null);
-      setGuestError(`File exceeds guest limit of ${guestStatus.maxUploadMb} MB.`);
-      return;
-    }
-
-    setGuestFile(file);
-    setGuestReport(null);
-    setGuestError("");
-  }
-
-  async function runGuestQuickScan() {
-    if (!guestFile || isGuestScanning) {
-      return;
-    }
-
-    if (!guestStatus.enabled) {
-      setGuestError("Guest quick scan is currently unavailable.");
-      return;
-    }
-
-    setGuestError("");
-    setGuestReport(null);
-    setIsGuestScanning(true);
-
-    try {
-      const formData = new FormData();
-      formData.append("file", guestFile);
-
-      const payload = await apiRequest("/api/public/quick-scan", {
-        method: "POST",
-        formData,
-        authSession: null,
-        retry: false
-      });
-
-      setGuestReport(payload.report || null);
-    } catch (error) {
-      setGuestError(error.message || "Quick scan failed.");
-    } finally {
-      setIsGuestScanning(false);
-    }
+  async function loadSharedReport(token) {
+    return apiRequest(`/api/public/shared-reports/${token}`, {
+      authSession: null,
+      retry: false
+    });
   }
 
   if (authLoading) {
     return (
-      <main className="app-shell centered">
-        <section className="card loading-card">
-          <div className="brand-lockup">
-            <img src={BRAND_MARKS.lightSurface} alt={LOGO_ALT_TEXT} className="brand-mark brand-mark-small" />
-            <h1>{APP_NAME}</h1>
-          </div>
-          <p>Loading secure session...</p>
-        </section>
-      </main>
-    );
-  }
-
-  if (!session?.accessToken) {
-    return (
-      <main className="app-shell landing-shell">
-        <section
-          className="card landing-hero"
-          style={{
-            "--landing-hero-poster": `url("${heroBackground.posterSrc}")`
-          }}
-        >
-          <video
-            className="landing-hero-video"
-            autoPlay
-            muted
-            loop
-            playsInline
-            preload="auto"
-            poster={heroBackground.posterSrc}
-            aria-hidden="true"
-          >
-            <source src={heroBackground.videoSrc} type="video/mp4" />
-          </video>
-          <div className="landing-hero-content">
-            <div className="landing-hero-top">
-              <img src={BRAND_MARKS.darkSurface} alt={LOGO_ALT_TEXT} className="landing-hero-logo" />
-              <div className="landing-hero-brand">
-                <strong>{APP_NAME}</strong>
-                <span>{APP_TAGLINE}</span>
-              </div>
-            </div>
-            <div className="landing-copy">
-              <p className="eyebrow">Malware and Defect Detection Platform</p>
-              <h1 className="hero-typing" aria-label={HERO_HEADLINE}>
-                <span>{typedHeroHeadline}</span>
-                <span className="typing-caret" aria-hidden="true" />
-              </h1>
-              <p className="subtext">
-                {APP_NAME} analyzes uploaded files using layered heuristics and security engines, then returns a clear
-                risk score, findings, and actionable recommendations.
-              </p>
-              <ul className="hero-points">
-                <li>Real-time guest scan for rapid file checks</li>
-                <li>Automated verdicts with clear, plain-language findings</li>
-                <li>Full account workflow with saved reports and API keys</li>
-              </ul>
-            </div>
-          </div>
-        </section>
-
-        <section className="card guest-card">
-          <div className="section-head">
-            <h2>Quick Guest Scan</h2>
-            <span className="panel-tag">No account needed</span>
-          </div>
-          <p className="subtext">
-            Drop one file and test the scanner instantly. Guest scans are for evaluation and are not saved to your
-            account history.
-          </p>
-          <div className="guest-meta">
-            <span className={`pill ${guestStatus.enabled ? "clean" : "failed"}`}>
-              {guestStatus.loading ? "Checking status..." : guestStatus.enabled ? "Guest scan online" : "Guest scan unavailable"}
-            </span>
-            <span className="guest-meta-limit">Max upload {guestStatus.maxUploadMb} MB</span>
-          </div>
-          {guestStatus.message ? <p className="muted">{guestStatus.message}</p> : null}
-
-          <label
-            className={`upload-drop guest-drop ${guestFile ? "has-file" : ""} ${isGuestDragActive ? "drag-active" : ""} ${!guestStatus.enabled ? "disabled" : ""}`}
-            onDragOver={(event) => {
-              if (!guestStatus.enabled) {
-                return;
-              }
-              event.preventDefault();
-              setIsGuestDragActive(true);
-            }}
-            onDragLeave={() => setIsGuestDragActive(false)}
-            onDrop={(event) => {
-              if (!guestStatus.enabled) {
-                return;
-              }
-              event.preventDefault();
-              setIsGuestDragActive(false);
-              handleGuestFile(event.dataTransfer.files?.[0] || null);
-            }}
-          >
-            <input
-              ref={guestFileInputRef}
-              type="file"
-              className="file-input-hidden"
-              disabled={!guestStatus.enabled}
-              onChange={(event) => handleGuestFile(event.target.files?.[0] || null)}
-            />
-            <span className="drop-title">{guestFile ? guestFile.name : "Drop file here or click to choose"}</span>
-            <small>{guestFile ? formatBytes(guestFile.size) : "Fast guest scan with temporary upload processing"}</small>
-          </label>
-
-          <div className="upload-actions">
-            <button
-              type="button"
-              className="primary"
-              disabled={!guestFile || isGuestScanning || !guestStatus.enabled}
-              onClick={runGuestQuickScan}
-            >
-              {isGuestScanning ? "Scanning..." : "Run Guest Scan"}
-            </button>
-            <button
-              type="button"
-              className="ghost"
-              disabled={!guestFile || !guestStatus.enabled}
-              onClick={() => {
-                setGuestFile(null);
-                setGuestReport(null);
-                if (guestFileInputRef.current) {
-                  guestFileInputRef.current.value = "";
-                }
-              }}
-            >
-              Clear
-            </button>
-          </div>
-
-          {guestError ? <p className="error">{guestError}</p> : null}
-
-          {guestReport ? (
-            <div className="guest-report-box">
-              <div className="report-header">
-                <h3>Guest Result</h3>
-                <span className={`pill ${guestVerdictMeta.tone}`}>{guestVerdictMeta.label}</span>
-              </div>
-              <div className="summary-grid">
-                <div>
-                  <span>Risk Score</span>
-                  <strong className={`risk-score ${guestRiskMeta.tone}`}>{guestReport.riskScore}/100</strong>
-                  <small className={`risk-label ${guestRiskMeta.tone}`}>{guestRiskMeta.label}</small>
-                </div>
-                <div>
-                  <span>File Type</span>
-                  <strong>{getDisplayFileType(guestReport.file)}</strong>
-                </div>
-              </div>
-              {guestReport.findings.length > 0 ? (
-                <ul className="guest-findings">
-                  {guestReport.findings.slice(0, 3).map((finding) => (
-                    <li key={`${finding.id}-${finding.title}`}>
-                      <div className="guest-finding-copy">
-                        <strong>{finding.title}</strong>
-                        <small>{getPlainFindingNote(finding)}</small>
-                      </div>
-                      <span>{finding.severity}</span>
-                    </li>
-                  ))}
-                </ul>
-              ) : (
-                <p className="muted">No significant findings in guest scan.</p>
-              )}
-            </div>
-          ) : null}
-        </section>
-
-        <section className="card auth-card landing-auth-card">
-          <h2 className="auth-title">Create Account for Full Workflow</h2>
-          <p className="subtext">Save reports, queue jobs, and generate API keys for automation.</p>
-
-          <div className="auth-switch">
-            <button type="button" className={authMode === "login" ? "active" : ""} onClick={() => setAuthMode("login")}>
-              Sign in
-            </button>
-            <button
-              type="button"
-              className={authMode === "register" ? "active" : ""}
-              onClick={() => setAuthMode("register")}
-            >
-              Create account
-            </button>
-          </div>
-
-          {authMode === "register" ? (
-            <label>
-              Name
-              <input
-                value={authForm.name}
-                onChange={(event) => setAuthForm((prev) => ({ ...prev, name: event.target.value }))}
-                placeholder="Security Analyst"
-              />
-            </label>
-          ) : null}
-
-          <label>
-            Email
-            <input
-              type="email"
-              value={authForm.email}
-              onChange={(event) => setAuthForm((prev) => ({ ...prev, email: event.target.value }))}
-              placeholder="you@company.com"
-            />
-          </label>
-
-          <label>
-            Password
-            <input
-              type="password"
-              value={authForm.password}
-              onChange={(event) => setAuthForm((prev) => ({ ...prev, password: event.target.value }))}
-              placeholder="Strong passphrase"
-            />
-          </label>
-
-          <button type="button" className="primary" onClick={submitAuth} disabled={authSubmitting}>
-            {authSubmitting ? "Submitting..." : authMode === "register" ? "Create account" : "Sign in"}
-          </button>
-
-          {authError ? <p className="error">{authError}</p> : null}
-        </section>
-
-        <footer className="landing-footer">
-          <div className="footer-brand">
-            <img src={BRAND_MARKS.lightSurface} alt={LOGO_ALT_TEXT} className="footer-logo" />
-            <p>&copy; {new Date().getFullYear()} {APP_NAME}</p>
-          </div>
-          <p>Secure malware and anomaly scanning for teams and daily operations.</p>
-        </footer>
-      </main>
+      <>
+        <Toaster position="top-right" richColors closeButton expand />
+        <SessionLoading />
+      </>
     );
   }
 
   return (
-    <main className="app-shell dashboard-shell">
-      <div className="ambient ambient-one" />
-      <div className="ambient ambient-two" />
-      <div className="ambient ambient-three" />
+    <>
+      <Toaster position="top-right" richColors closeButton expand />
+      <Suspense fallback={<SessionLoading message="Loading page..." />}>
+        <Routes>
+          <Route
+            path="/"
+            element={
+              <PublicOnlyRoute session={session}>
+                <LandingPage
+                  appName={APP_NAME}
+                  appTagline={APP_TAGLINE}
+                  logoAltText={LOGO_ALT_TEXT}
+                  brandMarks={BRAND_MARKS}
+                  heroBackground={heroBackground}
+                  typedHeroHeadline={typedHeroHeadline}
+                  guestStatus={guestStatus}
+                  runGuestQuickScan={runGuestQuickScan}
+                />
+              </PublicOnlyRoute>
+            }
+          />
+          <Route
+            path="/signin"
+            element={
+              <PublicOnlyRoute session={session}>
+                <SignInPage
+                  appName={APP_NAME}
+                  appTagline={APP_TAGLINE}
+                  logoAltText={LOGO_ALT_TEXT}
+                  brandMarks={BRAND_MARKS}
+                  onLogin={loginUser}
+                />
+              </PublicOnlyRoute>
+            }
+          />
+          <Route
+            path="/signup"
+            element={
+              <PublicOnlyRoute session={session}>
+                <SignUpPage
+                  appName={APP_NAME}
+                  appTagline={APP_TAGLINE}
+                  logoAltText={LOGO_ALT_TEXT}
+                  brandMarks={BRAND_MARKS}
+                  onRegister={registerUser}
+                  onCheckUsernameAvailability={checkUsernameAvailability}
+                  onRequestForgotPassword={requestForgotPassword}
+                />
+              </PublicOnlyRoute>
+            }
+          />
+          <Route
+            path="/forgot-password"
+            element={
+              <PublicOnlyRoute session={session}>
+                <ForgotPasswordPage
+                  appName={APP_NAME}
+                  appTagline={APP_TAGLINE}
+                  logoAltText={LOGO_ALT_TEXT}
+                  brandMarks={BRAND_MARKS}
+                  onRequestForgotPassword={requestForgotPassword}
+                />
+              </PublicOnlyRoute>
+            }
+          />
+          <Route
+            path="/reset-password"
+            element={
+              <ResetPasswordPage
+                appName={APP_NAME}
+                appTagline={APP_TAGLINE}
+                logoAltText={LOGO_ALT_TEXT}
+                brandMarks={BRAND_MARKS}
+                resetAccessToken={resetAccessToken}
+                resetEmail={resetEmail}
+                onResetPassword={submitPasswordReset}
+              />
+            }
+          />
+          <Route
+            path="/report/:token"
+            element={
+              <SharedReportPage
+                appName={APP_NAME}
+                logoAltText={LOGO_ALT_TEXT}
+                brandMarks={BRAND_MARKS}
+                onLoadSharedReport={loadSharedReport}
+              />
+            }
+          />
+          <Route
+            path="/app/*"
+            element={
+              <RequireAuth session={session}>
+                <DashboardShell
+                  appName={APP_NAME}
+                  logoSrc={BRAND_MARKS.lightSurface}
+                  session={session}
+                  searchQuery={searchQuery}
+                  onSearchChange={setSearchQuery}
+                  theme={dashboardTheme}
+                  onToggleTheme={() => setDashboardTheme((current) => (current === "dark" ? "light" : "dark"))}
+                  selectedFiles={selectedFiles}
+                  scanLimits={scanLimits}
+                  isSubmittingScan={isSubmittingScan}
+                  jobs={jobs}
+                  reports={reports}
+                  activeJob={activeJob}
+                  activeReport={activeReport}
+                  activeRiskMeta={activeRiskMeta}
+                  shareState={shareState}
+                  shareError={shareError}
+                  isCreatingShare={isCreatingShare}
+                  shareCopied={shareCopied}
+                  apiKeys={apiKeys}
+                  newApiKey={newApiKey}
+                  newApiKeyName={newApiKeyName}
+                  isCreatingKey={isCreatingKey}
+                  setNewApiKeyName={setNewApiKeyName}
+                  notifications={notifications}
+                  onLogout={logout}
+                  onNotificationsViewed={markNotificationsViewed}
+                  onSelectFiles={handleSelectedFiles}
+                  onSubmitScan={submitScan}
+                  onClearSelectedFiles={clearSelectedFiles}
+                  onOpenReport={openReport}
+                  onCreateShare={createReportShareLink}
+                  onCopyShare={copyShareLink}
+                  onCreateApiKey={createApiKey}
+                  onRevokeApiKey={revokeApiKey}
+                  formatDateTime={formatDateTime}
+                  formatBytes={formatBytes}
+                  pluralize={pluralize}
+                  getDisplayFileType={getDisplayFileType}
+                  formatVerdictLabel={formatVerdictLabel}
+                  prefersReducedMotion={prefersReducedMotion}
+                  currentDateLabel={currentDateLabel}
+                  quotaText={quotaText}
+                  analytics={analytics}
+                  themePalette={themePalette}
+                />
+              </RequireAuth>
+            }
+          />
+          <Route path="*" element={<Navigate to={session?.accessToken ? "/app/dashboard" : "/"} replace />} />
+        </Routes>
+      </Suspense>
+    </>
+  );
+}
 
-      <header className="topbar card topbar-card">
-        <div className="topbar-brand">
-          <img src={BRAND_MARKS.lightSurface} alt={LOGO_ALT_TEXT} className="topbar-logo" />
-          <div>
-            <p className="eyebrow">Secure Threat Intelligence Workspace</p>
-            <h1>{APP_NAME}</h1>
-            <p className="subtext">
-              Signed in as <strong>{session.user?.email}</strong> ({session.user?.role})
-            </p>
-          </div>
-        </div>
-        <div className="top-actions">
-          <span className="quota-pill">{quotaText}</span>
-          <button type="button" onClick={logout} className="ghost">
-            Log out
-          </button>
-        </div>
-      </header>
-
-      <section className="metric-strip">
-        <article className="metric-tile">
-          <span>Queued</span>
-          <strong>{queueMetrics.queued}</strong>
-        </article>
-        <article className="metric-tile">
-          <span>Processing</span>
-          <strong>{queueMetrics.processing}</strong>
-        </article>
-        <article className="metric-tile">
-          <span>Completed</span>
-          <strong>{queueMetrics.completed}</strong>
-        </article>
-        <article className="metric-tile">
-          <span>Latest report</span>
-          <strong>{latestReportLabel}</strong>
-        </article>
-      </section>
-
-      {globalError ? <p className="error global-error">{globalError}</p> : null}
-
-      <section className="layout">
-        <article className="card upload-card reveal">
-          <div className="section-head">
-            <h2>Submit Scan</h2>
-            <span className="panel-tag">Instant Queue</span>
-          </div>
-          <p className="subtext">Free tier includes queueing, report retention, and API key access.</p>
-
-          <label className={`upload-drop ${selectedFile ? "has-file" : ""}`}>
-            <input
-              ref={fileInputRef}
-              type="file"
-              className="file-input-hidden"
-              onChange={(event) => setSelectedFile(event.target.files?.[0] || null)}
-            />
-            <span className="drop-title">{selectedFile ? selectedFile.name : "Drop or choose a file"}</span>
-            <small>{selectedFile ? formatBytes(selectedFile.size) : "Single file upload, scanned asynchronously"}</small>
-          </label>
-
-          <div className="upload-actions">
-            <button type="button" className="primary" onClick={submitScan} disabled={!selectedFile || isSubmittingScan}>
-              {isSubmittingScan ? "Queueing..." : "Queue Scan Job"}
-            </button>
-            <button
-              type="button"
-              className="ghost"
-              onClick={() => {
-                setSelectedFile(null);
-                if (fileInputRef.current) {
-                  fileInputRef.current.value = "";
-                }
-              }}
-              disabled={!selectedFile}
-            >
-              Clear
-            </button>
-          </div>
-
-          {activeJob ? (
-            <div className={`job-box ${activeJob.status}`}>
-              <h3>Active Job</h3>
-              <div className={`job-status ${activeJob.status}`}>
-                <span className="status-dot" />
-                <strong>{activeJob.status}</strong>
-              </div>
-              <p>
-                <strong>{activeJob.id}</strong>
-              </p>
-              {activeJob.errorMessage ? <p className="error inline">{activeJob.errorMessage}</p> : null}
-            </div>
-          ) : null}
-
-          <h3>Recent Jobs</h3>
-          <div className="list compact">
-            {jobs.length === 0 ? <p className="muted">No jobs yet.</p> : null}
-            {jobs.map((job) => (
-              <div className="item" key={job.id}>
-                <div>
-                  <strong>{job.originalName}</strong>
-                  <small>{formatDateTime(job.createdAt)}</small>
-                </div>
-                <span className={`pill ${job.status}`}>{job.status}</span>
-              </div>
-            ))}
-          </div>
-        </article>
-
-        <article className="card report-card reveal">
-          <div className="report-header">
-            <h2>Threat Report</h2>
-            <span className={`pill ${verdictMeta.tone}`}>{verdictMeta.label}</span>
-          </div>
-
-          {!activeReport ? (
-            <div className="empty-panel">
-              <p className="muted">Select a report from history once a job completes.</p>
-            </div>
-          ) : (
-            <>
-              <div className="report-tools">
-                <button type="button" className="ghost small" onClick={createReportShareLink} disabled={isCreatingShare}>
-                  {isCreatingShare ? "Generating link..." : "Generate Share Link"}
-                </button>
-              </div>
-
-              {shareState.url ? (
-                <div className="share-box">
-                  <span className="eyebrow">Shareable API Link</span>
-                  <code className="share-link">{shareState.url}</code>
-                  <div className="upload-actions">
-                    <button type="button" className="ghost small" onClick={copyShareLink}>
-                      {shareCopied ? "Copied" : "Copy link"}
-                    </button>
-                    <a className="ghost small open-link" href={shareState.url} target="_blank" rel="noreferrer">
-                      Open
-                    </a>
-                  </div>
-                  <small className="muted">Expires {formatDateTime(shareState.expiresAt)}</small>
-                </div>
-              ) : null}
-
-              {shareError ? <p className="error">{shareError}</p> : null}
-
-              <div className="summary-grid">
-                <div>
-                  <span>Risk Score</span>
-                  <strong className={`risk-score ${activeRiskMeta.tone}`}>{activeReport.riskScore}/100</strong>
-                  <small className={`risk-label ${activeRiskMeta.tone}`}>{activeRiskMeta.label}</small>
-                </div>
-                <div>
-                  <span>File</span>
-                  <strong>{activeReport.file.originalName}</strong>
-                </div>
-                <div>
-                  <span>Detected Type</span>
-                  <strong>{getDisplayFileType(activeReport.file)}</strong>
-                </div>
-                <div>
-                  <span>Completed</span>
-                  <strong>{formatDateTime(activeReport.completedAt)}</strong>
-                </div>
-              </div>
-
-              <div className="mini-grid">
-                <div>
-                  <span>SHA256</span>
-                  <code>{activeReport.file.hashes.sha256}</code>
-                </div>
-                <div>
-                  <span>File Size</span>
-                  <strong>{formatBytes(activeReport.file.size)}</strong>
-                </div>
-              </div>
-
-              {reportIntel ? (
-                <div className="intel-box">
-                  <h3>Known File Intelligence</h3>
-                  <div className="summary-grid intel-grid">
-                    <div>
-                      <span>Seen Before</span>
-                      <strong>{reportIntel.hashSeenBefore ? "Yes" : "No"}</strong>
-                    </div>
-                    <div>
-                      <span>Previous Matches</span>
-                      <strong>{reportIntel.previousMatches ?? 0}</strong>
-                    </div>
-                    <div>
-                      <span>Total Occurrences</span>
-                      <strong>{reportIntel.totalOccurrences ?? 1}</strong>
-                    </div>
-                    <div>
-                      <span>Known Worst Verdict</span>
-                      <strong>{formatVerdictLabel(reportIntel.knownWorstVerdict)}</strong>
-                    </div>
-                    <div>
-                      <span>First Seen</span>
-                      <strong>{formatDateTime(reportIntel.firstSeenAt)}</strong>
-                    </div>
-                    <div>
-                      <span>Last Seen</span>
-                      <strong>{formatDateTime(reportIntel.lastSeenAt)}</strong>
-                    </div>
-                  </div>
-                </div>
-              ) : null}
-
-              <h3>Findings</h3>
-              {activeReport.findings.length === 0 ? (
-                <p className="muted">No notable indicators detected.</p>
-              ) : (
-                <div className="findings">
-                  {activeReport.findings.map((finding) => (
-                    <div className={`finding ${finding.severity}`} key={`${finding.id}-${finding.title}`}>
-                      <div className="item-head">
-                        <strong>{finding.title}</strong>
-                        <span>{finding.severity}</span>
-                      </div>
-                      <p>{finding.description}</p>
-                      <small>{finding.evidence}</small>
-                    </div>
-                  ))}
-                </div>
-              )}
-
-              <h3>Recommendations</h3>
-              <ul className="recommendations">
-                {activeReport.recommendations.map((item) => (
-                  <li key={item}>{item}</li>
-                ))}
-              </ul>
-            </>
-          )}
-        </article>
-
-        <aside className="card side-card reveal">
-          <div className="section-head">
-            <h2>Report History</h2>
-            <span className="panel-tag">Fast Access</span>
-          </div>
-          <div className="list">
-            {reports.length === 0 ? <p className="muted">No reports yet.</p> : null}
-            {reports.map((report) => (
-              <button
-                type="button"
-                className={`item item-button ${report.id === activeReportId ? "active" : ""}`}
-                key={report.id}
-                onClick={() => openReport(report.id)}
-              >
-                <div>
-                  <strong>{report.fileName}</strong>
-                  <small>{formatDateTime(report.completedAt)}</small>
-                </div>
-                <span className={`pill ${report.verdict}`}>{report.verdict}</span>
-              </button>
-            ))}
-          </div>
-
-          <div className="section-head keys-heading">
-            <h2>API Keys</h2>
-            <span className="panel-tag">Automation</span>
-          </div>
-          <div className="api-key-create">
-            <input value={newApiKeyName} onChange={(event) => setNewApiKeyName(event.target.value)} placeholder="Key name" />
-            <button type="button" className="primary" onClick={createApiKey} disabled={isCreatingKey}>
-              {isCreatingKey ? "Creating..." : "Create API Key"}
-            </button>
-          </div>
-
-          {newApiKey ? (
-            <div className="new-key-box">
-              <strong>Copy this key now (shown once)</strong>
-              <code>{newApiKey}</code>
-            </div>
-          ) : null}
-
-          <div className="list compact">
-            {apiKeys.length === 0 ? <p className="muted">No keys yet.</p> : null}
-            {apiKeys.map((key) => (
-              <div className="item" key={key.id}>
-                <div>
-                  <strong>{key.name}</strong>
-                  <small>{key.keyPrefix}</small>
-                </div>
-                {key.revokedAt ? (
-                  <span className="pill revoked">revoked</span>
-                ) : (
-                  <button type="button" className="ghost small" onClick={() => revokeApiKey(key.id)}>
-                    Revoke
-                  </button>
-                )}
-              </div>
-            ))}
-          </div>
-        </aside>
-      </section>
-    </main>
+export default function App() {
+  return (
+    <BrowserRouter>
+      <AppContent />
+    </BrowserRouter>
   );
 }

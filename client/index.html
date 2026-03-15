@@ -3,22 +3,34 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <meta name="description" content="ViroVanta scans suspicious files with malware and anomaly detection, then returns plain-language risk reports in seconds." />
+    <meta
+      name="description"
+      content="Upload suspicious files, email attachments, scripts, documents, or archives and get plain-language malware and anomaly reports with clear risk scores."
+    />
     <meta name="robots" content="index,follow,max-image-preview:large,max-snippet:-1,max-video-preview:-1" />
+    <meta name="googlebot" content="index,follow,max-image-preview:large,max-snippet:-1,max-video-preview:-1" />
     <meta name="theme-color" content="#1f8f5c" />
     <meta name="application-name" content="ViroVanta" />
     <meta property="og:type" content="website" />
     <meta property="og:site_name" content="ViroVanta" />
-    <meta property="og:title" content="ViroVanta | Malware and File Threat Scanner" />
-    <meta property="og:description" content="Upload files, scan suspicious content, and get plain-language threat reports with clear risk scores." />
+    <meta property="og:locale" content="en_US" />
+    <meta property="og:title" content="ViroVanta | Malware Scanner for Suspicious Files" />
+    <meta
+      property="og:description"
+      content="Upload suspicious files, email attachments, scripts, documents, or archives and get plain-language malware and anomaly reports with clear risk scores."
+    />
     <meta property="og:url" content="https://www.virovanta.com/" />
     <meta property="og:image" content="https://www.virovanta.com/media/virovanta-social-card.jpg" />
+    <meta property="og:image:secure_url" content="https://www.virovanta.com/media/virovanta-social-card.jpg" />
     <meta property="og:image:width" content="1200" />
     <meta property="og:image:height" content="630" />
     <meta property="og:image:alt" content="ViroVanta branded malware scanning preview card" />
     <meta name="twitter:card" content="summary_large_image" />
-    <meta name="twitter:title" content="ViroVanta | Malware and File Threat Scanner" />
-    <meta name="twitter:description" content="Upload files, scan suspicious content, and get plain-language threat reports with clear risk scores." />
+    <meta name="twitter:title" content="ViroVanta | Malware Scanner for Suspicious Files" />
+    <meta
+      name="twitter:description"
+      content="Upload suspicious files, email attachments, scripts, documents, or archives and get plain-language malware and anomaly reports with clear risk scores."
+    />
     <meta name="twitter:image" content="https://www.virovanta.com/media/virovanta-social-card.jpg" />
     <meta name="twitter:image:alt" content="ViroVanta branded malware scanning preview card" />
     <link rel="canonical" href="https://www.virovanta.com/" />
@@ -28,8 +40,10 @@
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link rel="manifest" href="/site.webmanifest" />
     <link rel="icon" type="image/x-icon" href="/favicon.ico" />
-    <title>ViroVanta | Malware and File Threat Scanner</title>
-    <script type="application/ld+json">
+    <link rel="icon" type="image/png" sizes="48x48" href="/favicon-48x48.png" />
+    <link rel="apple-touch-icon" href="/logo.png" />
+    <title>ViroVanta | Malware Scanner for Suspicious Files</title>
+    <script id="virovanta-structured-data" type="application/ld+json">
       {
         "@context": "https://schema.org",
         "@graph": [
@@ -40,7 +54,9 @@
             "url": "https://www.virovanta.com/",
             "logo": {
               "@type": "ImageObject",
-              "url": "https://www.virovanta.com/brand/virovanta-mark-light-bg.png"
+              "url": "https://www.virovanta.com/logo.png",
+              "width": 487,
+              "height": 454
             }
           },
           {
@@ -48,7 +64,7 @@
             "@id": "https://www.virovanta.com/#website",
             "url": "https://www.virovanta.com/",
             "name": "ViroVanta",
-            "description": "Upload files, scan suspicious content, and get plain-language threat reports with clear risk scores.",
+            "description": "Upload suspicious files, email attachments, scripts, documents, or archives and get plain-language malware and anomaly reports with clear risk scores.",
             "publisher": {
               "@id": "https://www.virovanta.com/#organization"
             },
@@ -56,12 +72,13 @@
           },
           {
             "@type": "SoftwareApplication",
-            "@id": "https://www.virovanta.com/#app",
+            "@id": "https://www.virovanta.com/#application",
             "name": "ViroVanta",
             "applicationCategory": "SecurityApplication",
             "operatingSystem": "Web",
             "url": "https://www.virovanta.com/",
-            "description": "File malware and anomaly scanning with risk scoring, findings, and recommendations.",
+            "image": "https://www.virovanta.com/media/virovanta-social-card.jpg",
+            "description": "Upload suspicious files, email attachments, scripts, documents, or archives and get plain-language malware and anomaly reports with clear risk scores.",
             "offers": {
               "@type": "Offer",
               "price": "0",
@@ -77,12 +94,40 @@
   </head>
   <body>
     <div id="root">
-      <main>
-        <h1>ViroVanta Malware and File Threat Scanner</h1>
-        <p>
-          ViroVanta scans uploaded files for malware indicators and suspicious anomalies, then returns plain-language
-          reports with risk scores and findings.
-        </p>
+      <main class="seo-shell">
+        <header class="seo-hero">
+          <p class="seo-eyebrow">Smart file malware and anomaly scanning</p>
+          <h1>ViroVanta malware scanner for suspicious files</h1>
+          <p>
+            Upload suspicious files, email attachments, scripts, documents, or archives and get plain-language malware
+            and anomaly reports with clear risk scores.
+          </p>
+          <nav class="seo-links">
+            <a href="/signup">Create free account</a>
+            <a href="/signin">Sign in</a>
+          </nav>
+        </header>
+        <section class="seo-section">
+          <h2>What ViroVanta does</h2>
+          <p>
+            ViroVanta checks suspicious uploads for malware indicators, risky anomalies, and file defects, then returns
+            clear verdicts and next-step guidance.
+          </p>
+          <ul>
+            <li>Guest quick scan for test uploads</li>
+            <li>Plain-language findings and risk scoring</li>
+            <li>Saved report history for signed-in users</li>
+            <li>Batch upload support for operational workflows</li>
+          </ul>
+        </section>
+        <section class="seo-section">
+          <h2>How file scanning works</h2>
+          <ol>
+            <li>Upload a file or batch of files for analysis.</li>
+            <li>Run layered checks for malware signals, suspicious behavior, and anomalies.</li>
+            <li>Review a report with risk score, findings, hashes, and recommendations.</li>
+          </ol>
+        </section>
       </main>
     </div>
     <noscript>

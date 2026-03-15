@@ -45,3 +45,36 @@ export function requireRole(...roles) {
     return next();
   };
 }
+
+export function requireAuthMethod(...methods) {
+  return function authMethodGuard(req, _res, next) {
+    if (!req.auth?.user) {
+      return next(new HttpError(401, "Authentication required.", { code: "AUTH_REQUIRED" }));
+    }
+
+    if (!methods.includes(req.auth.method)) {
+      return next(
+        new HttpError(403, "This endpoint requires interactive bearer authentication.", {
+          code: "AUTH_METHOD_FORBIDDEN",
+          details: {
+            allowedMethods: methods
+          }
+        })
+      );
+    }
+
+    return next();
+  };
+}
+
+export function preventSensitiveCaching({ privateCache = true } = {}) {
+  return function noStore(_req, res, next) {
+    const cacheControlValue = `${privateCache ? "private, " : ""}no-store, max-age=0, must-revalidate`;
+    res.setHeader("Cache-Control", cacheControlValue);
+    res.setHeader("Pragma", "no-cache");
+    res.setHeader("Expires", "0");
+    res.vary("Authorization");
+    res.vary("x-api-key");
+    return next();
+  };
+}

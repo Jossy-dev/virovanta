@@ -52,6 +52,15 @@ function envString(name, fallback = "") {
   return value || fallback;
 }
 
+function envEnum(name, allowedValues, fallback) {
+  const value = envString(name, fallback).toLowerCase();
+  if (allowedValues.includes(value)) {
+    return value;
+  }
+
+  return fallback;
+}
+
 function normalizeSlug(value, fallback = "app") {
   const normalized = String(value || "")
     .trim()
@@ -75,6 +84,11 @@ const apiVersion = envString("API_VERSION", DEFAULT_API_VERSION);
 const apiTitle = envString("API_TITLE", `${appName} ${DEFAULT_API_TITLE_SUFFIX}`);
 const port = envNumber("PORT", DEFAULT_LOCAL_PORT, { min: 1, max: 65535 });
 const apiBaseUrl = envString("API_BASE_URL", `http://localhost:${port}`);
+const authProvider = envEnum("AUTH_PROVIDER", ["local", "supabase"], "local");
+const dataStoreDriver = envEnum("DATA_STORE_DRIVER", ["file", "postgres"], "file");
+const queueProvider = envEnum("QUEUE_PROVIDER", ["local", "bullmq"], "local");
+const rateLimitStore = envEnum("RATE_LIMIT_STORE", ["memory", "redis"], "memory");
+const objectStorageProvider = envEnum("OBJECT_STORAGE_PROVIDER", ["none", "s3"], "none");
 
 const defaultWebOrigin = envString("DEFAULT_WEB_ORIGIN", DEFAULT_WEB_ORIGIN);
 const corsOriginRaw = envString("CORS_ORIGIN", defaultWebOrigin);
@@ -84,8 +98,13 @@ const corsOrigins = corsOriginRaw
   .filter(Boolean);
 
 const fallbackJwtSecret = envString("JWT_ACCESS_SECRET", "change-me-in-production-secret");
+const fallbackReportShareSecret = envString("REPORT_SHARE_TOKEN_SECRET", fallbackJwtSecret);
+const databaseUrl = envString("DATABASE_URL", "");
+const redisUrl = envString("REDIS_URL", "");
+const supabaseUrl = envString("SUPABASE_URL", "");
+const supabaseAnonKey = envString("SUPABASE_ANON_KEY", "");
 
-export const config = Object.freeze({
+const resolvedConfig = {
   env,
   isProduction,
   isTest: env === "test",
@@ -95,17 +114,61 @@ export const config = Object.freeze({
   apiTitle,
   apiVersion,
   apiBaseUrl,
+  authProvider,
+  dataStoreDriver,
+  queueProvider,
+  rateLimitStore,
+  objectStorageProvider,
+  runApiServer: envBoolean("RUN_API_SERVER", true),
+  runScanWorker: envBoolean("RUN_SCAN_WORKER", true),
   port,
   uploadDir: envString("UPLOAD_DIR", path.join(os.tmpdir(), `${appSlug}-uploads`)),
   dataFilePath: envString("DATA_FILE_PATH", path.join(dataDir, `${appSlug}-store.json`)),
+  stateStoreTable: envString("STATE_STORE_TABLE", `${serviceName.replace(/[^a-zA-Z0-9_]/g, "_")}_state`),
+  databaseUrl,
+  databaseSsl: envBoolean("DATABASE_SSL", isProduction),
+  databaseSslRejectUnauthorized: envBoolean("DATABASE_SSL_REJECT_UNAUTHORIZED", true),
   maxUploadBytes: envNumber("MAX_UPLOAD_MB", 25, { min: 1, max: 500 }) * 1024 * 1024,
-  reportTtlMs: envNumber("REPORT_TTL_HOURS", 24, { min: 1, max: 24 * 30 }) * 60 * 60 * 1000,
+  maxBatchUploadFiles: envNumber("MAX_BATCH_UPLOAD_FILES", 10, { min: 1, max: 50 }),
+  reportTtlMs: envNumber("REPORT_TTL_HOURS", 24 * 30, { min: 1, max: 24 * 30 }) * 60 * 60 * 1000,
   scanHistoryLimit: envNumber("SCAN_HISTORY_LIMIT", 2000, { min: 100, max: 50000 }),
   requestWindowMinutes: envNumber("REQUEST_WINDOW_MINUTES", 15, { min: 1, max: 1440 }),
   requestsPerWindow: envNumber("REQUESTS_PER_WINDOW", 240, { min: 10, max: 10000 }),
+  authRateLimitWindowMinutes: envNumber("AUTH_RATE_LIMIT_WINDOW_MINUTES", 15, { min: 1, max: 1440 }),
+  authLoginRequestsPerWindow: envNumber("AUTH_LOGIN_REQUESTS_PER_WINDOW", 10, { min: 3, max: 200 }),
+  authMutationRequestsPerWindow: envNumber("AUTH_MUTATION_REQUESTS_PER_WINDOW", 20, { min: 5, max: 500 }),
+  authLookupRequestsPerWindow: envNumber("AUTH_LOOKUP_REQUESTS_PER_WINDOW", 60, { min: 10, max: 1000 }),
   enableClamAv: envBoolean("ENABLE_CLAMAV", true),
   clamScanBinary: envString("CLAMSCAN_BINARY", "clamscan"),
   virusTotalApiKey: envString("VIRUSTOTAL_API_KEY", ""),
+  redisUrl,
+  redisTls: envBoolean("REDIS_TLS", false),
+  queueName: envString("QUEUE_NAME", `${serviceName}-scan-jobs`),
+  queueAttempts: envNumber("QUEUE_ATTEMPTS", 3, { min: 1, max: 20 }),
+  queueBackoffMs: envNumber("QUEUE_BACKOFF_MS", 2000, { min: 100, max: 120000 }),
+  objectStorageEndpoint: envString("OBJECT_STORAGE_ENDPOINT", ""),
+  objectStorageRegion: envString("OBJECT_STORAGE_REGION", "us-west-000"),
+  objectStorageBucket: envString("OBJECT_STORAGE_BUCKET", serviceName),
+  objectStoragePrefix: envString("OBJECT_STORAGE_PREFIX", serviceName),
+  objectStorageAccessKeyId: envString("OBJECT_STORAGE_ACCESS_KEY_ID", ""),
+  objectStorageSecretAccessKey: envString("OBJECT_STORAGE_SECRET_ACCESS_KEY", ""),
+  objectStorageForcePathStyle: envBoolean("OBJECT_STORAGE_FORCE_PATH_STYLE", true),
+  objectStorageSignedUrlTtlSeconds: envNumber("OBJECT_STORAGE_SIGNED_URL_TTL_SECONDS", 900, {
+    min: 60,
+    max: 7 * 24 * 60 * 60
+  }),
+  supabaseUrl,
+  supabaseAnonKey,
+  supabaseJwtSecret: envString("SUPABASE_JWT_SECRET", ""),
+  supabaseJwtIssuer: envString("SUPABASE_JWT_ISSUER", supabaseUrl ? `${supabaseUrl}/auth/v1` : ""),
+  supabaseJwtAudience: envString("SUPABASE_JWT_AUDIENCE", "authenticated"),
+  supabaseJwtAlgorithm: envString("SUPABASE_JWT_ALGORITHM", "HS256"),
+  supabaseJwksUrl: envString(
+    "SUPABASE_JWKS_URL",
+    supabaseUrl ? `${supabaseUrl}/auth/v1/.well-known/jwks.json` : ""
+  ),
+  supabasePasswordResetRedirectUrl: envString("SUPABASE_PASSWORD_RESET_REDIRECT_URL", ""),
+  supabaseAuthTimeoutMs: envNumber("SUPABASE_AUTH_TIMEOUT_MS", 10_000, { min: 1_000, max: 60_000 }),
   corsOriginRaw,
   corsOrigins,
   accessTokenTtlMinutes: envNumber("ACCESS_TOKEN_TTL_MINUTES", 15, { min: 5, max: 180 }),
@@ -113,7 +176,7 @@ export const config = Object.freeze({
   jwtAccessSecret: envString("JWT_ACCESS_SECRET", fallbackJwtSecret),
   jwtIssuer: envString("JWT_ISSUER", appSlug),
   jwtAudience: envString("JWT_AUDIENCE", `${appSlug}-${DEFAULT_CLIENT_AUDIENCE_SUFFIX}`),
-  reportShareTokenSecret: envString("REPORT_SHARE_TOKEN_SECRET", fallbackJwtSecret),
+  reportShareTokenSecret: fallbackReportShareSecret,
   reportShareTokenIssuer: envString("REPORT_SHARE_TOKEN_ISSUER", appSlug),
   reportShareTokenAudience: envString(
     "REPORT_SHARE_TOKEN_AUDIENCE",
@@ -130,7 +193,71 @@ export const config = Object.freeze({
   maxApiKeysPerUser: envNumber("MAX_API_KEYS_PER_USER", 10, { min: 1, max: 50 }),
   allowOpenRegistration: envBoolean("ALLOW_OPEN_REGISTRATION", true),
   logLevel: envString("LOG_LEVEL", isProduction ? "info" : "debug")
-});
+};
+
+function assertProductionSecurity(runtimeConfig) {
+  if (!runtimeConfig.isProduction) {
+    return;
+  }
+
+  const issues = [];
+
+  if (runtimeConfig.jwtAccessSecret === "change-me-in-production-secret") {
+    issues.push("JWT_ACCESS_SECRET must be set to a strong value in production.");
+  }
+
+  if (runtimeConfig.reportShareTokenSecret === "change-me-in-production-secret") {
+    issues.push("REPORT_SHARE_TOKEN_SECRET must be set to a strong value in production.");
+  }
+
+  if (runtimeConfig.dataStoreDriver === "postgres" && !runtimeConfig.databaseUrl) {
+    issues.push("DATABASE_URL is required when DATA_STORE_DRIVER=postgres.");
+  }
+
+  if (runtimeConfig.queueProvider === "bullmq" && !runtimeConfig.redisUrl) {
+    issues.push("REDIS_URL is required when QUEUE_PROVIDER=bullmq.");
+  }
+
+  if (runtimeConfig.queueProvider === "bullmq" && runtimeConfig.objectStorageProvider !== "s3") {
+    issues.push("OBJECT_STORAGE_PROVIDER must be s3 when QUEUE_PROVIDER=bullmq.");
+  }
+
+  if (runtimeConfig.rateLimitStore === "redis" && !runtimeConfig.redisUrl) {
+    issues.push("REDIS_URL is required when RATE_LIMIT_STORE=redis.");
+  }
+
+  if (runtimeConfig.objectStorageProvider === "s3") {
+    if (!runtimeConfig.objectStorageBucket) {
+      issues.push("OBJECT_STORAGE_BUCKET is required when OBJECT_STORAGE_PROVIDER=s3.");
+    }
+
+    if (!runtimeConfig.objectStorageAccessKeyId || !runtimeConfig.objectStorageSecretAccessKey) {
+      issues.push("OBJECT_STORAGE_ACCESS_KEY_ID and OBJECT_STORAGE_SECRET_ACCESS_KEY are required for OBJECT_STORAGE_PROVIDER=s3.");
+    }
+  }
+
+  if (runtimeConfig.authProvider === "supabase") {
+    if (!runtimeConfig.supabaseUrl) {
+      issues.push("SUPABASE_URL is required when AUTH_PROVIDER=supabase.");
+    }
+
+    if (!runtimeConfig.supabaseAnonKey) {
+      issues.push("SUPABASE_ANON_KEY is required when AUTH_PROVIDER=supabase.");
+    }
+  }
+
+  if (!runtimeConfig.runApiServer && !runtimeConfig.runScanWorker) {
+    issues.push("At least one of RUN_API_SERVER or RUN_SCAN_WORKER must be true.");
+  }
+
+  if (issues.length > 0) {
+    throw new Error(`Invalid production configuration:\n- ${issues.join("\n- ")}`);
+  }
+}
+
+assertProductionSecurity(resolvedConfig);
+
+export const config = Object.freeze(resolvedConfig);
 
 export function isCorsOriginAllowed(origin, allowedOrigins = config.corsOrigins) {
   if (!origin) {

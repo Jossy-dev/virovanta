@@ -15,7 +15,21 @@ function sanitizeExtension(fileName) {
   return extension.replace(/[^.a-z0-9]/g, "").slice(0, 12);
 }
 
-export function createScanRouter({ requireAuth, scanQueueService, authService, config = defaultConfig }) {
+function collectUploadedFiles(req) {
+  const groupedFiles = req.files && typeof req.files === "object" ? req.files : {};
+  const singleFieldFiles = Array.isArray(groupedFiles.file) ? groupedFiles.file : [];
+  const batchFieldFiles = Array.isArray(groupedFiles.files) ? groupedFiles.files : [];
+  return [...singleFieldFiles, ...batchFieldFiles];
+}
+
+export function createScanRouter({
+  requireAuth,
+  scanQueueService,
+  authService,
+  notificationService = null,
+  preventSensitiveCaching,
+  config = defaultConfig
+}) {
   const scanRouter = Router();
   const storage = multer.diskStorage({
     destination: (_req, _file, callback) => {
@@ -31,11 +45,11 @@ export function createScanRouter({ requireAuth, scanQueueService, authService, c
     storage,
     limits: {
       fileSize: config.maxUploadBytes,
-      files: 1
+      files: config.maxBatchUploadFiles
     }
   });
 
-  scanRouter.use(requireAuth);
+  scanRouter.use(requireAuth, preventSensitiveCaching());
 
   scanRouter.get(
     "/jobs",
@@ -56,43 +70,62 @@ export function createScanRouter({ requireAuth, scanQueueService, authService, c
 
   scanRouter.post(
     "/jobs",
-    upload.single("file"),
+    upload.fields([
+      { name: "file", maxCount: 1 },
+      { name: "files", maxCount: config.maxBatchUploadFiles }
+    ]),
     asyncHandler(async (req, res) => {
-      let queued = false;
+      const uploadedFiles = collectUploadedFiles(req);
+      const queuedJobs = [];
+      const queuedFilePaths = new Set();
 
-      if (!req.file) {
-        throw new HttpError(400, "Upload missing. Send a single file in field 'file'.", {
+      if (uploadedFiles.length === 0) {
+        throw new HttpError(400, "Upload missing. Send files in field 'files'.", {
           code: "SCAN_UPLOAD_MISSING"
         });
       }
 
       try {
-        const quota = await authService.consumeDailyQuota(req.auth.user.id);
+        const quota = await authService.consumeDailyQuotaBatch(req.auth.user.id, uploadedFiles.length);
         if (!quota.allowed) {
-          throw new HttpError(429, "Daily scan quota exceeded for free tier.", {
+          const allowedCount = quota.remaining == null ? uploadedFiles.length : Math.max(0, quota.remaining);
+          throw new HttpError(429, "Daily scan quota exceeded for this upload batch.", {
             code: "SCAN_QUOTA_EXCEEDED",
-            details: quota
+            details: {
+              ...quota,
+              requested: uploadedFiles.length,
+              allowedCount
+            }
           });
         }
 
-        const job = await scanQueueService.enqueueScan({
-          userId: req.auth.user.id,
-          filePath: req.file.path,
-          originalName: req.file.originalname,
-          mimeType: req.file.mimetype,
-          fileSize: req.file.size
-        });
+        for (const file of uploadedFiles) {
+          const job = await scanQueueService.enqueueScan({
+            userId: req.auth.user.id,
+            filePath: file.path,
+            originalName: file.originalname,
+            mimeType: file.mimetype,
+            fileSize: file.size
+          });
 
-        queued = true;
+          queuedFilePaths.add(file.path);
+          queuedJobs.push(job);
+        }
 
         res.status(202).json({
-          job,
+          job: queuedJobs[0] || null,
+          jobs: queuedJobs,
+          acceptedFiles: queuedJobs.length,
           quota
         });
       } finally {
-        if (!queued) {
-          await fs.unlink(req.file.path).catch(() => {});
-        }
+        await Promise.all(
+          uploadedFiles.map(async (file) => {
+            if (!queuedFilePaths.has(file.path)) {
+              await fs.unlink(file.path).catch(() => {});
+            }
+          })
+        );
       }
     })
   );
@@ -114,6 +147,14 @@ export function createScanRouter({ requireAuth, scanQueueService, authService, c
     })
   );
 
+  scanRouter.get(
+    "/analytics",
+    asyncHandler(async (req, res) => {
+      const analytics = await scanQueueService.getAnalyticsForUser(req.auth.user);
+      res.json({ analytics });
+    })
+  );
+
   scanRouter.post(
     "/reports/:reportId/share",
     asyncHandler(async (req, res) => {
@@ -127,12 +168,23 @@ export function createScanRouter({ requireAuth, scanQueueService, authService, c
       const publicApiPath = `/api/public/shared-reports/${share.token}`;
       const protocol = req.headers["x-forwarded-proto"]?.toString().split(",")[0]?.trim() || req.protocol;
       const host = req.get("host");
+      const shareUrl = host ? `${protocol}://${host}${publicApiPath}` : publicApiPath;
+
+      await notificationService?.create({
+        userId: req.auth.user.id,
+        type: "report_share_created",
+        tone: "info",
+        title: "Share link created",
+        detail: `${report.file?.originalName || report.fileName || "Report"} is ready to share externally.`,
+        entityType: "report",
+        entityId: report.id
+      });
 
       res.json({
         shareToken: share.token,
         expiresAt: share.expiresAt,
         publicApiPath,
-        shareUrl: host ? `${protocol}://${host}${publicApiPath}` : publicApiPath
+        shareUrl
       });
     })
   );

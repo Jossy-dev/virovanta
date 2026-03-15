@@ -1,5 +1,8 @@
 import crypto from "crypto";
 import fs from "fs/promises";
+import path from "path";
+import { Queue, Worker } from "bullmq";
+import { createRedisClient } from "../infrastructure/redis/createRedisClient.js";
 import { HttpError } from "../utils/httpError.js";
 
 const VERDICT_RANK = {
@@ -85,15 +88,270 @@ function toReportSummary(report) {
   };
 }
 
+const ANALYTICS_WINDOW_DAYS = 30;
+const ANALYTICS_MONTH_BUCKETS = 6;
+
+function parseTimestamp(value) {
+  const timestamp = Date.parse(value || "");
+  return Number.isFinite(timestamp) ? timestamp : null;
+}
+
+function createAnalyticsMonthBuckets(count = ANALYTICS_MONTH_BUCKETS) {
+  const now = new Date();
+  const buckets = [];
+
+  for (let index = count - 1; index >= 0; index -= 1) {
+    buckets.push(new Date(now.getFullYear(), now.getMonth() - index, 1));
+  }
+
+  return buckets;
+}
+
+function getMonthBucketKey(date) {
+  return `${date.getFullYear()}-${date.getMonth()}`;
+}
+
+function average(values) {
+  if (!Array.isArray(values) || values.length === 0) {
+    return 0;
+  }
+
+  return values.reduce((sum, value) => sum + (Number(value) || 0), 0) / values.length;
+}
+
+function summarizeReports(reports) {
+  const cleanReports = reports.filter((report) => report?.verdict === "clean").length;
+  const suspiciousReports = reports.filter((report) => report?.verdict === "suspicious").length;
+  const maliciousReports = reports.filter((report) => report?.verdict === "malicious").length;
+  const flaggedReports = suspiciousReports + maliciousReports;
+  const averageRiskScore = average(reports.map((report) => report?.riskScore));
+
+  return {
+    totalReports: reports.length,
+    cleanReports,
+    suspiciousReports,
+    maliciousReports,
+    flaggedReports,
+    cleanRate: reports.length > 0 ? (cleanReports / reports.length) * 100 : 0,
+    averageRiskScore,
+    highestRiskScore: reports.reduce((highest, report) => Math.max(highest, Number(report?.riskScore) || 0), 0)
+  };
+}
+
+function summarizeJobs(jobs) {
+  return {
+    totalJobs: jobs.length,
+    activeJobs: jobs.filter((job) => job?.status === "queued" || job?.status === "processing").length,
+    queuedJobs: jobs.filter((job) => job?.status === "queued").length,
+    processingJobs: jobs.filter((job) => job?.status === "processing").length,
+    completedJobs: jobs.filter((job) => job?.status === "completed").length,
+    failedJobs: jobs.filter((job) => job?.status === "failed").length
+  };
+}
+
+function buildWindowSummary({ reports, jobs }) {
+  const now = Date.now();
+  const windowMs = ANALYTICS_WINDOW_DAYS * 24 * 60 * 60 * 1000;
+  const currentWindowStart = now - windowMs;
+  const previousWindowStart = currentWindowStart - windowMs;
+
+  const inCurrentWindow = (timestamp) => timestamp != null && timestamp >= currentWindowStart && timestamp <= now;
+  const inPreviousWindow = (timestamp) => timestamp != null && timestamp >= previousWindowStart && timestamp < currentWindowStart;
+
+  const currentReports = reports.filter((report) => inCurrentWindow(parseTimestamp(report?.completedAt || report?.createdAt)));
+  const previousReports = reports.filter((report) => inPreviousWindow(parseTimestamp(report?.completedAt || report?.createdAt)));
+  const currentJobs = jobs.filter((job) => inCurrentWindow(parseTimestamp(job?.createdAt || job?.completedAt)));
+  const previousJobs = jobs.filter((job) => inPreviousWindow(parseTimestamp(job?.createdAt || job?.completedAt)));
+
+  const buildSnapshot = (windowReports, windowJobs) => {
+    const reportSummary = summarizeReports(windowReports);
+    const jobSummary = summarizeJobs(windowJobs);
+
+    return {
+      reports: reportSummary.totalReports,
+      flaggedReports: reportSummary.flaggedReports,
+      cleanRate: reportSummary.cleanRate,
+      averageRiskScore: reportSummary.averageRiskScore,
+      failedJobs: jobSummary.failedJobs
+    };
+  };
+
+  return {
+    days: ANALYTICS_WINDOW_DAYS,
+    current: buildSnapshot(currentReports, currentJobs),
+    previous: buildSnapshot(previousReports, previousJobs)
+  };
+}
+
+function resolveFileTypeLabel(report) {
+  const detected = String(report?.file?.detectedFileType || "").trim();
+  if (detected && detected.toLowerCase() !== "unknown") {
+    return detected.toUpperCase();
+  }
+
+  const extension = String(report?.file?.extension || path.extname(report?.file?.originalName || ""))
+    .replace(/^\./, "")
+    .trim();
+
+  return extension ? extension.toUpperCase() : "Unknown";
+}
+
+function toAnalyticsReportSummary(report) {
+  if (!report) {
+    return null;
+  }
+
+  return {
+    id: report.id,
+    fileName: report?.file?.originalName || report?.fileName || "Unknown file",
+    verdict: report?.verdict || "clean",
+    riskScore: Number(report?.riskScore) || 0,
+    completedAt: report?.completedAt || report?.createdAt || null
+  };
+}
+
+function buildAnalyticsSnapshot({ jobs, reports }) {
+  const reportSummary = summarizeReports(reports);
+  const jobSummary = summarizeJobs(jobs);
+  const windows = buildWindowSummary({ reports, jobs });
+  const monthBuckets = createAnalyticsMonthBuckets();
+  const monthMap = new Map(
+    monthBuckets.map((date) => [
+      getMonthBucketKey(date),
+      {
+        month: new Intl.DateTimeFormat("en-US", { month: "short" }).format(date),
+        reports: 0,
+        flagged: 0,
+        jobs: 0
+      }
+    ])
+  );
+
+  for (const report of reports) {
+    const timestamp = parseTimestamp(report?.completedAt || report?.createdAt);
+    if (timestamp == null) {
+      continue;
+    }
+
+    const key = getMonthBucketKey(new Date(new Date(timestamp).getFullYear(), new Date(timestamp).getMonth(), 1));
+    const bucket = monthMap.get(key);
+    if (!bucket) {
+      continue;
+    }
+
+    bucket.reports += 1;
+    if (report?.verdict === "suspicious" || report?.verdict === "malicious") {
+      bucket.flagged += 1;
+    }
+  }
+
+  for (const job of jobs) {
+    const timestamp = parseTimestamp(job?.createdAt || job?.completedAt);
+    if (timestamp == null) {
+      continue;
+    }
+
+    const key = getMonthBucketKey(new Date(new Date(timestamp).getFullYear(), new Date(timestamp).getMonth(), 1));
+    const bucket = monthMap.get(key);
+    if (!bucket) {
+      continue;
+    }
+
+    bucket.jobs += 1;
+  }
+
+  const fileTypeCounts = reports.reduce((accumulator, report) => {
+    const label = resolveFileTypeLabel(report);
+    accumulator.set(label, (accumulator.get(label) || 0) + 1);
+    return accumulator;
+  }, new Map());
+
+  const latestReport = reports
+    .slice()
+    .sort(
+      (left, right) =>
+        (parseTimestamp(right?.completedAt || right?.createdAt) || 0) - (parseTimestamp(left?.completedAt || left?.createdAt) || 0)
+    )[0];
+
+  const highestRiskReport = reports
+    .slice()
+    .sort((left, right) => {
+      const riskDelta = (Number(right?.riskScore) || 0) - (Number(left?.riskScore) || 0);
+      if (riskDelta !== 0) {
+        return riskDelta;
+      }
+
+      return (parseTimestamp(right?.completedAt || right?.createdAt) || 0) - (parseTimestamp(left?.completedAt || left?.createdAt) || 0);
+    })[0];
+
+  return {
+    generatedAt: new Date().toISOString(),
+    comparisonWindowDays: windows.days,
+    summary: {
+      ...jobSummary,
+      ...reportSummary
+    },
+    windows,
+    timeSeries: Array.from(monthMap.values()),
+    postureBreakdown: [
+      { label: "Clean", value: reportSummary.cleanReports },
+      { label: "Suspicious", value: reportSummary.suspiciousReports },
+      { label: "Malicious", value: reportSummary.maliciousReports }
+    ],
+    queueBreakdown: [
+      { label: "Queued", value: jobSummary.queuedJobs },
+      { label: "Processing", value: jobSummary.processingJobs },
+      { label: "Completed", value: jobSummary.completedJobs },
+      { label: "Failed", value: jobSummary.failedJobs }
+    ],
+    riskDistribution: [
+      {
+        label: "0-24",
+        value: reports.filter((report) => (Number(report?.riskScore) || 0) <= 24).length
+      },
+      {
+        label: "25-49",
+        value: reports.filter((report) => {
+          const riskScore = Number(report?.riskScore) || 0;
+          return riskScore >= 25 && riskScore <= 49;
+        }).length
+      },
+      {
+        label: "50-74",
+        value: reports.filter((report) => {
+          const riskScore = Number(report?.riskScore) || 0;
+          return riskScore >= 50 && riskScore <= 74;
+        }).length
+      },
+      {
+        label: "75-100",
+        value: reports.filter((report) => (Number(report?.riskScore) || 0) >= 75).length
+      }
+    ],
+    fileTypeBreakdown: Array.from(fileTypeCounts.entries())
+      .sort((left, right) => right[1] - left[1] || left[0].localeCompare(right[0]))
+      .slice(0, 5)
+      .map(([label, value]) => ({ label, value })),
+    latestReport: toAnalyticsReportSummary(latestReport),
+    highestRiskReport: toAnalyticsReportSummary(highestRiskReport)
+  };
+}
+
 export class ScanQueueService {
-  constructor({ store, scanner, logger, config }) {
+  constructor({ store, scanner, logger, config, objectStorageService = null, notificationService = null }) {
     this.store = store;
     this.scanner = scanner;
     this.logger = logger;
     this.config = config;
+    this.objectStorageService = objectStorageService;
+    this.notificationService = notificationService;
     this.queue = [];
     this.processing = 0;
     this.started = false;
+    this.bullQueue = null;
+    this.bullWorker = null;
+    this.bullQueueRedis = null;
+    this.bullWorkerRedis = null;
   }
 
   async start() {
@@ -102,6 +360,15 @@ export class ScanQueueService {
     }
 
     this.started = true;
+
+    if (this.config.queueProvider === "bullmq") {
+      await this.#startBullQueue();
+      return;
+    }
+
+    if (!this.config.runScanWorker) {
+      throw new Error("RUN_SCAN_WORKER must be true when QUEUE_PROVIDER=local.");
+    }
 
     await this.store.write((state) => {
       const now = new Date().toISOString();
@@ -117,6 +384,28 @@ export class ScanQueueService {
     });
 
     this.#drainQueue();
+  }
+
+  async stop() {
+    if (this.bullWorker) {
+      await this.bullWorker.close();
+      this.bullWorker = null;
+    }
+
+    if (this.bullQueue) {
+      await this.bullQueue.close();
+      this.bullQueue = null;
+    }
+
+    if (this.bullWorkerRedis) {
+      await this.bullWorkerRedis.quit().catch(() => {});
+      this.bullWorkerRedis = null;
+    }
+
+    if (this.bullQueueRedis) {
+      await this.bullQueueRedis.quit().catch(() => {});
+      this.bullQueueRedis = null;
+    }
   }
 
   async enqueueScan({ userId, filePath, originalName, mimeType, fileSize }) {
@@ -162,16 +451,78 @@ export class ScanQueueService {
       return nextJob;
     });
 
-    this.queue.push({
+    const queueItem = {
       jobId: job.id,
       userId,
-      filePath,
+      filePath: null,
       originalName,
       mimeType,
-      fileSize
-    });
+      fileSize,
+      stagedUpload: null
+    };
 
-    this.#drainQueue();
+    try {
+      if (this.config.queueProvider === "bullmq") {
+        if (!this.objectStorageService?.enabled) {
+          throw new Error("Object storage must be enabled when QUEUE_PROVIDER=bullmq.");
+        }
+
+        queueItem.stagedUpload = await this.objectStorageService.uploadFileFromPath({
+          localPath: filePath,
+          key: this.objectStorageService.buildQueueUploadKey({
+            userId,
+            jobId: job.id,
+            originalName
+          }),
+          contentType: mimeType || "application/octet-stream",
+          metadata: {
+            service: this.config.serviceName,
+            user_id: userId,
+            job_id: job.id,
+            purpose: "queue-ingress"
+          }
+        });
+
+        await this.#enqueueBullItem(queueItem);
+      } else {
+        queueItem.filePath = filePath;
+        this.queue.push(queueItem);
+        this.#drainQueue();
+      }
+    } catch (error) {
+      if (queueItem.stagedUpload?.key && this.objectStorageService?.enabled) {
+        await this.objectStorageService
+          .deleteObject({
+            key: queueItem.stagedUpload.key
+          })
+          .catch(() => {});
+      }
+
+      const failedAt = new Date().toISOString();
+
+      await this.store.write((state) => {
+        const editableJob = state.jobs.find((candidate) => candidate.id === job.id);
+        if (!editableJob) {
+          return;
+        }
+
+        editableJob.status = "failed";
+        editableJob.completedAt = failedAt;
+        editableJob.updatedAt = failedAt;
+        editableJob.errorMessage = "Could not enqueue scan job.";
+      });
+
+      throw new HttpError(503, "Could not enqueue scan job.", {
+        code: "SCAN_QUEUE_UNAVAILABLE",
+        details: {
+          reason: error?.message || "Queue provider unavailable."
+        }
+      });
+    } finally {
+      if (this.config.queueProvider === "bullmq") {
+        await fs.unlink(filePath).catch(() => {});
+      }
+    }
 
     return toJobSummary(job);
   }
@@ -226,8 +577,95 @@ export class ScanQueueService {
     });
   }
 
+  async getAnalyticsForUser(user) {
+    return this.store.read((state) => {
+      const jobs = state.jobs.filter((job) => user.role === "admin" || job.userId === user.id);
+      const reports = state.reports.filter((report) => user.role === "admin" || report.ownerUserId === user.id);
+      return buildAnalyticsSnapshot({ jobs, reports });
+    });
+  }
+
   async getReportById(reportId) {
     return this.store.read((state) => state.reports.find((candidate) => candidate.id === reportId) || null);
+  }
+
+  async #startBullQueue() {
+    if (!this.config.redisUrl) {
+      throw new Error("REDIS_URL is required when QUEUE_PROVIDER=bullmq.");
+    }
+
+    this.bullQueueRedis = createRedisClient(this.config, {
+      purpose: "queue",
+      maxRetriesPerRequest: 3
+    });
+
+    this.bullQueue = new Queue(this.config.queueName, {
+      connection: this.bullQueueRedis
+    });
+
+    if (!this.config.runScanWorker) {
+      this.logger.info({ queueName: this.config.queueName }, "Scan queue initialized in API-only mode.");
+      return;
+    }
+
+    await this.store.write((state) => {
+      const now = new Date().toISOString();
+
+      for (const job of state.jobs) {
+        if (job.status === "processing") {
+          job.status = "queued";
+          job.updatedAt = now;
+          job.startedAt = null;
+          job.errorMessage = null;
+        }
+      }
+    });
+
+    this.bullWorkerRedis = createRedisClient(this.config, {
+      purpose: "queue-worker",
+      maxRetriesPerRequest: null
+    });
+
+    this.bullWorker = new Worker(
+      this.config.queueName,
+      async (job) => {
+        await this.#processQueueItem(job.data);
+      },
+      {
+        connection: this.bullWorkerRedis,
+        concurrency: this.config.scanWorkerConcurrency
+      }
+    );
+
+    this.bullWorker.on("failed", (job, error) => {
+      this.logger.error({ err: error, bullJobId: job?.id }, "BullMQ worker job failed");
+    });
+
+    this.bullWorker.on("error", (error) => {
+      this.logger.error({ err: error }, "BullMQ worker error");
+    });
+
+    this.logger.info(
+      { queueName: this.config.queueName, concurrency: this.config.scanWorkerConcurrency },
+      "BullMQ worker started."
+    );
+  }
+
+  async #enqueueBullItem(item) {
+    if (!this.bullQueue) {
+      throw new Error("BullMQ queue is not initialized.");
+    }
+
+    await this.bullQueue.add("scan-file", item, {
+      jobId: item.jobId,
+      attempts: this.config.queueAttempts,
+      backoff: {
+        type: "exponential",
+        delay: this.config.queueBackoffMs
+      },
+      removeOnComplete: 500,
+      removeOnFail: 1000
+    });
   }
 
   #drainQueue() {
@@ -250,6 +688,47 @@ export class ScanQueueService {
     }
   }
 
+  async #persistArtifacts(item, report, scanFilePath) {
+    if (!this.objectStorageService?.enabled) {
+      return null;
+    }
+
+    const uploadArtifact =
+      item.stagedUpload ||
+      (await this.objectStorageService.uploadFileFromPath({
+        localPath: scanFilePath,
+        key: this.objectStorageService.buildUploadKey({
+          userId: item.userId,
+          jobId: item.jobId,
+          originalName: item.originalName
+        }),
+        contentType: item.mimeType || "application/octet-stream",
+        metadata: {
+          service: this.config.serviceName,
+          user_id: item.userId,
+          job_id: item.jobId
+        }
+      }));
+
+    const reportArtifact = await this.objectStorageService.uploadJson({
+      key: this.objectStorageService.buildReportKey({
+        userId: item.userId,
+        reportId: report.id
+      }),
+      payload: report,
+      metadata: {
+        service: this.config.serviceName,
+        user_id: item.userId,
+        report_id: report.id
+      }
+    });
+
+    return {
+      upload: uploadArtifact,
+      report: reportArtifact
+    };
+  }
+
   async #processQueueItem(item) {
     const startedAt = new Date().toISOString();
 
@@ -264,14 +743,42 @@ export class ScanQueueService {
       job.updatedAt = startedAt;
     });
 
+    let scanFilePath = item.filePath;
+    let shouldDeleteScanFile = Boolean(scanFilePath);
+
     try {
+      if (!scanFilePath) {
+        const stagedKey = item.stagedUpload?.key;
+
+        if (!stagedKey || !this.objectStorageService?.enabled) {
+          throw new Error("Scan source file is unavailable for worker processing.");
+        }
+
+        const extension = path.extname(item.originalName || "").slice(0, 16);
+        scanFilePath = path.join(this.config.uploadDir, `worker-${item.jobId}-${crypto.randomUUID()}${extension}`);
+
+        await this.objectStorageService.downloadFileToPath({
+          key: stagedKey,
+          localPath: scanFilePath
+        });
+
+        shouldDeleteScanFile = true;
+      }
+
       const report = await this.scanner({
-        filePath: item.filePath,
+        filePath: scanFilePath,
         originalName: item.originalName,
         declaredMimeType: item.mimeType
       });
 
       const completedAt = new Date().toISOString();
+      let artifacts = null;
+
+      try {
+        artifacts = await this.#persistArtifacts(item, report, scanFilePath);
+      } catch (error) {
+        this.logger.error({ err: error, jobId: item.jobId }, "Artifact persistence failed. Continuing with completed scan report.");
+      }
 
       await this.store.write((state) => {
         const job = state.jobs.find((candidate) => candidate.id === item.jobId);
@@ -287,7 +794,8 @@ export class ScanQueueService {
           ownerUserId: item.userId,
           queuedJobId: item.jobId,
           completedAt,
-          intel
+          intel,
+          artifacts
         };
 
         state.reports.unshift(persistedReport);
@@ -312,6 +820,17 @@ export class ScanQueueService {
           },
           createdAt: completedAt
         });
+      });
+
+      await this.notificationService?.create({
+        userId: item.userId,
+        type: "report_ready",
+        tone: report.verdict === "malicious" ? "danger" : report.verdict === "suspicious" ? "warning" : "success",
+        title: "Report ready",
+        detail: `${item.originalName} finished scanning with a ${report.verdict} verdict.`,
+        entityType: "report",
+        entityId: report.id,
+        dedupeKey: `report-ready:${report.id}`
       });
     } catch (error) {
       const failedAt = new Date().toISOString();
@@ -342,9 +861,30 @@ export class ScanQueueService {
         });
       });
 
+      await this.notificationService?.create({
+        userId: item.userId,
+        type: "scan_failed",
+        tone: "danger",
+        title: "Scan failed",
+        detail: `${item.originalName} could not be scanned. ${error?.message || "Try again or inspect the file manually."}`,
+        entityType: "job",
+        entityId: item.jobId,
+        dedupeKey: `scan-failed:${item.jobId}`
+      });
+
+      if (item.stagedUpload?.key && this.objectStorageService?.enabled) {
+        await this.objectStorageService
+          .deleteObject({
+            key: item.stagedUpload.key
+          })
+          .catch(() => {});
+      }
+
       this.logger.error({ error, jobId: item.jobId }, "Scan processing failed");
     } finally {
-      await fs.unlink(item.filePath).catch(() => {});
+      if (shouldDeleteScanFile && scanFilePath) {
+        await fs.unlink(scanFilePath).catch(() => {});
+      }
     }
   }
 }

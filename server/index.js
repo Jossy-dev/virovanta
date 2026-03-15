@@ -5,7 +5,23 @@ import { fileURLToPath } from "url";
 import { createApp } from "./src/app/createApp.js";
 
 async function start() {
-  const { app, config, logger } = await createApp();
+  const { app, config, logger, services } = await createApp();
+
+  async function shutdown(signal) {
+    logger.info({ signal }, "Shutting down service.");
+    await services.scanQueueService?.stop?.().catch(() => {});
+    await services.store?.close?.().catch(() => {});
+    await services.rateLimitRedisClient?.quit?.().catch(() => {});
+    process.exit(0);
+  }
+
+  process.on("SIGTERM", () => {
+    shutdown("SIGTERM");
+  });
+
+  process.on("SIGINT", () => {
+    shutdown("SIGINT");
+  });
 
   if (process.env.NODE_ENV === "production") {
     const __filename = fileURLToPath(import.meta.url);
@@ -29,9 +45,13 @@ async function start() {
     });
   }
 
-  app.listen(config.port, () => {
-    logger.info({ port: config.port, service: config.serviceName }, `${config.apiTitle} listening on port ${config.port}`);
-  });
+  if (config.runApiServer) {
+    app.listen(config.port, () => {
+      logger.info({ port: config.port, service: config.serviceName }, `${config.apiTitle} listening on port ${config.port}`);
+    });
+  } else {
+    logger.info({ service: config.serviceName }, "API server disabled (RUN_API_SERVER=false). Worker mode active.");
+  }
 }
 
 start().catch((error) => {

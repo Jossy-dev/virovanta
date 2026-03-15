@@ -16,6 +16,26 @@ export function errorHandler(logger, config) {
       });
     }
 
+    if (error?.name === "MulterError" && error.code === "LIMIT_FILE_COUNT") {
+      return res.status(400).json({
+        error: {
+          code: "UPLOAD_TOO_MANY_FILES",
+          message: `Too many files in one upload. Maximum allowed is ${config.maxBatchUploadFiles}.`
+        },
+        requestId: req.requestId
+      });
+    }
+
+    if (error?.name === "MulterError" && error.code === "LIMIT_UNEXPECTED_FILE") {
+      return res.status(400).json({
+        error: {
+          code: "UPLOAD_INVALID_FIELD",
+          message: "Upload field is invalid. Use 'files' for authenticated batch scans or 'file' for guest quick scan."
+        },
+        requestId: req.requestId
+      });
+    }
+
     const normalized = isHttpError(error)
       ? error
       : new HttpError(500, "Unexpected server error.", {

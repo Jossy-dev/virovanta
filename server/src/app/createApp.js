@@ -5,8 +5,10 @@ import fs from "fs/promises";
 import helmet from "helmet";
 import pino from "pino";
 import pinoHttp from "pino-http";
+import { RedisStore } from "rate-limit-redis";
 import { config, isCorsOriginAllowed } from "../config.js";
-import { createAuthMiddleware, requireRole } from "../middleware/authMiddleware.js";
+import { createRedisClient } from "../infrastructure/redis/createRedisClient.js";
+import { createAuthMiddleware, preventSensitiveCaching, requireAuthMethod, requireRole } from "../middleware/authMiddleware.js";
 import { errorHandler, notFoundHandler } from "../middleware/errorHandler.js";
 import { requestContext } from "../middleware/requestContext.js";
 import { createAdminRouter } from "../routes/adminRoutes.js";
@@ -15,7 +17,9 @@ import { createPublicRouter } from "../routes/publicRoutes.js";
 import { createScanRouter } from "../routes/scanRoutes.js";
 import { scanUploadedFile } from "../scanner/fileScanner.js";
 import { AuthService } from "../services/authService.js";
+import { NotificationService } from "../services/notificationService.js";
 import { ScanQueueService } from "../services/scanQueueService.js";
+import { ObjectStorageService } from "../services/storage/objectStorageService.js";
 import { PersistentStore } from "../store/persistentStore.js";
 
 function buildOpenApiSpec(runtimeConfig) {
@@ -59,28 +63,82 @@ export async function createApp(options = {}) {
   const store = new PersistentStore({
     filePath: options.dataFilePath || runtimeConfig.dataFilePath,
     reportTtlMs: runtimeConfig.reportTtlMs,
-    maxReports: runtimeConfig.scanHistoryLimit
+    maxReports: runtimeConfig.scanHistoryLimit,
+    driver: runtimeConfig.dataStoreDriver,
+    databaseUrl: runtimeConfig.databaseUrl,
+    databaseSsl: runtimeConfig.databaseSsl,
+    databaseSslRejectUnauthorized: runtimeConfig.databaseSslRejectUnauthorized,
+    stateTable: runtimeConfig.stateStoreTable
   });
 
   await fs.mkdir(runtimeConfig.uploadDir, { recursive: true });
   await store.init();
 
+  const objectStorageService = new ObjectStorageService({
+    config: runtimeConfig,
+    logger
+  });
+
+  const rateLimitRedisClient =
+    runtimeConfig.rateLimitStore === "redis" ? createRedisClient(runtimeConfig, { purpose: "rate-limit" }) : null;
+
+  const createRateLimitStore =
+    rateLimitRedisClient != null
+      ? (prefix) =>
+          new RedisStore({
+            prefix: `${runtimeConfig.serviceName}:${prefix}:`,
+            sendCommand: (...args) => rateLimitRedisClient.call(...args)
+          })
+      : null;
+
   const authService = new AuthService({
     store,
     config: runtimeConfig,
-    logger
+    logger,
+    notificationService: new NotificationService({
+      store,
+      logger
+    })
   });
 
   const scanQueueService = new ScanQueueService({
     store,
     scanner,
     config: runtimeConfig,
-    logger
+    logger,
+    objectStorageService,
+    notificationService: authService.notificationService
   });
 
   await scanQueueService.start();
 
   const requireAuth = createAuthMiddleware(authService);
+  const buildRateLimiter = ({ prefix, limit, windowMinutes }) =>
+    rateLimit({
+      windowMs: windowMinutes * 60 * 1000,
+      limit,
+      ...(createRateLimitStore ? { store: createRateLimitStore(prefix) } : {}),
+      standardHeaders: true,
+      legacyHeaders: false
+    });
+
+  const authRateLimiters = {
+    login: buildRateLimiter({
+      prefix: "auth-login",
+      limit: runtimeConfig.authLoginRequestsPerWindow,
+      windowMinutes: runtimeConfig.authRateLimitWindowMinutes
+    }),
+    mutation: buildRateLimiter({
+      prefix: "auth-mutation",
+      limit: runtimeConfig.authMutationRequestsPerWindow,
+      windowMinutes: runtimeConfig.authRateLimitWindowMinutes
+    }),
+    lookup: buildRateLimiter({
+      prefix: "auth-lookup",
+      limit: runtimeConfig.authLookupRequestsPerWindow,
+      windowMinutes: runtimeConfig.authRateLimitWindowMinutes
+    })
+  };
 
   const app = express();
 
@@ -128,6 +186,7 @@ export async function createApp(options = {}) {
     rateLimit({
       windowMs: runtimeConfig.requestWindowMinutes * 60 * 1000,
       limit: runtimeConfig.requestsPerWindow,
+      ...(createRateLimitStore ? { store: createRateLimitStore("global") } : {}),
       standardHeaders: true,
       legacyHeaders: false
     })
@@ -136,21 +195,11 @@ export async function createApp(options = {}) {
   app.use(express.json({ limit: "256kb" }));
 
   app.get("/api/health", async (_req, res) => {
-    const metrics = await authService.getAdminMetrics();
-
     res.json({
       status: "ok",
       service: runtimeConfig.serviceName,
       version: runtimeConfig.apiVersion,
-      uptimeSeconds: Number(process.uptime().toFixed(1)),
-      capabilities: {
-        auth: true,
-        apiKeys: true,
-        asyncScanQueue: true,
-        clamavEnabled: runtimeConfig.enableClamAv,
-        virusTotalEnabled: Boolean(runtimeConfig.virusTotalApiKey)
-      },
-      metrics
+      uptimeSeconds: Number(process.uptime().toFixed(1))
     });
   });
 
@@ -163,20 +212,34 @@ export async function createApp(options = {}) {
     createPublicRouter({
       scanner,
       config: runtimeConfig,
-      scanQueueService
+      scanQueueService,
+      createRateLimitStore,
+      preventSensitiveCaching
     })
   );
-  app.use("/api/auth", createAuthRouter({ authService, requireAuth }));
+  app.use(
+    "/api/auth",
+    createAuthRouter({
+      authService,
+      requireAuth,
+      requireAuthMethod,
+      preventSensitiveCaching,
+      rateLimiters: authRateLimiters,
+      config: runtimeConfig
+    })
+  );
   app.use(
     "/api/scans",
     createScanRouter({
       requireAuth,
       scanQueueService,
       authService,
+      notificationService: authService.notificationService,
+      preventSensitiveCaching,
       config: runtimeConfig
     })
   );
-  app.use("/api/admin", createAdminRouter({ authService, requireAuth, requireRole }));
+  app.use("/api/admin", createAdminRouter({ authService, requireAuth, requireAuthMethod, requireRole, preventSensitiveCaching }));
 
   app.use("/api", notFoundHandler);
   app.use(errorHandler(logger, runtimeConfig));
@@ -184,7 +247,10 @@ export async function createApp(options = {}) {
   app.locals.services = {
     store,
     authService,
+    notificationService: authService.notificationService,
     scanQueueService,
+    objectStorageService,
+    rateLimitRedisClient,
     config: runtimeConfig
   };
 

@@ -1,0 +1,85 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer components {
+  .dashboard-page {
+    @apply bg-slate-50 text-slate-900 dark:bg-[#0b1016] dark:text-slate-100;
+  }
+
+  .dashboard-shell-surface {
+    @apply rounded-[28px] border border-slate-200/80 bg-white shadow-panel dark:border-slate-800/80 dark:bg-slate-950;
+  }
+
+  .dashboard-subtle-panel {
+    @apply rounded-3xl border border-slate-200/80 bg-white/85 shadow-soft backdrop-blur-sm dark:border-slate-800/80 dark:bg-slate-950/75;
+  }
+
+  .dashboard-muted-text {
+    @apply text-sm text-slate-500 dark:text-slate-400;
+  }
+
+  .dashboard-label {
+    @apply text-[11px] font-medium uppercase tracking-[0.18em] text-slate-400 dark:text-slate-500;
+  }
+
+  .dashboard-grid-overlay {
+    background-image: linear-gradient(to right, rgba(148, 163, 184, 0.12) 1px, transparent 1px),
+      linear-gradient(to bottom, rgba(148, 163, 184, 0.12) 1px, transparent 1px);
+    background-size: 28px 28px;
+  }
+
+  .dashboard-grid-panel {
+    @apply dashboard-grid-overlay rounded-3xl border border-slate-200/80 bg-white/70 dark:border-slate-800/80 dark:bg-slate-950/55;
+  }
+
+  .dashboard-brand-button {
+    @apply inline-flex items-center gap-2 rounded-full border border-viro-600 bg-viro-600 px-5 py-3 text-sm font-medium text-white transition hover:border-viro-700 hover:bg-viro-700 disabled:cursor-not-allowed disabled:opacity-45 dark:border-viro-500 dark:bg-viro-500 dark:hover:border-viro-400 dark:hover:bg-viro-400;
+  }
+
+  .dashboard-brand-outline {
+    @apply rounded-full border border-viro-200 bg-viro-50 px-4 py-2 text-sm text-viro-700 transition hover:border-viro-300 hover:bg-viro-100 dark:border-viro-800 dark:bg-viro-900/40 dark:text-emerald-200 dark:hover:border-viro-700 dark:hover:bg-viro-900/70;
+  }
+
+  .dashboard-brand-control {
+    @apply transition hover:border-viro-300 hover:bg-viro-50 hover:text-viro-700 dark:hover:border-viro-700 dark:hover:bg-viro-900/50 dark:hover:text-emerald-200;
+  }
+
+  .dashboard-brand-icon {
+    @apply border-viro-200/80 bg-viro-50 text-viro-700 dark:border-viro-800 dark:bg-viro-900/40 dark:text-emerald-200;
+  }
+
+  .dashboard-brand-stat {
+    @apply border-viro-200/70 bg-viro-50/80 dark:border-viro-800/80 dark:bg-viro-900/35;
+  }
+
+  .dashboard-scrollbar {
+    scrollbar-width: thin;
+    scrollbar-color: rgba(100, 116, 139, 0.35) transparent;
+  }
+
+  .dashboard-scrollbar::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+
+  .dashboard-scrollbar::-webkit-scrollbar-thumb {
+    background: rgba(100, 116, 139, 0.28);
+    border: 2px solid transparent;
+    border-radius: 999px;
+    background-clip: padding-box;
+  }
+
+  .dashboard-scrollbar::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  .dashboard-tooltip {
+    @apply rounded-2xl border border-slate-200/80 bg-white px-3 py-2 text-xs shadow-soft dark:border-slate-800/80 dark:bg-slate-950;
+  }
+
+  .dashboard-floating-tooltip {
+    @apply pointer-events-none absolute left-full top-1/2 z-30 ml-3 -translate-y-1/2 whitespace-nowrap rounded-xl border border-slate-200/90 bg-white px-3 py-2 text-xs font-medium text-slate-700 opacity-0 shadow-soft transition duration-150 group-hover:visible group-hover:opacity-100 dark:border-slate-800/90 dark:bg-slate-950 dark:text-slate-200;
+    visibility: hidden;
+  }
+}

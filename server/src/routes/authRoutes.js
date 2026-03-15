@@ -1,13 +1,28 @@
 import { Router } from "express";
 import { asyncHandler } from "../utils/asyncHandler.js";
 import { validateSchema } from "../utils/validation.js";
-import { createApiKeySchema, loginSchema, refreshSchema, registerSchema } from "../validation/authSchemas.js";
+import {
+  createApiKeySchema,
+  forgotPasswordSchema,
+  loginSchema,
+  logoutSchema,
+  markNotificationsReadSchema,
+  notificationsQuerySchema,
+  resetPasswordSchema,
+  refreshSchema,
+  registerSchema,
+  usernameAvailabilityQuerySchema
+} from "../validation/authSchemas.js";
 
-export function createAuthRouter({ authService, requireAuth }) {
+export function createAuthRouter({ authService, requireAuth, requireAuthMethod, preventSensitiveCaching, rateLimiters, config }) {
   const authRouter = Router();
+  const requireInteractiveAuth = [requireAuth, requireAuthMethod("bearer")];
+
+  authRouter.use(preventSensitiveCaching());
 
   authRouter.post(
     "/register",
+    rateLimiters.mutation,
     asyncHandler(async (req, res) => {
       const payload = validateSchema(registerSchema, req.body);
 
@@ -16,12 +31,14 @@ export function createAuthRouter({ authService, requireAuth }) {
         userAgent: req.headers["user-agent"]
       });
 
-      res.status(201).json(result);
+      const statusCode = result?.requiresEmailConfirmation ? 202 : 201;
+      res.status(statusCode).json(result);
     })
   );
 
   authRouter.post(
     "/login",
+    rateLimiters.login,
     asyncHandler(async (req, res) => {
       const payload = validateSchema(loginSchema, req.body);
 
@@ -36,6 +53,7 @@ export function createAuthRouter({ authService, requireAuth }) {
 
   authRouter.post(
     "/refresh",
+    rateLimiters.mutation,
     asyncHandler(async (req, res) => {
       const payload = validateSchema(refreshSchema, req.body);
 
@@ -50,15 +68,65 @@ export function createAuthRouter({ authService, requireAuth }) {
 
   authRouter.post(
     "/logout",
+    rateLimiters.mutation,
     asyncHandler(async (req, res) => {
-      const payload = validateSchema(refreshSchema, req.body);
+      const payload = validateSchema(logoutSchema, req.body || {});
 
-      await authService.logout(payload.refreshToken, {
+      await authService.logout(
+        {
+          refreshToken: payload.refreshToken || null,
+          accessToken: req.headers.authorization?.match(/^Bearer\s+(.+)$/i)?.[1] || null
+        },
+        {
+          ipAddress: req.ip,
+          userAgent: req.headers["user-agent"]
+        }
+      );
+
+      res.status(204).send();
+    })
+  );
+
+  authRouter.post(
+    "/forgot-password",
+    rateLimiters.mutation,
+    asyncHandler(async (req, res) => {
+      const payload = validateSchema(forgotPasswordSchema, req.body);
+
+      await authService.requestPasswordReset(payload.email, {
         ipAddress: req.ip,
         userAgent: req.headers["user-agent"]
       });
 
-      res.status(204).send();
+      res.status(202).json({
+        accepted: true,
+        message: "If the email exists, reset instructions will be sent."
+      });
+    })
+  );
+
+  authRouter.post(
+    "/reset-password",
+    rateLimiters.mutation,
+    asyncHandler(async (req, res) => {
+      const payload = validateSchema(resetPasswordSchema, req.body);
+
+      const result = await authService.resetPassword(payload, {
+        ipAddress: req.ip,
+        userAgent: req.headers["user-agent"]
+      });
+
+      res.status(200).json(result);
+    })
+  );
+
+  authRouter.get(
+    "/username-availability",
+    rateLimiters.lookup,
+    asyncHandler(async (req, res) => {
+      const payload = validateSchema(usernameAvailabilityQuerySchema, req.query || {});
+      const result = await authService.checkUsernameAvailability(payload.username);
+      res.json(result);
     })
   );
 
@@ -69,13 +137,41 @@ export function createAuthRouter({ authService, requireAuth }) {
       const user = await authService.getUserById(req.auth.user.id);
       const usage = await authService.getUsage(req.auth.user.id);
 
-      res.json({ user, usage, authMethod: req.auth.method });
+      res.json({
+        user,
+        usage,
+        authMethod: req.auth.method,
+        scanLimits: {
+          maxFilesPerBatch: config.maxBatchUploadFiles,
+          maxUploadMb: Math.round(config.maxUploadBytes / (1024 * 1024))
+        }
+      });
+    })
+  );
+
+  authRouter.get(
+    "/notifications",
+    ...requireInteractiveAuth,
+    asyncHandler(async (req, res) => {
+      const payload = validateSchema(notificationsQuerySchema, req.query || {});
+      const result = await authService.listNotifications(req.auth.user.id, payload.limit);
+      res.json(result);
+    })
+  );
+
+  authRouter.post(
+    "/notifications/read",
+    ...requireInteractiveAuth,
+    asyncHandler(async (req, res) => {
+      const payload = validateSchema(markNotificationsReadSchema, req.body || {});
+      const result = await authService.markNotificationsRead(req.auth.user.id, payload.ids);
+      res.json(result);
     })
   );
 
   authRouter.get(
     "/api-keys",
-    requireAuth,
+    ...requireInteractiveAuth,
     asyncHandler(async (req, res) => {
       const keys = await authService.listApiKeys(req.auth.user.id);
       res.json({ keys });
@@ -84,7 +180,7 @@ export function createAuthRouter({ authService, requireAuth }) {
 
   authRouter.post(
     "/api-keys",
-    requireAuth,
+    ...requireInteractiveAuth,
     asyncHandler(async (req, res) => {
       const payload = validateSchema(createApiKeySchema, req.body);
       const result = await authService.createApiKey(req.auth.user.id, payload.name);
@@ -94,7 +190,7 @@ export function createAuthRouter({ authService, requireAuth }) {
 
   authRouter.delete(
     "/api-keys/:keyId",
-    requireAuth,
+    ...requireInteractiveAuth,
     asyncHandler(async (req, res) => {
       await authService.revokeApiKey(req.auth.user.id, req.params.keyId);
       res.status(204).send();

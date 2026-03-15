@@ -1,10 +1,10 @@
 import { Router } from "express";
 import { asyncHandler } from "../utils/asyncHandler.js";
 
-export function createAdminRouter({ authService, requireAuth, requireRole }) {
+export function createAdminRouter({ authService, requireAuth, requireAuthMethod, requireRole, preventSensitiveCaching }) {
   const adminRouter = Router();
 
-  adminRouter.use(requireAuth, requireRole("admin"));
+  adminRouter.use(requireAuth, requireAuthMethod("bearer"), requireRole("admin"), preventSensitiveCaching());
 
   adminRouter.get(
     "/metrics",

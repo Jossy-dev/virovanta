@@ -37,7 +37,7 @@ function toPublicReport(report, findingsLimit = 8) {
   };
 }
 
-export function createPublicRouter({ scanner, config, scanQueueService }) {
+export function createPublicRouter({ scanner, config, scanQueueService, createRateLimitStore = null, preventSensitiveCaching }) {
   const publicRouter = Router();
 
   const uploadStorage = multer.diskStorage({
@@ -61,6 +61,7 @@ export function createPublicRouter({ scanner, config, scanQueueService }) {
   const publicLimiter = rateLimit({
     windowMs: config.publicQuickScanWindowMinutes * 60 * 1000,
     limit: config.publicQuickScanRequestsPerWindow,
+    ...(createRateLimitStore ? { store: createRateLimitStore("public-quick-scan") } : {}),
     standardHeaders: true,
     legacyHeaders: false
   });
@@ -77,6 +78,7 @@ export function createPublicRouter({ scanner, config, scanQueueService }) {
 
   publicRouter.get(
     "/shared-reports/:token",
+    preventSensitiveCaching({ privateCache: false }),
     asyncHandler(async (req, res) => {
       if (!scanQueueService?.getReportById) {
         throw new HttpError(503, "Shared report service is unavailable.", {
@@ -103,6 +105,7 @@ export function createPublicRouter({ scanner, config, scanQueueService }) {
   publicRouter.post(
     "/quick-scan",
     upload.single("file"),
+    preventSensitiveCaching({ privateCache: false }),
     asyncHandler(async (req, res) => {
       if (!config.publicQuickScanEnabled) {
         throw new HttpError(403, "Guest quick scan is currently disabled.", {
