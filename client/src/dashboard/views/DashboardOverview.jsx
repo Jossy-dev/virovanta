@@ -36,7 +36,7 @@ export function DashboardOverview({
             <p className="dashboard-label">Overview</p>
             <div>
               <h1 className="text-2xl font-semibold tracking-[-0.05em] text-slate-950 dark:text-white sm:text-3xl lg:text-[2.4rem]">
-                Welcome back, {userName}
+                Welcome back,  {userName}
               </h1>
               <p className="mt-2 max-w-2xl text-sm leading-7 text-slate-500 dark:text-slate-400">
                 Upload files, monitor the queue, and review recent results from one place.

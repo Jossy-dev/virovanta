@@ -37,7 +37,10 @@ export function readResetFlowState() {
     return {
       active: false,
       accessToken: "",
-      email: ""
+      email: "",
+      type: "",
+      callbackActive: false,
+      callbackKind: ""
     };
   }
 
@@ -50,12 +53,17 @@ export function readResetFlowState() {
   const type = String(hashParams.get("type") || searchParams.get("type") || "").trim().toLowerCase();
   const email = String(hashParams.get("email") || searchParams.get("email") || "").trim().toLowerCase();
 
-  const active = pathname === "/reset-password" || type === "recovery" || Boolean(accessToken);
+  const callbackActive = Boolean(accessToken);
+  const callbackKind = type === "recovery" || pathname === "/reset-password" ? "recovery" : callbackActive ? "confirmation" : "";
+  const active = callbackKind === "recovery";
 
   return {
     active,
     accessToken,
-    email
+    email,
+    type,
+    callbackActive,
+    callbackKind
   };
 }
 

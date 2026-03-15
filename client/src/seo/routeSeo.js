@@ -1,4 +1,5 @@
 import { APP_NAME, APP_TAGLINE, SEO_SOCIAL_IMAGE_PATH, buildSiteUrl } from "../appConfig.js";
+import { MARKETING_PAGES } from "../marketing/marketingContent.js";
 
 const INDEX_ROBOTS = "index,follow,max-image-preview:large,max-snippet:-1,max-video-preview:-1";
 const AUTH_ROBOTS = "noindex,follow,max-image-preview:large";
@@ -45,6 +46,8 @@ function buildHomeSnapshot() {
     description:
       "Upload suspicious files, email attachments, scripts, documents, or archives and get plain-language malware and anomaly reports with clear risk scores.",
     actions: [
+      { href: "/features", label: "Explore features" },
+      { href: "/how-it-works", label: "How it works" },
       { href: "/signup", label: "Create free account" },
       { href: "/signin", label: "Sign in" }
     ],
@@ -77,6 +80,48 @@ function buildHomeSnapshot() {
   });
 }
 
+function buildMarketingSnapshot(page) {
+  const sectionsMarkup = page.sections
+    .map((section) => {
+      const itemsMarkup = section.items
+        .map((item) => {
+          const eyebrowMarkup = item.eyebrow ? `<p class="seo-eyebrow">${escapeHtml(item.eyebrow)}</p>` : "";
+          return `<article class="seo-section"><div>${eyebrowMarkup}<h3>${escapeHtml(item.title)}</h3><p>${escapeHtml(
+            item.description
+          )}</p></div></article>`;
+        })
+        .join("");
+
+      return `<section class="seo-section"><p class="seo-eyebrow">${escapeHtml(section.tag)}</p><h2>${escapeHtml(
+        section.title
+      )}</h2><div class="seo-grid">${itemsMarkup}</div></section>`;
+    })
+    .join("");
+
+  return buildSnapshotLayout({
+    heading: page.heroTitle,
+    description: page.heroDescription,
+    actions: [
+      { href: page.cta.primary.path, label: page.cta.primary.label },
+      { href: page.cta.secondary.path, label: page.cta.secondary.label }
+    ],
+    body: `
+      <section class="seo-section">
+        <h2>Key points</h2>
+        <ul>
+          ${page.heroPoints.map((point) => `<li>${escapeHtml(point)}</li>`).join("")}
+        </ul>
+      </section>
+      ${sectionsMarkup}
+      <section class="seo-section">
+        <p class="seo-eyebrow">Next step</p>
+        <h2>${escapeHtml(page.cta.title)}</h2>
+        <p>${escapeHtml(page.cta.description)}</p>
+      </section>
+    `
+  });
+}
+
 function buildAuthSnapshot({ heading, description, href, hrefLabel }) {
   return buildSnapshotLayout({
     heading,
@@ -104,6 +149,61 @@ function buildPrivateSnapshot({ heading, description }) {
     `
   });
 }
+
+function buildMarketingStructuredData(page) {
+  const canonicalUrl = buildSiteUrl(page.path);
+
+  return [
+    {
+      "@context": "https://schema.org",
+      "@graph": [
+        {
+          "@type": "WebPage",
+          "@id": `${canonicalUrl}#webpage`,
+          url: canonicalUrl,
+          name: page.seoTitle,
+          description: page.seoDescription,
+          isPartOf: {
+            "@id": `${SITE_ROOT}#website`
+          },
+          about: {
+            "@id": `${SITE_ROOT}#organization`
+          }
+        },
+        {
+          "@type": "BreadcrumbList",
+          "@id": `${canonicalUrl}#breadcrumbs`,
+          itemListElement: [
+            {
+              "@type": "ListItem",
+              position: 1,
+              name: APP_NAME,
+              item: SITE_ROOT
+            },
+            {
+              "@type": "ListItem",
+              position: 2,
+              name: page.navLabel,
+              item: canonicalUrl
+            }
+          ]
+        }
+      ]
+    }
+  ];
+}
+
+const MARKETING_ROUTES = MARKETING_PAGES.map((page) => ({
+  id: page.id,
+  path: page.path,
+  title: page.seoTitle,
+  description: page.seoDescription,
+  robots: INDEX_ROBOTS,
+  indexable: true,
+  staticRender: true,
+  snapshotHtml: buildMarketingSnapshot(page),
+  structuredData: () => buildMarketingStructuredData(page)
+}));
 
 const ROUTES = [
   {
@@ -166,6 +266,7 @@ const ROUTES = [
       }
     ]
   },
+  ...MARKETING_ROUTES,
   {
     id: "signin",
     path: "/signin",

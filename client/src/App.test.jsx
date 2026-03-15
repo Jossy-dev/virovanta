@@ -220,8 +220,31 @@ describe("App", () => {
     render(<App />);
 
     expect(await screen.findByRole("heading", { name: /quick guest scan/i })).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: /sign in/i })).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: /create account/i })).toBeInTheDocument();
+    expect(screen.getAllByRole("link", { name: /sign in/i }).length).toBeGreaterThan(0);
+    expect(screen.getAllByRole("link", { name: /create account/i }).length).toBeGreaterThan(0);
+  });
+
+  it("renders indexable marketing routes as public pages", async () => {
+    window.history.replaceState({}, "", "/features");
+
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input) => {
+        const url = String(input);
+
+        if (url.endsWith("/api/public/status")) {
+          return mockGuestStatus();
+        }
+
+        throw new Error(`Unexpected fetch: ${url}`);
+      })
+    );
+
+    render(<App />);
+
+    expect(await screen.findByRole("heading", { name: /features built for practical file triage/i })).toBeInTheDocument();
+    expect(screen.getAllByRole("link", { name: /how it works/i }).length).toBeGreaterThan(0);
+    expect(screen.getAllByRole("link", { name: /security/i }).length).toBeGreaterThan(0);
   });
 
   it("uses browser-friendly credential semantics on sign-in and sign-up routes", async () => {
@@ -367,6 +390,56 @@ describe("App", () => {
     expect(screen.getByPlaceholderText(/your username/i)).toHaveValue("securitylead_secure");
   });
 
+  it("blocks signup on submit when the final username check finds a duplicate", async () => {
+    window.history.replaceState({}, "", "/signup");
+
+    const registerSpy = vi.fn();
+    const fetchMock = vi.fn(async (input, init = {}) => {
+      const url = String(input);
+      const method = String(init?.method || "GET").toUpperCase();
+
+      if (url.endsWith("/api/public/status")) {
+        return mockGuestStatus();
+      }
+
+      if (url.includes("/api/auth/username-availability")) {
+        return new Response(
+          JSON.stringify({
+            available: false,
+            suggestions: ["analyst_guard", "analyst_ops", "analyst_delta"]
+          }),
+          {
+            status: 200,
+            headers: { "Content-Type": "application/json" }
+          }
+        );
+      }
+
+      if (url.endsWith("/api/auth/register") && method === "POST") {
+        registerSpy();
+        return new Response(JSON.stringify({}), {
+          status: 201,
+          headers: { "Content-Type": "application/json" }
+        });
+      }
+
+      throw new Error(`Unexpected fetch: ${method} ${url}`);
+    });
+
+    vi.stubGlobal("fetch", fetchMock);
+    render(<App />);
+
+    await userEvent.type(await screen.findByLabelText(/^username$/i), "analyst");
+    await userEvent.type(screen.getByLabelText(/email address/i), "analyst@example.com");
+    await userEvent.type(screen.getByLabelText(/^password$/i), "StrongPass!1234");
+    await userEvent.type(screen.getByPlaceholderText(/confirm your password/i), "StrongPass!1234");
+    await userEvent.click(screen.getByRole("button", { name: /^sign up$/i }));
+
+    expect(await screen.findByText(/username is taken\. pick one of the suggestions\./i)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /analyst_guard/i })).toBeInTheDocument();
+    expect(registerSpy).not.toHaveBeenCalled();
+  });
+
   it("renders reset-password route when a recovery token is present in the URL hash", async () => {
     window.history.replaceState({}, "", "/#type=recovery&access_token=recovery-token-abcdefghijklmnopqrstuvwxyz&email=person@example.com");
 
@@ -390,6 +463,32 @@ describe("App", () => {
 
     expect(await screen.findByRole("heading", { name: /set a new password/i })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /update password/i })).toBeInTheDocument();
+  });
+
+  it("routes signup confirmation callbacks to sign in instead of reset password", async () => {
+    window.history.replaceState({}, "", "/#type=signup&access_token=signup-token-abcdefghijklmnopqrstuvwxyz&email=person@example.com");
+
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input) => {
+        const url = String(input);
+
+        if (url.endsWith("/api/public/status")) {
+          return mockGuestStatus();
+        }
+
+        return new Response(JSON.stringify({}), {
+          status: 200,
+          headers: { "Content-Type": "application/json" }
+        });
+      })
+    );
+
+    render(<App />);
+
+    expect(await screen.findByRole("heading", { name: /^sign in$/i })).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: /set a new password/i })).not.toBeInTheDocument();
+    expect(screen.getByLabelText(/email address/i)).toHaveValue("person@example.com");
   });
 
   it("renders the routed dashboard shell and keeps scan/settings workflows accessible", async () => {

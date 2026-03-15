@@ -1,5 +1,5 @@
 import { AnimatePresence, motion, useReducedMotion } from "framer-motion";
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { toast } from "sonner";
 import {
@@ -113,7 +113,9 @@ export default function SignUpPage({
   const [usernameAvailability, setUsernameAvailability] = useState({
     state: "idle",
     message: "",
-    suggestions: []
+    suggestions: [],
+    checkedUsername: "",
+    pending: false
   });
   const [modal, setModal] = useState({
     open: false,
@@ -126,11 +128,124 @@ export default function SignUpPage({
   const passwordChecklist = buildPasswordChecklist(form.password, form.email, form.confirmPassword);
   const passwordStrength = useMemo(() => getPasswordStrength(form.password, form.email), [form.email, form.password]);
   const usernameHasInlineIssue = ["invalid", "taken"].includes(usernameAvailability.state) || Boolean(errors.username);
+  const usernameIndicatorState = usernameAvailability.pending ? "checking" : usernameAvailability.state;
+  const latestUsernameRef = useRef("");
+  const usernameRequestRef = useRef({
+    sequence: 0,
+    username: "",
+    promise: null
+  });
+
+  const applyUsernameAvailability = useCallback((username, nextState) => {
+    if (latestUsernameRef.current !== username) {
+      return;
+    }
+
+    setUsernameAvailability({
+      state: nextState.state,
+      message: nextState.message,
+      suggestions: nextState.suggestions,
+      checkedUsername: username,
+      pending: false
+    });
+  }, []);
+
+  const runUsernameAvailabilityCheck = useCallback(
+    async (username, { reusePending = true } = {}) => {
+      const normalizedUsername = String(username || "").trim();
+      if (normalizedUsername.length < 2) {
+        return {
+          username: normalizedUsername,
+          available: false,
+          invalid: true,
+          suggestions: []
+        };
+      }
+
+      if (
+        reusePending &&
+        usernameRequestRef.current.promise &&
+        usernameRequestRef.current.username === normalizedUsername
+      ) {
+        return usernameRequestRef.current.promise;
+      }
+
+      const sequence = usernameRequestRef.current.sequence + 1;
+      usernameRequestRef.current.sequence = sequence;
+      usernameRequestRef.current.username = normalizedUsername;
+
+      setUsernameAvailability((current) => {
+        if (latestUsernameRef.current !== normalizedUsername) {
+          return current;
+        }
+
+        return {
+          ...current,
+          pending: true,
+          ...(current.checkedUsername === normalizedUsername
+            ? {}
+            : {
+                state: "idle",
+                message: "",
+                suggestions: [],
+                checkedUsername: ""
+              })
+        };
+      });
+
+      const request = onCheckUsernameAvailability(normalizedUsername)
+        .then((payload) => {
+          const result = {
+            username: normalizedUsername,
+            available: Boolean(payload?.available),
+            suggestions: Array.isArray(payload?.suggestions) ? payload.suggestions.slice(0, 3) : []
+          };
+
+          if (usernameRequestRef.current.sequence === sequence) {
+            applyUsernameAvailability(normalizedUsername, {
+              state: result.available ? "available" : "taken",
+              message: result.available ? "Username is available." : "Username is taken.",
+              suggestions: result.available ? [] : result.suggestions
+            });
+          }
+
+          return result;
+        })
+        .catch((error) => {
+          if (usernameRequestRef.current.sequence === sequence && latestUsernameRef.current === normalizedUsername) {
+            setUsernameAvailability({
+              state: "error",
+              message: "Could not verify username right now.",
+              suggestions: [],
+              checkedUsername: "",
+              pending: false
+            });
+          }
+
+          throw error;
+        })
+        .finally(() => {
+          if (usernameRequestRef.current.sequence === sequence) {
+            usernameRequestRef.current.promise = null;
+          }
+        });
+
+      usernameRequestRef.current.promise = request;
+      return request;
+    },
+    [applyUsernameAvailability, onCheckUsernameAvailability]
+  );
 
   useEffect(() => {
     const username = String(form.username || "").trim();
     if (!username) {
-      setUsernameAvailability({ state: "idle", message: "", suggestions: [] });
+      setUsernameAvailability({
+        state: "idle",
+        message: "",
+        suggestions: [],
+        checkedUsername: "",
+        pending: false
+      });
       return;
     }
 
@@ -138,59 +253,65 @@ export default function SignUpPage({
       setUsernameAvailability({
         state: "invalid",
         message: "Use at least 2 characters.",
-        suggestions: []
+        suggestions: [],
+        checkedUsername: "",
+        pending: false
       });
       return;
     }
 
-    let cancelled = false;
     const timer = setTimeout(async () => {
-      setUsernameAvailability((current) => ({
-        ...current,
-        state: "checking",
-        message: "Checking username..."
-      }));
-
       try {
-        const payload = await onCheckUsernameAvailability(username);
-        if (cancelled) {
-          return;
-        }
-
-        if (payload?.available) {
-          setUsernameAvailability({
-            state: "available",
-            message: "Username is available.",
-            suggestions: []
-          });
-          return;
-        }
-
-        setUsernameAvailability({
-          state: "taken",
-          message: "Username is taken.",
-          suggestions: Array.isArray(payload?.suggestions) ? payload.suggestions.slice(0, 3) : []
-        });
+        await runUsernameAvailabilityCheck(username, { reusePending: false });
       } catch (_error) {
-        if (cancelled) {
-          return;
-        }
-
-        setUsernameAvailability({
-          state: "error",
-          message: "Could not verify username right now.",
-          suggestions: []
-        });
+        return;
       }
     }, USERNAME_CHECK_DEBOUNCE_MS);
 
     return () => {
-      cancelled = true;
       clearTimeout(timer);
     };
-  }, [form.username, onCheckUsernameAvailability]);
+  }, [form.username, runUsernameAvailabilityCheck]);
 
   function updateField(field, value) {
+    if (field === "username") {
+      latestUsernameRef.current = String(value || "").trim();
+      setUsernameAvailability((current) => {
+        const nextUsername = latestUsernameRef.current;
+        if (!nextUsername) {
+          return {
+            state: "idle",
+            message: "",
+            suggestions: [],
+            checkedUsername: "",
+            pending: false
+          };
+        }
+
+        if (nextUsername.length < 2) {
+          return {
+            state: "invalid",
+            message: "Use at least 2 characters.",
+            suggestions: [],
+            checkedUsername: "",
+            pending: false
+          };
+        }
+
+        if (current.checkedUsername === nextUsername) {
+          return current;
+        }
+
+        return {
+          state: "idle",
+          message: "",
+          suggestions: [],
+          checkedUsername: "",
+          pending: false
+        };
+      });
+    }
+
     setForm((current) => ({ ...current, [field]: value }));
     setErrors((current) => {
       if (!current[field] && !current.form) {
@@ -216,10 +337,8 @@ export default function SignUpPage({
       nextErrors.username = "Choose a username.";
     } else if (username.length < 2) {
       nextErrors.username = "Username must be at least 2 characters.";
-    } else if (usernameAvailability.state === "taken") {
+    } else if (usernameAvailability.checkedUsername === username && usernameAvailability.state === "taken") {
       nextErrors.username = "Username is taken. Pick one of the suggestions.";
-    } else if (usernameAvailability.state === "checking") {
-      nextErrors.username = "Wait for the username check to finish.";
     }
 
     if (!normalizedEmail) {
@@ -283,10 +402,38 @@ export default function SignUpPage({
 
     try {
       const normalizedEmail = String(form.email || "").trim().toLowerCase();
+      const normalizedUsername = String(form.username || "").trim();
+      let usernameCheckResult = null;
+
+      try {
+        usernameCheckResult = await runUsernameAvailabilityCheck(normalizedUsername);
+      } catch (_error) {
+        setErrors({
+          username: "Could not verify username right now. Try again."
+        });
+        toast.error("Could not verify username right now.");
+        return;
+      }
+
+      if (!usernameCheckResult?.available) {
+        setUsernameAvailability({
+          state: "taken",
+          message: "Username is taken.",
+          suggestions: usernameCheckResult?.suggestions || [],
+          checkedUsername: normalizedUsername,
+          pending: false
+        });
+        setErrors({
+          username: "Username is taken. Pick one of the suggestions."
+        });
+        toast.error("This username is already taken.");
+        return;
+      }
+
       const payload = await onRegister({
         email: normalizedEmail,
         password: form.password,
-        username: form.username.trim()
+        username: normalizedUsername
       });
 
       if (payload?.requiresEmailConfirmation) {
@@ -305,7 +452,14 @@ export default function SignUpPage({
           confirmPassword: "",
           username: ""
         }));
-        setUsernameAvailability({ state: "idle", message: "", suggestions: [] });
+        latestUsernameRef.current = "";
+        setUsernameAvailability({
+          state: "idle",
+          message: "",
+          suggestions: [],
+          checkedUsername: "",
+          pending: false
+        });
         return;
       }
 
@@ -318,7 +472,9 @@ export default function SignUpPage({
         setUsernameAvailability({
           state: "taken",
           message: "Username is taken.",
-          suggestions
+          suggestions,
+          checkedUsername: String(form.username || "").trim(),
+          pending: false
         });
         setErrors((current) => ({
           ...current,
@@ -392,10 +548,10 @@ export default function SignUpPage({
                   .filter(Boolean)
                   .join(" ") || undefined}
               />
-              <span className={`auth-input-indicator ${usernameAvailability.state}`} aria-hidden="true">
+              <span className={`auth-input-indicator ${usernameIndicatorState}`} aria-hidden="true">
+                {usernameAvailability.pending ? "…" : null}
                 {usernameAvailability.state === "available" ? "✓" : null}
                 {usernameAvailability.state === "taken" ? "✕" : null}
-                {usernameAvailability.state === "checking" ? "…" : null}
               </span>
             </div>
 

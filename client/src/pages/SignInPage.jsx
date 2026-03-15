@@ -26,6 +26,16 @@ export default function SignInPage({ appName, appTagline, logoAltText, brandMark
     }
   }, [searchParams]);
 
+  useEffect(() => {
+    if (searchParams.get("confirmed") !== "1") {
+      return;
+    }
+
+    const email = String(searchParams.get("email") || "").trim();
+    toast.success("Email confirmed. Sign in to continue.");
+    navigate(`/signin${email ? `?email=${encodeURIComponent(email)}` : ""}`, { replace: true });
+  }, [navigate, searchParams]);
+
   function updateField(field, value) {
     setForm((current) => ({ ...current, [field]: value }));
     setErrors((current) => {

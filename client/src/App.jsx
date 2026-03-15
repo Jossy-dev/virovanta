@@ -14,6 +14,7 @@ import {
   buildSiteUrl
 } from "./appConfig";
 import { buildAnalyticsData } from "./dashboard/dashboardUtils";
+import { MARKETING_PAGES } from "./marketing/marketingContent";
 import { getSeoForPath } from "./seo/routeSeo";
 import {
   HERO_CYCLE_PAUSE_MS,
@@ -35,6 +36,7 @@ import {
 } from "./appUtils";
 
 const LandingPage = lazy(() => import("./pages/LandingPage"));
+const MarketingPage = lazy(() => import("./pages/MarketingPage"));
 const SignInPage = lazy(() => import("./pages/SignInPage"));
 const SignUpPage = lazy(() => import("./pages/SignUpPage"));
 const ForgotPasswordPage = lazy(() => import("./pages/ForgotPasswordPage"));
@@ -205,12 +207,8 @@ function AppContent() {
     const syncResetFlow = () => {
       const next = readResetFlowState();
       setResetFlow(next);
-      if (next.accessToken) {
-        setResetAccessToken(next.accessToken);
-      }
-      if (next.email) {
-        setResetEmail(next.email);
-      }
+      setResetAccessToken(next.active ? next.accessToken : "");
+      setResetEmail(next.email || "");
     };
 
     syncResetFlow();
@@ -227,6 +225,20 @@ function AppContent() {
       window.removeEventListener("hashchange", syncResetFlow);
     };
   }, []);
+
+  useEffect(() => {
+    if (resetFlow.callbackKind !== "confirmation" || session?.accessToken) {
+      return;
+    }
+
+    const query = new URLSearchParams();
+    if (resetFlow.email) {
+      query.set("email", resetFlow.email);
+    }
+    query.set("confirmed", "1");
+
+    navigate(`/signin?${query.toString()}`, { replace: true });
+  }, [navigate, resetFlow.callbackKind, resetFlow.email, session?.accessToken]);
 
   useEffect(() => {
     if (!resetFlow.active) {
@@ -1072,6 +1084,21 @@ function AppContent() {
               </PublicOnlyRoute>
             }
           />
+          {MARKETING_PAGES.map((page) => (
+            <Route
+              key={page.path}
+              path={page.path}
+              element={
+                <MarketingPage
+                  appName={APP_NAME}
+                  appTagline={APP_TAGLINE}
+                  logoAltText={LOGO_ALT_TEXT}
+                  brandMarks={BRAND_MARKS}
+                  routePath={page.path}
+                />
+              }
+            />
+          ))}
           <Route
             path="/signin"
             element={

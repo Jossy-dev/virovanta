@@ -21,9 +21,12 @@ describe("routeSeo", () => {
     const sitemapEntries = getSitemapEntries();
     const staticRoutes = getStaticSeoRoutes();
 
-    expect(sitemapEntries).toHaveLength(1);
-    expect(sitemapEntries[0].path).toBe("/");
+    expect(sitemapEntries.map((entry) => entry.path)).toEqual(
+      expect.arrayContaining(["/", "/features", "/how-it-works", "/use-cases", "/security", "/pricing", "/about"])
+    );
+    expect(sitemapEntries).toHaveLength(7);
     expect(staticRoutes.some((route) => route.path === "/app/dashboard")).toBe(true);
     expect(staticRoutes.some((route) => route.path === "/signup")).toBe(true);
+    expect(staticRoutes.some((route) => route.path === "/features")).toBe(true);
   });
 });

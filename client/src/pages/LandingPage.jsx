@@ -9,6 +9,8 @@ import {
   getRiskMeta,
   motionPreset
 } from "../appUtils";
+import PublicSiteFooter from "./public/PublicSiteFooter";
+import PublicSiteHeader from "./public/PublicSiteHeader";
 
 export default function LandingPage({
   appName,
@@ -95,13 +97,13 @@ export default function LandingPage({
           <source src={heroBackground.videoSrc} type="video/mp4" />
         </video>
         <div className="landing-hero-content">
-          <div className="landing-hero-top">
-            <img src={brandMarks.darkSurface} alt={logoAltText} className="landing-hero-logo" />
-            <div className="landing-hero-brand">
-              <strong>{appName}</strong>
-              <span>{appTagline}</span>
-            </div>
-          </div>
+          <PublicSiteHeader
+            appName={appName}
+            appTagline={appTagline}
+            logoSrc={brandMarks.darkSurface}
+            logoAltText={logoAltText}
+            variant="hero"
+          />
           <div className="landing-copy">
             <p className="eyebrow">Malware and Defect Detection Platform</p>
             <h1 className="hero-typing" aria-label={typedHeroHeadline}>
@@ -296,15 +298,14 @@ export default function LandingPage({
         </div>
       </motion.section>
 
-      <motion.footer className="landing-footer" {...motionPreset(prefersReducedMotion, 0.14)}>
-        <div className="footer-brand">
-          <img src={brandMarks.lightSurface} alt={logoAltText} className="footer-logo" />
-          <p>
-            &copy; {new Date().getFullYear()} {appName}
-          </p>
-        </div>
-        <p>Secure malware and anomaly scanning for teams and daily operations.</p>
-      </motion.footer>
+      <motion.div className="landing-footer-wrap" {...motionPreset(prefersReducedMotion, 0.14)}>
+        <PublicSiteFooter
+          appName={appName}
+          appTagline={appTagline}
+          logoSrc={brandMarks.lightSurface}
+          logoAltText={logoAltText}
+        />
+      </motion.div>
     </motion.main>
   );
 }
