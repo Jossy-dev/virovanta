@@ -1,8 +1,10 @@
-import { useEffect, useMemo, useRef } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { ArrowRight, FolderOpen, UploadCloud } from "lucide-react";
 import { DataTable } from "../components/DataTable";
 import { WidgetCard } from "../components/WidgetCard";
 import { filterCollection } from "../dashboardUtils";
+
+const JOBS_PER_PAGE = 10;
 
 export function ProjectsView({
   selectedFiles,
@@ -13,6 +15,7 @@ export function ProjectsView({
   isSubmittingScan,
   onSelectFiles,
   onSubmitScan,
+  onSubmitUrlScan = async () => {},
   onClearSelectedFiles,
   jobs,
   activeJob,
@@ -24,6 +27,9 @@ export function ProjectsView({
   showQuotaBadge = true
 }) {
   const fileInputRef = useRef(null);
+  const [urlTarget, setUrlTarget] = useState("");
+  const [urlSubmissionError, setUrlSubmissionError] = useState("");
+  const [jobsPage, setJobsPage] = useState(1);
 
   useEffect(() => {
     if (selectedFiles.length === 0 && fileInputRef.current) {
@@ -37,13 +43,47 @@ export function ProjectsView({
   );
 
   const filteredJobs = useMemo(
-    () => filterCollection(jobs, searchQuery, ["originalName", "status", "id"]),
+    () => filterCollection(jobs, searchQuery, ["originalName", "status", "id", "targetUrl", "sourceType"]),
     [jobs, searchQuery]
   );
+  const totalJobPages = Math.max(1, Math.ceil(filteredJobs.length / JOBS_PER_PAGE));
+  const paginatedJobs = useMemo(() => {
+    const start = (jobsPage - 1) * JOBS_PER_PAGE;
+    return filteredJobs.slice(start, start + JOBS_PER_PAGE);
+  }, [filteredJobs, jobsPage]);
+
+  useEffect(() => {
+    setJobsPage(1);
+  }, [searchQuery]);
+
+  useEffect(() => {
+    if (jobsPage > totalJobPages) {
+      setJobsPage(totalJobPages);
+    }
+  }, [jobsPage, totalJobPages]);
 
   const pendingJobs = jobs.filter((job) => job.status === "queued" || job.status === "processing").length;
   const completedJobs = jobs.filter((job) => job.status === "completed").length;
   const selectedFileNames = selectedFiles.map((file) => file?.name).filter(Boolean);
+
+  async function handleSubmitUrlScan(event) {
+    event.preventDefault();
+
+    const normalizedUrl = String(urlTarget || "").trim();
+    if (!normalizedUrl) {
+      setUrlSubmissionError("Paste a URL to scan.");
+      return;
+    }
+
+    setUrlSubmissionError("");
+
+    try {
+      await onSubmitUrlScan(normalizedUrl);
+      setUrlTarget("");
+    } catch (error) {
+      setUrlSubmissionError(error?.message || "Could not queue URL scan job.");
+    }
+  }
 
   const columns = [
     {
@@ -51,8 +91,13 @@ export function ProjectsView({
       label: "File",
       render: (row) => (
         <div>
-          <div className="font-medium text-slate-950 dark:text-white">{row.originalName}</div>
-          <div className="text-xs text-slate-500 dark:text-slate-400">{row.id}</div>
+          <div className="break-all font-medium text-slate-950 dark:text-white">{row.originalName}</div>
+          <div className="mt-1 flex items-center gap-2 text-xs text-slate-500 dark:text-slate-400">
+            <span>{row.id}</span>
+            <span className="rounded-full border border-slate-200 px-2 py-0.5 dark:border-slate-700">
+              {row.sourceType === "url" ? "URL scan" : "File scan"}
+            </span>
+          </div>
         </div>
       )
     },
@@ -138,6 +183,39 @@ export function ProjectsView({
             </label>
           </div>
 
+          <form
+            className="mt-5 rounded-3xl border border-slate-200/80 bg-slate-50 p-4 dark:border-slate-800/80 dark:bg-slate-900/50"
+            onSubmit={handleSubmitUrlScan}
+          >
+            <p className="text-sm font-semibold text-slate-950 dark:text-white">Paste suspicious link</p>
+            <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">Queue a URL scan and review findings in report history.</p>
+            <div className="mt-3 flex flex-col gap-3 sm:flex-row sm:items-center">
+              <label htmlFor="authenticated-url-scan-input" className="sr-only">
+                Suspicious link URL
+              </label>
+              <input
+                id="authenticated-url-scan-input"
+                type="url"
+                inputMode="url"
+                autoComplete="url"
+                placeholder="https://example.com/login"
+                value={urlTarget}
+                onChange={(event) => setUrlTarget(event.target.value)}
+                className="w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-900 outline-none transition focus:border-viro-500 focus:ring-2 focus:ring-viro-200 dark:border-slate-800 dark:bg-slate-950 dark:text-slate-100 dark:focus:border-viro-400 dark:focus:ring-viro-900"
+              />
+              <button
+                type="submit"
+                className="dashboard-brand-button w-full justify-center sm:w-auto"
+                disabled={isSubmittingScan}
+              >
+                {isSubmittingScan ? "Queueing..." : "Queue URL Scan"}
+              </button>
+            </div>
+            {urlSubmissionError ? (
+              <p className="mt-3 text-sm text-red-600 dark:text-red-400">{urlSubmissionError}</p>
+            ) : null}
+          </form>
+
           {selectedFiles.length > 0 ? (
             <div className="mt-5 rounded-3xl border border-slate-200/80 bg-slate-50 p-4 dark:border-slate-800/80 dark:bg-slate-900/50">
               <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
@@ -184,7 +262,17 @@ export function ProjectsView({
             <p className="dashboard-label">Queue activity</p>
             <h2 className="text-xl font-semibold tracking-[-0.03em] text-slate-950 dark:text-white">Current jobs</h2>
           </div>
-          <DataTable columns={columns} rows={filteredJobs} page={1} totalPages={1} onPageChange={() => {}} emptyMessage="No jobs have been queued yet." />
+          <DataTable
+            columns={columns}
+            rows={paginatedJobs}
+            page={jobsPage}
+            totalPages={totalJobPages}
+            onPageChange={(nextPage) => {
+              const boundedPage = Math.min(Math.max(1, nextPage), totalJobPages);
+              setJobsPage(boundedPage);
+            }}
+            emptyMessage="No jobs have been queued yet."
+          />
         </section>
       </div>
 
@@ -206,6 +294,7 @@ export function ProjectsView({
           {activeJob ? (
             <div className="rounded-2xl border border-slate-200/80 px-4 py-4 dark:border-slate-800/80">
               <p className="text-sm font-semibold text-slate-950 dark:text-white">{activeJob.originalName}</p>
+              <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">{activeJob.sourceType === "url" ? "URL scan job" : "File scan job"}</p>
               <p className="mt-2 inline-flex rounded-full bg-slate-100 px-2.5 py-1 text-xs font-medium text-slate-600 dark:bg-slate-900 dark:text-slate-300">
                 {activeJob.status}
               </p>

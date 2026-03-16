@@ -3,6 +3,7 @@ const API_KEY_SCOPE_LIST = [
   "jobs:write",
   "reports:read",
   "reports:share",
+  "reports:delete",
   "analytics:read"
 ];
 
@@ -13,6 +14,7 @@ export const API_KEY_SCOPES = Object.freeze({
   JOBS_WRITE: "jobs:write",
   REPORTS_READ: "reports:read",
   REPORTS_SHARE: "reports:share",
+  REPORTS_DELETE: "reports:delete",
   ANALYTICS_READ: "analytics:read"
 });
 

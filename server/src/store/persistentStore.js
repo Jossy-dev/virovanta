@@ -202,8 +202,7 @@ export class PersistentStore {
         }
 
         return now - createdAt <= this.reportTtlMs;
-      })
-      .slice(0, this.maxReports);
+      });
 
     const validReportIds = new Set(state.reports.map((report) => report.id));
 

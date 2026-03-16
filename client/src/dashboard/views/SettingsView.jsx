@@ -12,7 +12,7 @@ const API_SCOPE_OPTIONS = Object.freeze([
   {
     value: "jobs:write",
     label: "Jobs Write",
-    description: "Create new scan jobs by uploading files."
+    description: "Create new scan jobs by uploading files and submitting URLs."
   },
   {
     value: "reports:read",
@@ -23,6 +23,11 @@ const API_SCOPE_OPTIONS = Object.freeze([
     value: "reports:share",
     label: "Reports Share",
     description: "Generate share links for selected reports."
+  },
+  {
+    value: "reports:delete",
+    label: "Reports Delete",
+    description: "Hide reports from user history while retaining records through policy expiry."
   },
   {
     value: "analytics:read",

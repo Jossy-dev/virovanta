@@ -12,6 +12,7 @@ export function DashboardOverview({
   isSubmittingScan,
   onSelectFiles,
   onSubmitScan,
+  onSubmitUrlScan,
   onClearSelectedFiles,
   jobs,
   reports,
@@ -122,6 +123,7 @@ export function DashboardOverview({
         isSubmittingScan={isSubmittingScan}
         onSelectFiles={onSelectFiles}
         onSubmitScan={onSubmitScan}
+        onSubmitUrlScan={onSubmitUrlScan}
         onClearSelectedFiles={onClearSelectedFiles}
         jobs={jobs}
         activeJob={activeJob}

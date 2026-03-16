@@ -6,6 +6,7 @@ import { createRedisClient } from "../infrastructure/redis/createRedisClient.js"
 import { HttpError } from "../utils/httpError.js";
 import { signReport, verifySignedReport } from "../utils/reportIntegrity.js";
 import { enrichReportThreatIntel } from "../utils/threatIntel.js";
+import { linkReportSchema } from "../validation/scanSchemas.js";
 
 const VERDICT_RANK = {
   clean: 1,
@@ -62,33 +63,54 @@ function buildReportIntel(report, historicalReports) {
 }
 
 function toJobSummary(job) {
+  const sourceType = job.sourceType === "url" ? "url" : "file";
+
   return {
     id: job.id,
+    sourceType,
     status: job.status,
     createdAt: job.createdAt,
     startedAt: job.startedAt || null,
     completedAt: job.completedAt || null,
     originalName: job.originalName,
     fileSize: job.fileSize,
+    targetUrl: sourceType === "url" ? job.targetUrl || null : null,
     reportId: job.reportId || null,
     errorMessage: job.errorMessage || null
   };
 }
 
 function toReportSummary(report) {
+  const sourceType = report?.sourceType === "url" ? "url" : "file";
+  const fileName = report?.file?.originalName || report?.url?.final || report?.url?.input || "Unknown target";
+  const fileSize = Number(report?.file?.size) || 0;
+
   return {
     id: report.id,
+    sourceType,
     createdAt: report.createdAt,
     completedAt: report.completedAt,
     verdict: report.verdict,
     riskScore: report.riskScore,
-    fileName: report.file.originalName,
-    fileSize: report.file.size,
-    findingCount: report.findings.length,
-    topFinding: report.findings[0]?.title || "No notable findings",
+    fileName,
+    fileSize,
+    findingCount: Array.isArray(report?.findings) ? report.findings.length : 0,
+    topFinding: report?.findings?.[0]?.title || "No notable findings",
     intel: report.intel || null,
     iocCount: Number(report?.iocs?.total) || 0
   };
+}
+
+function isReportVisible(report) {
+  return !report?.deletedAt;
+}
+
+function describeQueueItem(item) {
+  if (item?.sourceType === "url") {
+    return item?.targetUrl || item?.originalName || "URL target";
+  }
+
+  return item?.originalName || "uploaded file";
 }
 
 const ANALYTICS_WINDOW_DAYS = 30;
@@ -341,9 +363,10 @@ function buildAnalyticsSnapshot({ jobs, reports }) {
 }
 
 export class ScanQueueService {
-  constructor({ store, scanner, logger, config, objectStorageService = null, notificationService = null }) {
+  constructor({ store, scanner, urlScanner, logger, config, objectStorageService = null, notificationService = null }) {
     this.store = store;
     this.scanner = scanner;
+    this.urlScanner = urlScanner;
     this.logger = logger;
     this.config = config;
     this.objectStorageService = objectStorageService;
@@ -351,8 +374,10 @@ export class ScanQueueService {
     this.queue = [];
     this.processing = 0;
     this.started = false;
-    this.bullQueue = null;
-    this.bullWorker = null;
+    this.bullFileQueue = null;
+    this.bullLinkQueue = null;
+    this.bullFileWorker = null;
+    this.bullLinkWorker = null;
     this.bullQueueRedis = null;
     this.bullWorkerRedis = null;
   }
@@ -390,14 +415,24 @@ export class ScanQueueService {
   }
 
   async stop() {
-    if (this.bullWorker) {
-      await this.bullWorker.close();
-      this.bullWorker = null;
+    if (this.bullFileWorker) {
+      await this.bullFileWorker.close();
+      this.bullFileWorker = null;
     }
 
-    if (this.bullQueue) {
-      await this.bullQueue.close();
-      this.bullQueue = null;
+    if (this.bullLinkWorker) {
+      await this.bullLinkWorker.close();
+      this.bullLinkWorker = null;
+    }
+
+    if (this.bullFileQueue) {
+      await this.bullFileQueue.close();
+      this.bullFileQueue = null;
+    }
+
+    if (this.bullLinkQueue) {
+      await this.bullLinkQueue.close();
+      this.bullLinkQueue = null;
     }
 
     if (this.bullWorkerRedis) {
@@ -411,10 +446,10 @@ export class ScanQueueService {
     }
   }
 
-  async enqueueScan({ userId, filePath, originalName, mimeType, fileSize }) {
+  async #createQueuedJob({ userId, sourceType, originalName, mimeType, fileSize, targetUrl = null }) {
     const now = new Date().toISOString();
 
-    const job = await this.store.write((state) => {
+    return this.store.write((state) => {
       const user = state.users.find((candidate) => candidate.id === userId);
       if (!user) {
         throw new HttpError(404, "User not found.", { code: "SCAN_USER_NOT_FOUND" });
@@ -423,6 +458,8 @@ export class ScanQueueService {
       const nextJob = {
         id: `job_${crypto.randomUUID()}`,
         userId,
+        sourceType,
+        targetUrl: sourceType === "url" ? targetUrl : null,
         status: "queued",
         originalName,
         mimeType,
@@ -445,18 +482,49 @@ export class ScanQueueService {
         userAgent: "",
         metadata: {
           jobId: nextJob.id,
+          sourceType: nextJob.sourceType,
           fileSize: nextJob.fileSize,
-          originalName: nextJob.originalName
+          originalName: nextJob.originalName,
+          targetUrl: nextJob.targetUrl
         },
         createdAt: now
       });
 
       return nextJob;
     });
+  }
+
+  async #markEnqueueFailed(jobId, reason = "Could not enqueue scan job.") {
+    const failedAt = new Date().toISOString();
+
+    await this.store.write((state) => {
+      const editableJob = state.jobs.find((candidate) => candidate.id === jobId);
+      if (!editableJob) {
+        return;
+      }
+
+      editableJob.status = "failed";
+      editableJob.completedAt = failedAt;
+      editableJob.updatedAt = failedAt;
+      editableJob.errorMessage = reason;
+    });
+  }
+
+  async enqueueScan({ userId, filePath, originalName, mimeType, fileSize }) {
+    const job = await this.#createQueuedJob({
+      userId,
+      sourceType: "file",
+      originalName,
+      mimeType,
+      fileSize,
+      targetUrl: null
+    });
 
     const queueItem = {
       jobId: job.id,
       userId,
+      sourceType: "file",
+      targetUrl: null,
       filePath: null,
       originalName,
       mimeType,
@@ -500,20 +568,7 @@ export class ScanQueueService {
           })
           .catch(() => {});
       }
-
-      const failedAt = new Date().toISOString();
-
-      await this.store.write((state) => {
-        const editableJob = state.jobs.find((candidate) => candidate.id === job.id);
-        if (!editableJob) {
-          return;
-        }
-
-        editableJob.status = "failed";
-        editableJob.completedAt = failedAt;
-        editableJob.updatedAt = failedAt;
-        editableJob.errorMessage = "Could not enqueue scan job.";
-      });
+      await this.#markEnqueueFailed(job.id);
 
       throw new HttpError(503, "Could not enqueue scan job.", {
         code: "SCAN_QUEUE_UNAVAILABLE",
@@ -525,6 +580,56 @@ export class ScanQueueService {
       if (this.config.queueProvider === "bullmq") {
         await fs.unlink(filePath).catch(() => {});
       }
+    }
+
+    return toJobSummary(job);
+  }
+
+  async enqueueUrlScan({ userId, url }) {
+    if (typeof this.urlScanner !== "function") {
+      throw new HttpError(503, "URL scanner is unavailable.", {
+        code: "URL_SCANNER_UNAVAILABLE"
+      });
+    }
+
+    const targetUrl = String(url || "").trim();
+    const job = await this.#createQueuedJob({
+      userId,
+      sourceType: "url",
+      originalName: targetUrl,
+      mimeType: "text/url",
+      fileSize: 0,
+      targetUrl
+    });
+
+    const queueItem = {
+      jobId: job.id,
+      userId,
+      sourceType: "url",
+      targetUrl,
+      filePath: null,
+      originalName: targetUrl,
+      mimeType: "text/url",
+      fileSize: 0,
+      stagedUpload: null
+    };
+
+    try {
+      if (this.config.queueProvider === "bullmq") {
+        await this.#enqueueBullItem(queueItem);
+      } else {
+        this.queue.push(queueItem);
+        this.#drainQueue();
+      }
+    } catch (error) {
+      await this.#markEnqueueFailed(job.id);
+
+      throw new HttpError(503, "Could not enqueue URL scan job.", {
+        code: "SCAN_QUEUE_UNAVAILABLE",
+        details: {
+          reason: error?.message || "Queue provider unavailable."
+        }
+      });
     }
 
     return toJobSummary(job);
@@ -558,7 +663,7 @@ export class ScanQueueService {
   async getReportForUser(reportId, user) {
     const report = await this.store.read((state) => state.reports.find((candidate) => candidate.id === reportId) || null);
 
-    if (!report) {
+    if (!report || !isReportVisible(report)) {
       throw new HttpError(404, "Scan report not found.", { code: "SCAN_REPORT_NOT_FOUND" });
     }
 
@@ -574,7 +679,7 @@ export class ScanQueueService {
       const safeLimit = Math.max(1, Math.min(100, Number(limit) || 20));
 
       return state.reports
-        .filter((report) => user.role === "admin" || report.ownerUserId === user.id)
+        .filter((report) => isReportVisible(report) && (user.role === "admin" || report.ownerUserId === user.id))
         .slice(0, safeLimit)
         .map(toReportSummary);
     });
@@ -583,13 +688,94 @@ export class ScanQueueService {
   async getAnalyticsForUser(user) {
     return this.store.read((state) => {
       const jobs = state.jobs.filter((job) => user.role === "admin" || job.userId === user.id);
-      const reports = state.reports.filter((report) => user.role === "admin" || report.ownerUserId === user.id);
+      const reports = state.reports.filter(
+        (report) => isReportVisible(report) && (user.role === "admin" || report.ownerUserId === user.id)
+      );
       return buildAnalyticsSnapshot({ jobs, reports });
     });
   }
 
-  async getReportById(reportId) {
-    return this.store.read((state) => state.reports.find((candidate) => candidate.id === reportId) || null);
+  async getReportById(reportId, { includeDeleted = false } = {}) {
+    return this.store.read((state) => {
+      const report = state.reports.find((candidate) => candidate.id === reportId) || null;
+      if (!report) {
+        return null;
+      }
+
+      if (!includeDeleted && !isReportVisible(report)) {
+        return null;
+      }
+
+      return report;
+    });
+  }
+
+  async deleteReportForUser(reportId, user) {
+    const deletedAt = new Date().toISOString();
+
+    const result = await this.store.write((state) => {
+      const report = state.reports.find((candidate) => candidate.id === reportId);
+      if (!report) {
+        throw new HttpError(404, "Scan report not found.", { code: "SCAN_REPORT_NOT_FOUND" });
+      }
+
+      if (user.role !== "admin" && report.ownerUserId !== user.id) {
+        throw new HttpError(403, "Forbidden.", { code: "SCAN_FORBIDDEN" });
+      }
+
+      if (report.deletedAt) {
+        const expiresAt = Date.parse(report.completedAt || report.createdAt || "");
+        const retentionMs = Number(this.config.reportTtlMs) || 0;
+
+        return {
+          id: report.id,
+          deletedAt: report.deletedAt,
+          retentionExpiresAt:
+            Number.isFinite(expiresAt) && retentionMs > 0 ? new Date(expiresAt + retentionMs).toISOString() : null,
+          alreadyDeleted: true
+        };
+      }
+
+      report.deletedAt = deletedAt;
+      report.deletedByUserId = user.id;
+
+      const expiresAt = Date.parse(report.completedAt || report.createdAt || "");
+      const retentionMs = Number(this.config.reportTtlMs) || 0;
+
+      state.auditEvents.unshift({
+        id: `audit_${crypto.randomUUID()}`,
+        userId: user.id,
+        action: "scan.report.deleted",
+        ipAddress: null,
+        userAgent: "",
+        metadata: {
+          reportId: report.id,
+          ownerUserId: report.ownerUserId,
+          sourceType: report.sourceType || "file"
+        },
+        createdAt: deletedAt
+      });
+
+      return {
+        id: report.id,
+        deletedAt,
+        retentionExpiresAt: Number.isFinite(expiresAt) && retentionMs > 0 ? new Date(expiresAt + retentionMs).toISOString() : null,
+        alreadyDeleted: false
+      };
+    });
+
+    await this.notificationService?.create({
+      userId: user.id,
+      type: "report_deleted",
+      tone: "warning",
+      title: "Report hidden",
+      detail: "The report has been removed from workspace history and will age out at retention expiry.",
+      entityType: "report",
+      entityId: reportId,
+      dedupeKey: `report-deleted:${reportId}`
+    });
+
+    return result;
   }
 
   verifyReportIntegrity(report) {
@@ -608,12 +794,19 @@ export class ScanQueueService {
       maxRetriesPerRequest: 3
     });
 
-    this.bullQueue = new Queue(this.config.queueName, {
+    this.bullFileQueue = new Queue(this.config.fileQueueName || this.config.queueName, {
+      connection: this.bullQueueRedis
+    });
+
+    this.bullLinkQueue = new Queue(this.config.linkQueueName || `${this.config.queueName}-link`, {
       connection: this.bullQueueRedis
     });
 
     if (!this.config.runScanWorker) {
-      this.logger.info({ queueName: this.config.queueName }, "Scan queue initialized in API-only mode.");
+      this.logger.info(
+        { fileQueueName: this.config.fileQueueName, linkQueueName: this.config.linkQueueName },
+        "Scan queues initialized in API-only mode."
+      );
       return;
     }
 
@@ -635,37 +828,74 @@ export class ScanQueueService {
       maxRetriesPerRequest: null
     });
 
-    this.bullWorker = new Worker(
-      this.config.queueName,
-      async (job) => {
-        await this.#processQueueItem(job.data);
-      },
-      {
-        connection: this.bullWorkerRedis,
-        concurrency: this.config.scanWorkerConcurrency
-      }
-    );
+    const runFileWorker = this.config.scanWorkerMode === "all" || this.config.scanWorkerMode === "file";
+    const runLinkWorker = this.config.scanWorkerMode === "all" || this.config.scanWorkerMode === "link";
 
-    this.bullWorker.on("failed", (job, error) => {
-      this.logger.error({ err: error, bullJobId: job?.id }, "BullMQ worker job failed");
-    });
+    if (!runFileWorker && !runLinkWorker) {
+      throw new Error("SCAN_WORKER_MODE must be one of all, file, or link.");
+    }
 
-    this.bullWorker.on("error", (error) => {
-      this.logger.error({ err: error }, "BullMQ worker error");
-    });
+    if (runFileWorker) {
+      this.bullFileWorker = new Worker(
+        this.config.fileQueueName || this.config.queueName,
+        async (job) => {
+          await this.#processQueueItem(job.data);
+        },
+        {
+          connection: this.bullWorkerRedis,
+          concurrency: this.config.scanWorkerConcurrency
+        }
+      );
+
+      this.bullFileWorker.on("failed", (job, error) => {
+        this.logger.error({ err: error, bullJobId: job?.id, queue: "file" }, "BullMQ file worker job failed");
+      });
+      this.bullFileWorker.on("error", (error) => {
+        this.logger.error({ err: error, queue: "file" }, "BullMQ file worker error");
+      });
+    }
+
+    if (runLinkWorker) {
+      this.bullLinkWorker = new Worker(
+        this.config.linkQueueName || `${this.config.queueName}-link`,
+        async (job) => {
+          await this.#processQueueItem(job.data);
+        },
+        {
+          connection: this.bullWorkerRedis,
+          concurrency: this.config.scanWorkerConcurrency
+        }
+      );
+
+      this.bullLinkWorker.on("failed", (job, error) => {
+        this.logger.error({ err: error, bullJobId: job?.id, queue: "link" }, "BullMQ link worker job failed");
+      });
+      this.bullLinkWorker.on("error", (error) => {
+        this.logger.error({ err: error, queue: "link" }, "BullMQ link worker error");
+      });
+    }
 
     this.logger.info(
-      { queueName: this.config.queueName, concurrency: this.config.scanWorkerConcurrency },
-      "BullMQ worker started."
+      {
+        fileQueueName: this.config.fileQueueName || this.config.queueName,
+        linkQueueName: this.config.linkQueueName || `${this.config.queueName}-link`,
+        concurrency: this.config.scanWorkerConcurrency,
+        scanWorkerMode: this.config.scanWorkerMode
+      },
+      "BullMQ workers started."
     );
   }
 
   async #enqueueBullItem(item) {
-    if (!this.bullQueue) {
-      throw new Error("BullMQ queue is not initialized.");
+    const sourceType = item?.sourceType === "url" ? "url" : "file";
+    const queue = sourceType === "url" ? this.bullLinkQueue : this.bullFileQueue;
+    if (!queue) {
+      throw new Error(`BullMQ ${sourceType} queue is not initialized.`);
     }
 
-    await this.bullQueue.add("scan-file", item, {
+    const jobName = sourceType === "url" ? "link_scan" : "file_scan";
+
+    await queue.add(jobName, item, {
       jobId: item.jobId,
       attempts: this.config.queueAttempts,
       backoff: {
@@ -702,22 +932,29 @@ export class ScanQueueService {
       return null;
     }
 
-    const uploadArtifact =
-      item.stagedUpload ||
-      (await this.objectStorageService.uploadFileFromPath({
-        localPath: scanFilePath,
-        key: this.objectStorageService.buildUploadKey({
-          userId: item.userId,
-          jobId: item.jobId,
-          originalName: item.originalName
-        }),
-        contentType: item.mimeType || "application/octet-stream",
-        metadata: {
-          service: this.config.serviceName,
-          user_id: item.userId,
-          job_id: item.jobId
-        }
-      }));
+    let uploadArtifact = null;
+    if (item.sourceType !== "url") {
+      if (!scanFilePath && !item.stagedUpload) {
+        throw new Error("File scan artifacts are unavailable.");
+      }
+
+      uploadArtifact =
+        item.stagedUpload ||
+        (await this.objectStorageService.uploadFileFromPath({
+          localPath: scanFilePath,
+          key: this.objectStorageService.buildUploadKey({
+            userId: item.userId,
+            jobId: item.jobId,
+            originalName: item.originalName
+          }),
+          contentType: item.mimeType || "application/octet-stream",
+          metadata: {
+            service: this.config.serviceName,
+            user_id: item.userId,
+            job_id: item.jobId
+          }
+        }));
+    }
 
     const reportArtifact = await this.objectStorageService.uploadJson({
       key: this.objectStorageService.buildReportKey({
@@ -752,33 +989,58 @@ export class ScanQueueService {
       job.updatedAt = startedAt;
     });
 
-    let scanFilePath = item.filePath;
+    const sourceType = item?.sourceType === "url" ? "url" : "file";
+    let scanFilePath = sourceType === "file" ? item.filePath : null;
     let shouldDeleteScanFile = Boolean(scanFilePath);
 
     try {
-      if (!scanFilePath) {
-        const stagedKey = item.stagedUpload?.key;
+      let report = null;
 
-        if (!stagedKey || !this.objectStorageService?.enabled) {
-          throw new Error("Scan source file is unavailable for worker processing.");
+      if (sourceType === "url") {
+        if (typeof this.urlScanner !== "function") {
+          throw new Error("URL scanner is unavailable.");
         }
 
-        const extension = path.extname(item.originalName || "").slice(0, 16);
-        scanFilePath = path.join(this.config.uploadDir, `worker-${item.jobId}-${crypto.randomUUID()}${extension}`);
+        const targetUrl = String(item.targetUrl || item.originalName || "").trim();
+        if (!targetUrl) {
+          throw new Error("URL scan target is missing.");
+        }
 
-        await this.objectStorageService.downloadFileToPath({
-          key: stagedKey,
-          localPath: scanFilePath
+        report = await this.urlScanner({
+          url: targetUrl
         });
 
-        shouldDeleteScanFile = true;
-      }
+        const validatedLinkReport = linkReportSchema.safeParse(report);
+        if (!validatedLinkReport.success) {
+          throw new Error("URL report schema validation failed.");
+        }
 
-      const report = await this.scanner({
-        filePath: scanFilePath,
-        originalName: item.originalName,
-        declaredMimeType: item.mimeType
-      });
+        report = validatedLinkReport.data;
+      } else {
+        if (!scanFilePath) {
+          const stagedKey = item.stagedUpload?.key;
+
+          if (!stagedKey || !this.objectStorageService?.enabled) {
+            throw new Error("Scan source file is unavailable for worker processing.");
+          }
+
+          const extension = path.extname(item.originalName || "").slice(0, 16);
+          scanFilePath = path.join(this.config.uploadDir, `worker-${item.jobId}-${crypto.randomUUID()}${extension}`);
+
+          await this.objectStorageService.downloadFileToPath({
+            key: stagedKey,
+            localPath: scanFilePath
+          });
+
+          shouldDeleteScanFile = true;
+        }
+
+        report = await this.scanner({
+          filePath: scanFilePath,
+          originalName: item.originalName,
+          declaredMimeType: item.mimeType
+        });
+      }
 
       const completedAt = new Date().toISOString();
       const persistedReport = await this.store.write((state) => {
@@ -788,12 +1050,14 @@ export class ScanQueueService {
           return null;
         }
 
-        const intel = buildReportIntel(report, state.reports);
+        const visibleHistoricalReports = state.reports.filter((candidate) => isReportVisible(candidate));
+        const intel = buildReportIntel(report, visibleHistoricalReports);
         const threatIntel = enrichReportThreatIntel(report);
 
         const signedReport = signReport(
           {
             ...report,
+            sourceType,
             ownerUserId: item.userId,
             queuedJobId: item.jobId,
             completedAt,
@@ -814,6 +1078,8 @@ export class ScanQueueService {
         job.completedAt = completedAt;
         job.updatedAt = completedAt;
         job.errorMessage = null;
+        job.sourceType = sourceType;
+        job.targetUrl = sourceType === "url" ? item.targetUrl || null : null;
 
         state.auditEvents.unshift({
           id: `audit_${crypto.randomUUID()}`,
@@ -824,6 +1090,8 @@ export class ScanQueueService {
           metadata: {
             jobId: job.id,
             reportId: signedReport.id,
+            sourceType,
+            targetUrl: sourceType === "url" ? item.targetUrl || null : null,
             verdict: signedReport.verdict,
             riskScore: signedReport.riskScore
           },
@@ -860,7 +1128,7 @@ export class ScanQueueService {
         type: "report_ready",
         tone: report.verdict === "malicious" ? "danger" : report.verdict === "suspicious" ? "warning" : "success",
         title: "Report ready",
-        detail: `${item.originalName} finished scanning with a ${report.verdict} verdict.`,
+        detail: `${describeQueueItem(item)} finished scanning with a ${report.verdict} verdict.`,
         entityType: "report",
         entityId: persistedReport.id,
         dedupeKey: `report-ready:${persistedReport.id}`
@@ -888,6 +1156,8 @@ export class ScanQueueService {
           userAgent: "",
           metadata: {
             jobId: job.id,
+            sourceType,
+            targetUrl: sourceType === "url" ? item.targetUrl || null : null,
             errorMessage: job.errorMessage
           },
           createdAt: failedAt
@@ -899,7 +1169,7 @@ export class ScanQueueService {
         type: "scan_failed",
         tone: "danger",
         title: "Scan failed",
-        detail: `${item.originalName} could not be scanned. ${error?.message || "Try again or inspect the file manually."}`,
+        detail: `${describeQueueItem(item)} could not be scanned. ${error?.message || "Try again or inspect the target manually."}`,
         entityType: "job",
         entityId: item.jobId,
         dedupeKey: `scan-failed:${item.jobId}`

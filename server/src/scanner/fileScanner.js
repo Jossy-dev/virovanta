@@ -1,12 +1,24 @@
 import { spawn } from "child_process";
 import crypto from "crypto";
 import fs from "fs";
+import fsp from "fs/promises";
+import os from "os";
 import path from "path";
 import { fileTypeFromFile } from "file-type";
+import { simpleParser } from "mailparser";
 import { config } from "../config.js";
+import { scanTargetUrl } from "./urlScanner.js";
 
 const MAX_SAMPLE_BYTES = 1024 * 1024;
 const MAX_STRINGS = 500;
+const MAX_EMAIL_URL_SCANS = 12;
+const MAX_EMAIL_ATTACHMENT_SCANS = 6;
+const MAX_EMAIL_ATTACHMENT_BYTES = 8 * 1024 * 1024;
+const MAX_EMAIL_SCAN_DEPTH = 1;
+const EMAIL_URL_REGEX = /\bhttps?:\/\/[^\s<>"'`]+/gi;
+const EMAIL_AUTH_FAIL_STATES = new Set(["fail", "softfail", "temperror", "permerror"]);
+const EMAIL_AUTH_PASS_STATES = new Set(["pass", "bestguesspass"]);
+const EMAIL_AUTH_NONE_STATES = new Set(["none", "neutral"]);
 
 const HIGH_RISK_EXTENSIONS = new Map([
   [".exe", "Windows executable"],
@@ -274,6 +286,570 @@ function hasDoubleExtension(fileName) {
   return /\.(pdf|doc|docx|xls|xlsx|ppt|pptx|txt|jpg|jpeg|png|gif)\.(exe|scr|js|vbs|bat|cmd|ps1|jar|com|hta)$/.test(
     normalized
   );
+}
+
+function normalizeHeaderValue(value) {
+  if (value == null) {
+    return [];
+  }
+
+  if (Array.isArray(value)) {
+    return value.flatMap((entry) => normalizeHeaderValue(entry));
+  }
+
+  if (typeof value === "string") {
+    return [value];
+  }
+
+  if (Buffer.isBuffer(value)) {
+    return [value.toString("utf8")];
+  }
+
+  if (typeof value === "object") {
+    if (typeof value.value === "string") {
+      return [value.value];
+    }
+
+    if (typeof value.text === "string") {
+      return [value.text];
+    }
+
+    if (typeof value.line === "string") {
+      return [value.line];
+    }
+  }
+
+  return [String(value)];
+}
+
+function getHeaderValues(parsedEmail, headerName) {
+  const normalizedName = String(headerName || "").trim().toLowerCase();
+  if (!normalizedName || !parsedEmail) {
+    return [];
+  }
+
+  const fromHeaderLines = (parsedEmail.headerLines || [])
+    .filter((entry) => String(entry?.key || "").toLowerCase() === normalizedName)
+    .map((entry) => String(entry?.line || "").replace(/^[^:]+:\s*/i, "").trim())
+    .filter(Boolean);
+
+  let fromHeaderMap = [];
+  if (parsedEmail.headers && typeof parsedEmail.headers.get === "function") {
+    fromHeaderMap = normalizeHeaderValue(parsedEmail.headers.get(normalizedName));
+  }
+
+  return [...fromHeaderLines, ...fromHeaderMap]
+    .map((value) => String(value || "").trim())
+    .filter(Boolean);
+}
+
+function getPrimaryAddress(addressObject) {
+  const addressList = Array.isArray(addressObject?.value) ? addressObject.value : [];
+  const primary = addressList[0]?.address;
+  return String(primary || "").trim().toLowerCase();
+}
+
+function getAddressDomain(address) {
+  const normalized = String(address || "").trim().toLowerCase();
+  if (!normalized.includes("@")) {
+    return "";
+  }
+
+  return normalized.split("@").pop() || "";
+}
+
+function normalizeEmailAuthOutcome(rawStatus) {
+  const normalized = String(rawStatus || "").trim().toLowerCase();
+  if (!normalized) {
+    return "unknown";
+  }
+
+  if (EMAIL_AUTH_PASS_STATES.has(normalized)) {
+    return "pass";
+  }
+
+  if (EMAIL_AUTH_FAIL_STATES.has(normalized)) {
+    return "fail";
+  }
+
+  if (EMAIL_AUTH_NONE_STATES.has(normalized)) {
+    return "none";
+  }
+
+  return "unknown";
+}
+
+function parseAuthenticationResult(authValues, mechanism) {
+  const pattern = new RegExp(`\\b${mechanism}=([a-z_]+)\\b`, "i");
+
+  for (const value of authValues) {
+    const match = String(value || "").match(pattern);
+    if (match?.[1]) {
+      const raw = match[1].toLowerCase();
+      return {
+        raw,
+        status: normalizeEmailAuthOutcome(raw)
+      };
+    }
+  }
+
+  return {
+    raw: null,
+    status: "unknown"
+  };
+}
+
+function parseReceivedSpfResult(receivedSpfValues) {
+  const pattern = /\b(pass|fail|softfail|neutral|none|temperror|permerror)\b/i;
+
+  for (const value of receivedSpfValues) {
+    const match = String(value || "").match(pattern);
+    if (match?.[1]) {
+      const raw = match[1].toLowerCase();
+      return {
+        raw,
+        status: normalizeEmailAuthOutcome(raw)
+      };
+    }
+  }
+
+  return {
+    raw: null,
+    status: "unknown"
+  };
+}
+
+function evaluateEmailAuthentication({ authValues, receivedSpfValues }) {
+  const spf = parseAuthenticationResult(authValues, "spf");
+  const dkim = parseAuthenticationResult(authValues, "dkim");
+  const dmarc = parseAuthenticationResult(authValues, "dmarc");
+
+  if (spf.status === "unknown") {
+    const receivedSpf = parseReceivedSpfResult(receivedSpfValues);
+    if (receivedSpf.status !== "unknown") {
+      return {
+        spf: receivedSpf,
+        dkim,
+        dmarc
+      };
+    }
+  }
+
+  return {
+    spf,
+    dkim,
+    dmarc
+  };
+}
+
+function normalizeExtractedUrl(urlValue) {
+  const trimmed = String(urlValue || "").trim();
+  if (!trimmed) {
+    return null;
+  }
+
+  const cleaned = trimmed.replace(/[),.;!?'"`]+$/g, "");
+  if (!/^https?:\/\//i.test(cleaned)) {
+    return null;
+  }
+
+  return cleaned.slice(0, 2048);
+}
+
+function extractUrlsFromEmail(parsedEmail) {
+  const textCorpus = [
+    typeof parsedEmail?.subject === "string" ? parsedEmail.subject : "",
+    typeof parsedEmail?.text === "string" ? parsedEmail.text : "",
+    typeof parsedEmail?.html === "string" ? parsedEmail.html : ""
+  ]
+    .filter(Boolean)
+    .join("\n");
+
+  const urls = new Set();
+  for (const match of textCorpus.matchAll(EMAIL_URL_REGEX)) {
+    const value = normalizeExtractedUrl(match[0]);
+    if (value) {
+      urls.add(value);
+    }
+  }
+
+  return [...urls];
+}
+
+function buildFlaggedUrlEvidence({ flaggedLinks, flaggedCount, scannedCount }) {
+  const base = `${flaggedCount}/${scannedCount} scanned links`;
+  if (!Array.isArray(flaggedLinks) || flaggedLinks.length === 0) {
+    return base;
+  }
+
+  const visibleLinks = flaggedLinks
+    .slice(0, 3)
+    .map((entry) => String(entry?.url || "").slice(0, 160))
+    .filter(Boolean);
+
+  if (visibleLinks.length === 0) {
+    return base;
+  }
+
+  const remaining = Math.max(0, flaggedCount - visibleLinks.length);
+  return `${base} | ${visibleLinks.join(" | ")}${remaining > 0 ? ` (+${remaining} more)` : ""}`;
+}
+
+function buildEmailUrlScanConfig(runtimeConfig = config) {
+  const timeoutMs = Number(runtimeConfig.urlScanTimeoutMs) || 12_000;
+  const maxRedirects = Number(runtimeConfig.urlScanMaxRedirects) || 4;
+  const maxBodyBytes = Number(runtimeConfig.urlScanMaxBodyBytes) || 200_000;
+
+  return {
+    ...runtimeConfig,
+    urlScanTimeoutMs: Math.min(timeoutMs, 8_000),
+    urlScanMaxRedirects: Math.min(maxRedirects, 3),
+    urlScanMaxBodyBytes: Math.min(maxBodyBytes, 120_000),
+    urlScanEnableBrowserRender: false,
+    urlScanEnableDownloadInspection: false
+  };
+}
+
+function isEmailMimeType(mimeType) {
+  const normalized = String(mimeType || "").trim().toLowerCase();
+  if (!normalized) {
+    return false;
+  }
+
+  return normalized.includes("message/rfc822") || normalized.includes("application/eml");
+}
+
+function sanitizeAttachmentFileName(name, index) {
+  const fallback = `attachment-${index + 1}.bin`;
+  const safeName = sanitizeFileName(name || fallback);
+  if (!path.extname(safeName)) {
+    return `${safeName}.bin`;
+  }
+
+  return safeName;
+}
+
+async function analyzeEmailFile({ filePath, scanDepth }) {
+  if (scanDepth >= MAX_EMAIL_SCAN_DEPTH) {
+    return {
+      findings: [],
+      engine: {
+        status: "skipped",
+        reason: "max_email_depth_reached",
+        maxDepth: MAX_EMAIL_SCAN_DEPTH
+      }
+    };
+  }
+
+  let parsedEmail;
+  try {
+    const rawEmail = await fsp.readFile(filePath);
+    parsedEmail = await simpleParser(rawEmail);
+  } catch (error) {
+    return {
+      findings: [],
+      engine: {
+        status: "error",
+        reason: "email_parse_failed",
+        detail: error?.message || "Could not parse .eml content."
+      }
+    };
+  }
+
+  const findings = [];
+  const fromAddress = getPrimaryAddress(parsedEmail.from);
+  const replyToAddress = getPrimaryAddress(parsedEmail.replyTo);
+  const fromDomain = getAddressDomain(fromAddress);
+  const replyToDomain = getAddressDomain(replyToAddress);
+  const senderMismatch = Boolean(fromDomain && replyToDomain && fromDomain !== replyToDomain);
+
+  if (senderMismatch) {
+    findings.push({
+      id: "email_reply_to_mismatch",
+      severity: "high",
+      category: "Email Sender",
+      weight: 24,
+      title: "Sender and reply address mismatch",
+      description: "The email asks replies to a different domain than the sender, a common phishing signal.",
+      evidence: `${fromAddress} -> ${replyToAddress}`
+    });
+  }
+
+  const authValues = [
+    ...getHeaderValues(parsedEmail, "authentication-results"),
+    ...getHeaderValues(parsedEmail, "arc-authentication-results")
+  ];
+  const receivedSpfValues = getHeaderValues(parsedEmail, "received-spf");
+  const authentication = evaluateEmailAuthentication({
+    authValues,
+    receivedSpfValues
+  });
+
+  const authChecks = [
+    {
+      key: "spf",
+      label: "SPF",
+      failTitle: "SPF authentication failed",
+      noneTitle: "SPF authentication missing",
+      failDescription: "The sender domain did not pass SPF checks in this email.",
+      noneDescription: "No SPF pass was recorded. Treat this email with added caution."
+    },
+    {
+      key: "dkim",
+      label: "DKIM",
+      failTitle: "DKIM signature validation failed",
+      noneTitle: "DKIM signature missing",
+      failDescription: "DKIM verification did not pass, so message integrity could not be trusted.",
+      noneDescription: "No DKIM pass was recorded for this email."
+    },
+    {
+      key: "dmarc",
+      label: "DMARC",
+      failTitle: "DMARC policy check failed",
+      noneTitle: "DMARC policy result missing",
+      failDescription: "DMARC did not pass, which is a strong impersonation risk signal.",
+      noneDescription: "No DMARC pass was recorded for this email."
+    }
+  ];
+
+  for (const check of authChecks) {
+    const result = authentication[check.key];
+    if (result.status === "fail") {
+      findings.push({
+        id: `email_${check.key}_failed`,
+        severity: "high",
+        category: "Email Authentication",
+        weight: 20,
+        title: check.failTitle,
+        description: check.failDescription,
+        evidence: result.raw ? `${check.label}=${result.raw}` : check.label
+      });
+    } else if (result.status === "none") {
+      findings.push({
+        id: `email_${check.key}_missing`,
+        severity: "low",
+        category: "Email Authentication",
+        weight: 6,
+        title: check.noneTitle,
+        description: check.noneDescription,
+        evidence: check.label
+      });
+    }
+  }
+
+  const extractedUrls = extractUrlsFromEmail(parsedEmail);
+  const urlsToScan = extractedUrls.slice(0, MAX_EMAIL_URL_SCANS);
+  const urlScanResults = [];
+  let maliciousUrlCount = 0;
+  let suspiciousUrlCount = 0;
+  const emailUrlScanConfig = buildEmailUrlScanConfig(config);
+
+  for (const extractedUrl of urlsToScan) {
+    try {
+      const urlReport = await scanTargetUrl({
+        url: extractedUrl,
+        runtimeConfig: emailUrlScanConfig,
+        fileScanner: null
+      });
+
+      const verdict = String(urlReport?.verdict || "clean").toLowerCase();
+      if (verdict === "malicious") {
+        maliciousUrlCount += 1;
+      } else if (verdict === "suspicious") {
+        suspiciousUrlCount += 1;
+      }
+
+      urlScanResults.push({
+        url: urlReport?.url?.final || urlReport?.url?.normalized || extractedUrl,
+        status: "completed",
+        verdict,
+        riskScore: Number(urlReport?.riskScore) || 0,
+        findingCount: Array.isArray(urlReport?.findings) ? urlReport.findings.length : 0
+      });
+    } catch (error) {
+      urlScanResults.push({
+        url: extractedUrl,
+        status: "error",
+        error: error?.message || "URL scan failed."
+      });
+    }
+  }
+
+  const maliciousLinks = urlScanResults.filter(
+    (entry) => entry.status === "completed" && entry.verdict === "malicious"
+  );
+  const suspiciousLinks = urlScanResults.filter(
+    (entry) => entry.status === "completed" && entry.verdict === "suspicious"
+  );
+
+  if (maliciousUrlCount > 0) {
+    findings.push({
+      id: "email_embedded_links_malicious",
+      severity: "critical",
+      category: "Embedded Links",
+      weight: 34,
+      title: "Embedded link flagged malicious",
+      description: "At least one URL inside the email was classified as malicious.",
+      evidence: buildFlaggedUrlEvidence({
+        flaggedLinks: maliciousLinks,
+        flaggedCount: maliciousUrlCount,
+        scannedCount: urlsToScan.length
+      })
+    });
+  } else if (suspiciousUrlCount > 0) {
+    findings.push({
+      id: "email_embedded_links_suspicious",
+      severity: "high",
+      category: "Embedded Links",
+      weight: 20,
+      title: "Embedded link flagged suspicious",
+      description: "One or more URLs inside the email were classified as suspicious.",
+      evidence: buildFlaggedUrlEvidence({
+        flaggedLinks: suspiciousLinks,
+        flaggedCount: suspiciousUrlCount,
+        scannedCount: urlsToScan.length
+      })
+    });
+  }
+
+  const attachments = Array.isArray(parsedEmail.attachments) ? parsedEmail.attachments : [];
+  const attachmentsToScan = attachments.slice(0, MAX_EMAIL_ATTACHMENT_SCANS);
+  const attachmentResults = [];
+  const skippedAttachments = [];
+  let maliciousAttachmentCount = 0;
+  let suspiciousAttachmentCount = 0;
+
+  if (attachments.length > MAX_EMAIL_ATTACHMENT_SCANS) {
+    attachments
+      .slice(MAX_EMAIL_ATTACHMENT_SCANS)
+      .forEach((attachment, index) => {
+        skippedAttachments.push({
+          name: sanitizeAttachmentFileName(attachment?.filename, MAX_EMAIL_ATTACHMENT_SCANS + index),
+          reason: "attachment_scan_limit_reached"
+        });
+      });
+  }
+
+  for (let index = 0; index < attachmentsToScan.length; index += 1) {
+    const attachment = attachmentsToScan[index];
+    const name = sanitizeAttachmentFileName(attachment?.filename, index);
+    const contentType = String(attachment?.contentType || "application/octet-stream");
+    const contentBuffer = Buffer.isBuffer(attachment?.content)
+      ? attachment.content
+      : Buffer.from(attachment?.content || "");
+
+    if (contentBuffer.length === 0) {
+      skippedAttachments.push({
+        name,
+        reason: "attachment_empty"
+      });
+      continue;
+    }
+
+    if (contentBuffer.length > MAX_EMAIL_ATTACHMENT_BYTES) {
+      skippedAttachments.push({
+        name,
+        reason: "attachment_too_large",
+        size: contentBuffer.length
+      });
+      continue;
+    }
+
+    const extension = path.extname(name).slice(0, 12) || ".bin";
+    const tempPath = path.join(os.tmpdir(), `virovanta-email-attachment-${crypto.randomUUID()}${extension}`);
+
+    try {
+      await fsp.writeFile(tempPath, contentBuffer);
+      const nestedReport = await scanUploadedFile({
+        filePath: tempPath,
+        originalName: name,
+        declaredMimeType: contentType,
+        scanDepth: scanDepth + 1
+      });
+
+      const verdict = String(nestedReport?.verdict || "clean").toLowerCase();
+      if (verdict === "malicious") {
+        maliciousAttachmentCount += 1;
+      } else if (verdict === "suspicious") {
+        suspiciousAttachmentCount += 1;
+      }
+
+      attachmentResults.push({
+        name,
+        status: "completed",
+        contentType,
+        size: contentBuffer.length,
+        sizeDisplay: humanFileSize(contentBuffer.length),
+        verdict,
+        riskScore: Number(nestedReport?.riskScore) || 0,
+        findingCount: Array.isArray(nestedReport?.findings) ? nestedReport.findings.length : 0
+      });
+    } catch (error) {
+      attachmentResults.push({
+        name,
+        status: "error",
+        contentType,
+        size: contentBuffer.length,
+        sizeDisplay: humanFileSize(contentBuffer.length),
+        error: error?.message || "Attachment scan failed."
+      });
+    } finally {
+      await fsp.unlink(tempPath).catch(() => {});
+    }
+  }
+
+  if (maliciousAttachmentCount > 0) {
+    findings.push({
+      id: "email_attachment_malicious",
+      severity: "critical",
+      category: "Attachments",
+      weight: 36,
+      title: "Attachment flagged malicious",
+      description: "At least one attachment in this email was classified as malicious.",
+      evidence: `${maliciousAttachmentCount}/${attachmentResults.length} scanned attachments`
+    });
+  } else if (suspiciousAttachmentCount > 0) {
+    findings.push({
+      id: "email_attachment_suspicious",
+      severity: "high",
+      category: "Attachments",
+      weight: 22,
+      title: "Attachment flagged suspicious",
+      description: "One or more email attachments were classified as suspicious.",
+      evidence: `${suspiciousAttachmentCount}/${attachmentResults.length} scanned attachments`
+    });
+  }
+
+  return {
+    findings,
+    engine: {
+      status: "completed",
+      subject: String(parsedEmail?.subject || "").slice(0, 240) || null,
+      sender: {
+        from: fromAddress || null,
+        replyTo: replyToAddress || null,
+        mismatch: senderMismatch
+      },
+      authentication,
+      urlScans: {
+        totalExtracted: extractedUrls.length,
+        scannedCount: urlScanResults.filter((entry) => entry.status === "completed").length,
+        skippedCount: Math.max(0, extractedUrls.length - urlsToScan.length),
+        highRisk: {
+          malicious: maliciousLinks,
+          suspicious: suspiciousLinks
+        },
+        items: urlScanResults
+      },
+      attachments: {
+        total: attachments.length,
+        scannedCount: attachmentResults.filter((entry) => entry.status === "completed").length,
+        skippedCount: skippedAttachments.length,
+        items: attachmentResults,
+        skipped: skippedAttachments
+      }
+    }
+  };
 }
 
 function runCommand(command, args, timeoutMs = 90_000) {
@@ -554,7 +1130,7 @@ function pushFinding(findings, finding) {
   return finding.weight || SEVERITY_SCORE[finding.severity] || 0;
 }
 
-export async function scanUploadedFile({ filePath, originalName, declaredMimeType }) {
+export async function scanUploadedFile({ filePath, originalName, declaredMimeType, scanDepth = 0 }) {
   const startedAt = new Date();
   const safeOriginalName = sanitizeFileName(originalName);
   const extension = path.extname(safeOriginalName).toLowerCase();
@@ -569,6 +1145,8 @@ export async function scanUploadedFile({ filePath, originalName, declaredMimeTyp
   const extractedStrings = extractAsciiStrings(sample);
   const sampleText = sample.toString("utf8");
   const magicType = detectMagicType(sample);
+  const detectedMimeType = detectedType?.mime || "unknown";
+  const isEmailFile = extension === ".eml" || isEmailMimeType(declaredMimeType) || isEmailMimeType(detectedMimeType);
 
   let riskScore = 0;
   const findings = [];
@@ -667,6 +1245,23 @@ export async function scanUploadedFile({ filePath, originalName, declaredMimeTyp
     });
   }
 
+  let email = {
+    status: "skipped",
+    reason: "not_email_message"
+  };
+
+  if (isEmailFile) {
+    const emailAnalysis = await analyzeEmailFile({
+      filePath,
+      scanDepth
+    });
+    email = emailAnalysis.engine;
+
+    for (const finding of emailAnalysis.findings) {
+      riskScore += pushFinding(findings, finding);
+    }
+  }
+
   const clamav = await runClamAvScan(filePath);
   if (clamav.status === "infected") {
     riskScore += pushFinding(findings, {
@@ -704,6 +1299,7 @@ export async function scanUploadedFile({ filePath, originalName, declaredMimeTyp
       matchedRules,
       findingCount: sortedFindings.length
     },
+    email,
     clamav,
     virustotal
   };
@@ -722,7 +1318,7 @@ export async function scanUploadedFile({ filePath, originalName, declaredMimeTyp
       size,
       sizeDisplay: humanFileSize(size),
       declaredMimeType: declaredMimeType || "unknown",
-      detectedMimeType: detectedType?.mime || "unknown",
+      detectedMimeType,
       detectedFileType: detectedType?.ext || "unknown",
       magicType: magicType || "unknown",
       entropy,

@@ -43,6 +43,7 @@ const ForgotPasswordPage = lazy(() => import("./pages/ForgotPasswordPage"));
 const ResetPasswordPage = lazy(() => import("./pages/ResetPasswordPage"));
 const SharedReportPage = lazy(() => import("./pages/SharedReportPage"));
 const DashboardShell = lazy(() => import("./dashboard/DashboardShell"));
+const StatusPage = lazy(() => import("./pages/StatusPage"));
 
 const DEFAULT_SCAN_LIMITS = Object.freeze({
   maxFilesPerBatch: 10,
@@ -54,6 +55,7 @@ const API_KEY_SCOPE_OPTIONS = Object.freeze([
   "jobs:write",
   "reports:read",
   "reports:share",
+  "reports:delete",
   "analytics:read"
 ]);
 
@@ -179,6 +181,7 @@ function AppContent() {
   });
   const [shareError, setShareError] = useState("");
   const [isCreatingShare, setIsCreatingShare] = useState(false);
+  const [isDeletingReport, setIsDeletingReport] = useState(false);
   const [shareCopied, setShareCopied] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   const [dashboardTheme, setDashboardTheme] = useState(resolveTheme);
@@ -834,6 +837,30 @@ function AppContent() {
     setSelectedFiles([]);
   }
 
+  function applyQuotaFromResponse(quota) {
+    setSession((current) => {
+      if (!current || !quota) {
+        return current;
+      }
+
+      const next = {
+        ...current,
+        usage: {
+          windowStartedAt:
+            quota.windowStartedAt ||
+            current.usage?.windowStartedAt ||
+            new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString(),
+          used: quota.used ?? current.usage?.used,
+          remaining: quota.remaining ?? current.usage?.remaining,
+          limit: quota.limit ?? current.usage?.limit
+        }
+      };
+
+      persistSessionSnapshot(next);
+      return next;
+    });
+  }
+
   function handleSelectedFiles(fileList) {
     const nextFiles = Array.from(fileList || []).filter(Boolean);
     if (nextFiles.length === 0) {
@@ -905,28 +932,7 @@ function AppContent() {
       const queuedJobs = Array.isArray(payload?.jobs) ? payload.jobs : payload?.job ? [payload.job] : [];
       setActiveJob(queuedJobs[0] || null);
       clearSelectedFiles();
-
-      setSession((current) => {
-        if (!current) {
-          return current;
-        }
-
-        const next = {
-          ...current,
-          usage: {
-            windowStartedAt:
-              payload.quota?.windowStartedAt ||
-              current.usage?.windowStartedAt ||
-              new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString(),
-            used: payload.quota?.used ?? current.usage?.used,
-            remaining: payload.quota?.remaining ?? current.usage?.remaining,
-            limit: payload.quota?.limit ?? current.usage?.limit
-          }
-        };
-
-        persistSessionSnapshot(next);
-        return next;
-      });
+      applyQuotaFromResponse(payload?.quota);
 
       toast.success(queuedJobs.length > 1 ? `${pluralize("scan job", queuedJobs.length)} queued.` : "Scan job queued.");
       await Promise.all([refreshJobs(session), refreshNotifications(session), refreshAnalytics(session)]);
@@ -936,6 +942,44 @@ function AppContent() {
         await refreshNotifications(session);
       }
       toast.error(error.message || "Could not queue scan jobs.");
+      throw error;
+    } finally {
+      setIsSubmittingScan(false);
+    }
+  }
+
+  async function submitUrlScan(url) {
+    if (!session || isSubmittingScan) {
+      return;
+    }
+
+    const trimmedUrl = String(url || "").trim();
+    if (!trimmedUrl) {
+      throw new Error("Paste a URL to scan.");
+    }
+
+    setIsSubmittingScan(true);
+
+    try {
+      const payload = await apiRequest("/api/scans/links/jobs", {
+        method: "POST",
+        body: { url: trimmedUrl },
+        authSession: session
+      });
+
+      const queuedJob = payload?.job || null;
+      setActiveJob(queuedJob);
+      applyQuotaFromResponse(payload?.quota);
+
+      toast.success("URL scan job queued.");
+      await Promise.all([refreshJobs(session), refreshNotifications(session), refreshAnalytics(session)]);
+      navigate("/app/projects", { replace: false });
+      return queuedJob;
+    } catch (error) {
+      if (session && error?.code === "SCAN_QUOTA_EXCEEDED") {
+        await refreshNotifications(session);
+      }
+      toast.error(error.message || "Could not queue URL scan job.");
       throw error;
     } finally {
       setIsSubmittingScan(false);
@@ -1057,6 +1101,32 @@ function AppContent() {
       setShareError(error.message || "Failed to generate share link.");
     } finally {
       setIsCreatingShare(false);
+    }
+  }
+
+  async function deleteReport(reportId) {
+    if (!session || !reportId || isDeletingReport) {
+      return;
+    }
+
+    setIsDeletingReport(true);
+    setShareError("");
+    setShareState({ url: "", expiresAt: "" });
+    setShareCopied(false);
+
+    try {
+      const payload = await apiRequest(`/api/scans/reports/${reportId}`, {
+        method: "DELETE",
+        authSession: session
+      });
+
+      const retentionText = payload?.retentionExpiresAt ? ` Retained until ${formatDateTime(payload.retentionExpiresAt)}.` : "";
+      toast.success(`Report hidden from history.${retentionText}`);
+      await Promise.all([refreshReports(session), refreshAnalytics(session), refreshNotifications(session)]);
+    } catch (error) {
+      toast.error(error.message || "Could not hide report.");
+    } finally {
+      setIsDeletingReport(false);
     }
   }
 
@@ -1201,6 +1271,17 @@ function AppContent() {
             }
           />
           <Route
+            path="/status"
+            element={
+              <StatusPage
+                appName={APP_NAME}
+                appTagline={APP_TAGLINE}
+                logoAltText={LOGO_ALT_TEXT}
+                brandMarks={BRAND_MARKS}
+              />
+            }
+          />
+          <Route
             path="/app/*"
             element={
               <RequireAuth session={session}>
@@ -1223,6 +1304,7 @@ function AppContent() {
                   shareState={shareState}
                   shareError={shareError}
                   isCreatingShare={isCreatingShare}
+                  isDeletingReport={isDeletingReport}
                   shareCopied={shareCopied}
                   apiKeys={apiKeys}
                   newApiKey={newApiKey}
@@ -1236,9 +1318,11 @@ function AppContent() {
                   onNotificationsViewed={markNotificationsViewed}
                   onSelectFiles={handleSelectedFiles}
                   onSubmitScan={submitScan}
+                  onSubmitUrlScan={submitUrlScan}
                   onClearSelectedFiles={clearSelectedFiles}
                   onOpenReport={openReport}
                   onCreateShare={createReportShareLink}
+                  onDeleteReport={deleteReport}
                   onCopyShare={copyShareLink}
                   onCreateApiKey={createApiKey}
                   onRevokeApiKey={revokeApiKey}

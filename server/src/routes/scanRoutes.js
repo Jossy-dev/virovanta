@@ -2,6 +2,7 @@ import crypto from "crypto";
 import fs from "fs/promises";
 import path from "path";
 import { Router } from "express";
+import rateLimit, { ipKeyGenerator } from "express-rate-limit";
 import multer from "multer";
 import { config as defaultConfig } from "../config.js";
 import { asyncHandler } from "../utils/asyncHandler.js";
@@ -9,7 +10,7 @@ import { HttpError } from "../utils/httpError.js";
 import { createReportShareToken } from "../utils/reportShareToken.js";
 import { API_KEY_SCOPES } from "../utils/apiKeyScopes.js";
 import { validateSchema } from "../utils/validation.js";
-import { paginationSchema } from "../validation/scanSchemas.js";
+import { linkScanJobSchema, paginationSchema } from "../validation/scanSchemas.js";
 
 function sanitizeExtension(fileName) {
   const extension = path.extname(fileName || "").toLowerCase();
@@ -33,6 +34,13 @@ export function createScanRouter({
   config = defaultConfig
 }) {
   const scanRouter = Router();
+  const linkScanRateLimiter = rateLimit({
+    windowMs: config.urlScanRateLimitWindowMinutes * 60 * 1000,
+    limit: config.urlScanRateLimitRequestsPerWindow,
+    keyGenerator: (req) => req.auth?.user?.id || ipKeyGenerator(req.ip || ""),
+    standardHeaders: true,
+    legacyHeaders: false
+  });
   const storage = multer.diskStorage({
     destination: (_req, _file, callback) => {
       callback(null, config.uploadDir);
@@ -69,6 +77,36 @@ export function createScanRouter({
     asyncHandler(async (req, res) => {
       const job = await scanQueueService.getJobForUser(req.params.jobId, req.auth.user);
       res.json({ job });
+    })
+  );
+
+  scanRouter.post(
+    "/links/jobs",
+    requireApiKeyScopes(API_KEY_SCOPES.JOBS_WRITE),
+    linkScanRateLimiter,
+    asyncHandler(async (req, res) => {
+      const { url } = validateSchema(linkScanJobSchema, req.body || {});
+      const quota = await authService.consumeDailyQuota(req.auth.user.id);
+
+      if (!quota.allowed) {
+        throw new HttpError(429, "Daily scan quota exceeded for URL scans.", {
+          code: "SCAN_QUOTA_EXCEEDED",
+          details: {
+            ...quota,
+            requested: 1
+          }
+        });
+      }
+
+      const job = await scanQueueService.enqueueUrlScan({
+        userId: req.auth.user.id,
+        url
+      });
+
+      res.status(202).json({
+        job,
+        quota
+      });
     })
   );
 
@@ -151,6 +189,21 @@ export function createScanRouter({
     asyncHandler(async (req, res) => {
       const report = await scanQueueService.getReportForUser(req.params.reportId, req.auth.user);
       res.json({ report });
+    })
+  );
+
+  scanRouter.delete(
+    "/reports/:reportId",
+    requireApiKeyScopes(API_KEY_SCOPES.REPORTS_DELETE),
+    asyncHandler(async (req, res) => {
+      const deletion = await scanQueueService.deleteReportForUser(req.params.reportId, req.auth.user);
+      res.json({
+        deleted: true,
+        reportId: deletion.id,
+        deletedAt: deletion.deletedAt,
+        retentionExpiresAt: deletion.retentionExpiresAt,
+        alreadyDeleted: Boolean(deletion.alreadyDeleted)
+      });
     })
   );
 

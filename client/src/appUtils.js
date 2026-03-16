@@ -186,6 +186,10 @@ export function getPlainFindingNote(finding) {
     return "This script looks intentionally hidden, which is a common way to mask harmful actions.";
   }
 
+  if (finding?.id === "email_embedded_links_malicious" || finding?.id === "email_embedded_links_suspicious") {
+    return finding?.evidence || finding?.description || "Suspicious links were found in this email.";
+  }
+
   return finding?.description || "Potentially risky behavior detected in this file.";
 }
 

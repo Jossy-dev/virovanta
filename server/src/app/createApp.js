@@ -22,6 +22,7 @@ import { createAuthRouter } from "../routes/authRoutes.js";
 import { createPublicRouter } from "../routes/publicRoutes.js";
 import { createScanRouter } from "../routes/scanRoutes.js";
 import { scanUploadedFile } from "../scanner/fileScanner.js";
+import { scanTargetUrl } from "../scanner/urlScanner.js";
 import { AuthService } from "../services/authService.js";
 import { NotificationService } from "../services/notificationService.js";
 import { ScanQueueService } from "../services/scanQueueService.js";
@@ -63,6 +64,14 @@ export async function createApp(options = {}) {
     ...config,
     ...(options.configOverrides || {})
   };
+  const urlScanner =
+    options.urlScanner ||
+    (async ({ url }) =>
+      scanTargetUrl({
+        url,
+        runtimeConfig,
+        fileScanner: scanner
+      }));
 
   const logger = options.logger || pino({ level: runtimeConfig.logLevel });
 
@@ -110,6 +119,7 @@ export async function createApp(options = {}) {
   const scanQueueService = new ScanQueueService({
     store,
     scanner,
+    urlScanner,
     config: runtimeConfig,
     logger,
     objectStorageService,

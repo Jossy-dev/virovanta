@@ -14,8 +14,11 @@ function sanitizeExtension(fileName) {
 }
 
 function toPublicReport(report, findingsLimit = 8) {
+  const sourceType = report?.sourceType === "url" ? "url" : "file";
+
   return {
     id: report.id,
+    sourceType,
     createdAt: report.createdAt,
     completedAt: report.completedAt,
     verdict: report.verdict,
@@ -31,6 +34,9 @@ function toPublicReport(report, findingsLimit = 8) {
       hashes: report.file.hashes
     },
     findings: report.findings.slice(0, findingsLimit),
+    plainLanguageReasons: Array.isArray(report.plainLanguageReasons) ? report.plainLanguageReasons.slice(0, findingsLimit) : [],
+    technicalIndicators: report.technicalIndicators || null,
+    url: report.url || null,
     engines: report.engines,
     recommendations: report.recommendations,
     intel: report.intel || null,
@@ -72,10 +78,40 @@ export function createPublicRouter({ scanner, config, scanQueueService, createRa
   publicRouter.use(publicLimiter);
 
   publicRouter.get("/status", (_req, res) => {
+    const reportRetentionDays = Math.round(config.reportTtlMs / (24 * 60 * 60 * 1000));
+    const now = new Date().toISOString();
+
     res.json({
+      status: "operational",
+      timestamp: now,
       quickScanEnabled: config.publicQuickScanEnabled,
       maxUploadMb: Math.round(config.publicQuickScanMaxUploadBytes / (1024 * 1024)),
-      message: "Guest quick scan allows temporary test uploads without account creation."
+      message: "Guest quick scan allows temporary test uploads without account creation.",
+      reliability: {
+        deterministicErrorResponses: true,
+        scanSlaTargetMinutes: Number(config.scanSlaTargetMinutes) || 5,
+        uptimeTargetPercent: String(config.serviceUptimeTargetPercent || "99.9")
+      },
+      limits: {
+        guestQuickScan: {
+          maxUploadMb: Math.round(config.publicQuickScanMaxUploadBytes / (1024 * 1024)),
+          requestsPerWindow: Number(config.publicQuickScanRequestsPerWindow) || 0,
+          windowMinutes: Number(config.publicQuickScanWindowMinutes) || 0
+        },
+        authenticated: {
+          maxUploadMb: Math.round(config.maxUploadBytes / (1024 * 1024)),
+          maxFilesPerBatch: Number(config.maxBatchUploadFiles) || 0,
+          dailyScanLimit: Number(config.freeTierDailyScanLimit) || 0,
+          linkScanRequestsPerWindow: Number(config.urlScanRateLimitRequestsPerWindow) || 0,
+          linkScanWindowMinutes: Number(config.urlScanRateLimitWindowMinutes) || 0
+        }
+      },
+      compliance: {
+        reportsPrivateByDefault: true,
+        userDeleteMode: "soft_delete",
+        reportRetentionDays,
+        note: "Deleting a report hides it from user history immediately. Records remain retained until retention expiry."
+      }
     });
   });
 

@@ -20,6 +20,7 @@ export const MARKETING_FOOTER_GROUPS = Object.freeze([
     title: "Company",
     links: [
       { path: "/security", label: "Security" },
+      { path: "/status", label: "Status" },
       { path: "/pricing", label: "Pricing" },
       { path: "/about", label: "About" }
     ]
@@ -45,12 +46,12 @@ export const MARKETING_PAGES = Object.freeze([
       "ViroVanta gives teams a fast path from suspicious file upload to a plain-language decision. The focus is operational clarity, not noisy dashboards.",
     heroPoints: [
       "Guest quick scan for evaluation and demos",
-      "Batch intake and saved history for signed-in users",
+      "Batch file intake and URL scan intake for signed-in users",
       "Shareable reports, API keys, notifications, and analytics"
     ],
     seoTitle: "Features | ViroVanta",
     seoDescription:
-      "Explore ViroVanta features for malware and anomaly scanning, including guest scans, batch uploads, saved reports, analytics, notifications, and API access.",
+      "Explore ViroVanta features for malware and anomaly scanning, including guest scans, authenticated URL scans, batch uploads, saved reports, analytics, notifications, and API access.",
     sections: [
       {
         title: "File intake and analysis",
@@ -64,6 +65,10 @@ export const MARKETING_PAGES = Object.freeze([
           {
             title: "Batch upload workspace",
             description: "Signed-in users can queue multiple files at once and manage processing from the project workspace."
+          },
+          {
+            title: "Authenticated URL scanning",
+            description: "Signed-in users can paste suspicious links, queue URL scan jobs, and review generated reports alongside file scans."
           },
           {
             title: "Layered findings",

@@ -268,6 +268,37 @@ const ROUTES = [
   },
   ...MARKETING_ROUTES,
   {
+    id: "status",
+    path: "/status",
+    title: `Status | ${APP_NAME}`,
+    description: `View ${APP_NAME} service status, scan SLA targets, deterministic error behavior, and active scan limits.`,
+    robots: INDEX_ROBOTS,
+    indexable: true,
+    staticRender: true,
+    snapshotHtml: buildSnapshotLayout({
+      heading: `${APP_NAME} service status`,
+      description: "Live operational status, SLA commitments, limits, and retention behavior for scan workflows.",
+      actions: [
+        { href: "/", label: "Try guest scan" },
+        { href: "/signup", label: "Create account" }
+      ],
+      body: `
+      <section class="seo-section">
+        <h2>Reliability commitments</h2>
+        <ul>
+          <li>Published scan SLA targets</li>
+          <li>Deterministic API error codes</li>
+          <li>Transparent usage limits and quotas</li>
+        </ul>
+      </section>
+      <section class="seo-section">
+        <h2>Privacy and retention</h2>
+        <p>Reports remain private by default. User-initiated report deletion hides records immediately while retention policy remains active.</p>
+      </section>
+      `
+    })
+  },
+  {
     id: "signin",
     path: "/signin",
     title: `Sign In | ${APP_NAME}`,

@@ -5,11 +5,12 @@ import crypto from "crypto";
 import request from "supertest";
 import { afterEach, describe, expect, it } from "vitest";
 import { createApp } from "../src/app/createApp.js";
+import { scanTargetUrl } from "../src/scanner/urlScanner.js";
 import { hashSecret } from "../src/utils/security.js";
 
 const tempRoots = [];
 
-async function setupTestApp({ freeTierDailyScanLimit = 40, scanner = null } = {}) {
+async function setupTestApp({ freeTierDailyScanLimit = 40, scanner = null, urlScanner = null } = {}) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "virovanta-test-"));
   const uploadDir = path.join(root, "uploads");
   const dataFilePath = path.join(root, "store.json");
@@ -58,8 +59,74 @@ async function setupTestApp({ freeTierDailyScanLimit = 40, scanner = null } = {}
     recommendations: ["Safe to continue"]
   });
 
+  const mockUrlScanner = async ({ url }) => {
+    const parsed = new URL(String(url || "https://example.com"));
+
+    return {
+      id: `scan_${Math.random().toString(36).slice(2, 10)}`,
+      createdAt: new Date().toISOString(),
+      completedAt: new Date().toISOString(),
+      sourceType: "url",
+      verdict: "clean",
+      riskScore: 5,
+      file: {
+        originalName: parsed.toString(),
+        extension: "(url)",
+        size: 512,
+        sizeDisplay: "512 B",
+        declaredMimeType: "text/url",
+        detectedMimeType: "text/html",
+        detectedFileType: "url",
+        magicType: "URL target",
+        entropy: 0,
+        printableRatio: 1,
+        hashes: {
+          md5: crypto.createHash("md5").update(parsed.toString()).digest("hex"),
+          sha1: crypto.createHash("sha1").update(parsed.toString()).digest("hex"),
+          sha256: crypto.createHash("sha256").update(parsed.toString()).digest("hex")
+        }
+      },
+      findings: [],
+      engines: {
+        heuristics: {
+          status: "completed",
+          matchedRules: [],
+          findingCount: 0
+        },
+        urlFetch: {
+          status: "ok",
+          detail: "URL fetched successfully.",
+          statusCode: 200,
+          finalUrl: parsed.toString(),
+          redirects: [],
+          truncated: false
+        },
+        ssrfGuard: {
+          status: "passed",
+          blockedReason: null,
+          resolvedAddresses: []
+        }
+      },
+      recommendations: ["No high-risk indicators detected from this first-pass URL scan."],
+      url: {
+        input: parsed.toString(),
+        normalized: parsed.toString(),
+        final: parsed.toString(),
+        protocol: parsed.protocol.replace(/:$/, ""),
+        hostname: parsed.hostname,
+        statusCode: 200,
+        contentType: "text/html",
+        title: "Example",
+        redirects: [],
+        resolvedAddresses: [],
+        truncated: false
+      }
+    };
+  };
+
   const { app } = await createApp({
     scanner: scanner || mockScanner,
+    urlScanner: urlScanner || mockUrlScanner,
     dataFilePath,
     configOverrides: {
       uploadDir,
@@ -190,6 +257,22 @@ describe("ViroVanta API", () => {
     expect(health.body.capabilities).toBeUndefined();
   });
 
+  it("returns reliability and limits metadata from the public status endpoint", async () => {
+    const app = await setupTestApp();
+
+    const status = await request(app).get("/api/public/status");
+
+    expect(status.status).toBe(200);
+    expect(status.body.status).toBe("operational");
+    expect(status.body.quickScanEnabled).toBe(true);
+    expect(status.body.maxUploadMb).toBeGreaterThan(0);
+    expect(status.body.reliability.scanSlaTargetMinutes).toBeGreaterThan(0);
+    expect(status.body.reliability.deterministicErrorResponses).toBe(true);
+    expect(status.body.limits.guestQuickScan.maxUploadMb).toBeGreaterThan(0);
+    expect(status.body.limits.authenticated.maxFilesPerBatch).toBeGreaterThan(0);
+    expect(status.body.compliance.userDeleteMode).toBe("soft_delete");
+  });
+
   it("checks username availability and blocks duplicate usernames", async () => {
     const app = await setupTestApp();
     await registerAndGetToken(app, "first@example.com", "StrongPass!123", "securitylead");
@@ -294,6 +377,63 @@ describe("ViroVanta API", () => {
 
     expect(reports.status).toBe(200);
     expect(reports.body.reports.length).toBeGreaterThan(0);
+  });
+
+  it("queues URL scan jobs and returns URL-based reports", async () => {
+    const app = await setupTestApp();
+    const session = await registerAndGetToken(app, "url-scan@example.com");
+
+    const submit = await request(app)
+      .post("/api/scans/links/jobs")
+      .set("Authorization", `Bearer ${session.accessToken}`)
+      .send({
+        url: "https://example.com/login"
+      });
+
+    expect(submit.status).toBe(202);
+    expect(submit.body.job.status).toBe("queued");
+    expect(submit.body.job.sourceType).toBe("url");
+
+    const finished = await waitForJobCompletion(app, session.accessToken, submit.body.job.id);
+    expect(finished.status).toBe("completed");
+
+    const reportResponse = await request(app)
+      .get(`/api/scans/reports/${finished.reportId}`)
+      .set("Authorization", `Bearer ${session.accessToken}`);
+
+    expect(reportResponse.status).toBe(200);
+    expect(reportResponse.body.report.sourceType).toBe("url");
+    expect(reportResponse.body.report.url?.final).toContain("example.com");
+  });
+
+  it("blocks SSRF targets during URL scanning with a safe report output", async () => {
+    const app = await setupTestApp({
+      urlScanner: scanTargetUrl
+    });
+    const session = await registerAndGetToken(app, "url-ssrf@example.com");
+
+    const submit = await request(app)
+      .post("/api/scans/links/jobs")
+      .set("Authorization", `Bearer ${session.accessToken}`)
+      .send({
+        url: "http://127.0.0.1/private"
+      });
+
+    expect(submit.status).toBe(202);
+
+    const finished = await waitForJobCompletion(app, session.accessToken, submit.body.job.id);
+    expect(finished.status).toBe("completed");
+
+    const reportResponse = await request(app)
+      .get(`/api/scans/reports/${finished.reportId}`)
+      .set("Authorization", `Bearer ${session.accessToken}`);
+
+    expect(reportResponse.status).toBe(200);
+    expect(reportResponse.body.report.sourceType).toBe("url");
+    expect(reportResponse.body.report.findings.some((item) => item.id === "url_ssrf_blocked")).toBe(true);
+    expect(reportResponse.body.report.engines?.ssrfGuard?.status).toBe("blocked");
+    expect(Array.isArray(reportResponse.body.report.plainLanguageReasons)).toBe(true);
+    expect(reportResponse.body.report.technicalIndicators).toBeTruthy();
   });
 
   it("ties report and analytics access to the authenticated user account", async () => {
@@ -597,6 +737,58 @@ describe("ViroVanta API", () => {
     expect(secondReportResponse.body.report.intel.previousMatches).toBeGreaterThanOrEqual(1);
   });
 
+  it("hides deleted reports from history while retaining records through policy expiry", async () => {
+    const app = await setupTestApp();
+    const session = await registerAndGetToken(app, "delete-report@example.com");
+
+    const submit = await request(app)
+      .post("/api/scans/jobs")
+      .set("Authorization", `Bearer ${session.accessToken}`)
+      .attach("file", Buffer.from("delete-me"), "delete-me.txt");
+
+    expect(submit.status).toBe(202);
+
+    const finished = await waitForJobCompletion(app, session.accessToken, submit.body.job.id);
+    expect(finished.status).toBe("completed");
+    expect(finished.reportId).toBeTruthy();
+
+    const deletion = await request(app)
+      .delete(`/api/scans/reports/${finished.reportId}`)
+      .set("Authorization", `Bearer ${session.accessToken}`);
+
+    expect(deletion.status).toBe(200);
+    expect(deletion.body.deleted).toBe(true);
+    expect(deletion.body.reportId).toBe(finished.reportId);
+    expect(deletion.body.deletedAt).toBeTruthy();
+    expect(deletion.body.retentionExpiresAt).toBeTruthy();
+
+    const reportsAfterDelete = await request(app)
+      .get("/api/scans/reports")
+      .set("Authorization", `Bearer ${session.accessToken}`);
+
+    expect(reportsAfterDelete.status).toBe(200);
+    expect(reportsAfterDelete.body.reports.some((report) => report.id === finished.reportId)).toBe(false);
+
+    const deletedReportLookup = await request(app)
+      .get(`/api/scans/reports/${finished.reportId}`)
+      .set("Authorization", `Bearer ${session.accessToken}`);
+
+    expect(deletedReportLookup.status).toBe(404);
+    expect(deletedReportLookup.body.error.code).toBe("SCAN_REPORT_NOT_FOUND");
+
+    const persisted = await app.locals.services.store.read((state) => state.reports.find((report) => report.id === finished.reportId));
+    expect(persisted).toBeTruthy();
+    expect(persisted.deletedAt).toBeTruthy();
+
+    const notifications = await request(app)
+      .get("/api/auth/notifications?limit=20")
+      .set("Authorization", `Bearer ${session.accessToken}`);
+
+    expect(notifications.status).toBe(200);
+    const deleteNotification = notifications.body.notifications.find((candidate) => candidate.type === "report_deleted");
+    expect(deleteNotification).toBeTruthy();
+  });
+
   it("signs reports and verifies integrity with IOC and MITRE ATT&CK enrichment", async () => {
     const app = await setupTestApp({
       scanner: async ({ originalName, declaredMimeType }) => ({
@@ -849,6 +1041,34 @@ describe("ViroVanta API", () => {
     expect(submitWithApiKey.status).toBe(403);
     expect(submitWithApiKey.body.error.code).toBe("AUTH_API_KEY_SCOPE_REQUIRED");
     expect(submitWithApiKey.body.error.details.requiredScopes).toEqual(["jobs:write"]);
+
+    const submitUrlWithApiKey = await request(app)
+      .post("/api/scans/links/jobs")
+      .set("x-api-key", scopedKeyCreate.body.apiKey)
+      .send({
+        url: "https://example.com"
+      });
+
+    expect(submitUrlWithApiKey.status).toBe(403);
+    expect(submitUrlWithApiKey.body.error.code).toBe("AUTH_API_KEY_SCOPE_REQUIRED");
+    expect(submitUrlWithApiKey.body.error.details.requiredScopes).toEqual(["jobs:write"]);
+
+    const submitForDelete = await request(app)
+      .post("/api/scans/jobs")
+      .set("Authorization", `Bearer ${session.accessToken}`)
+      .attach("file", Buffer.from("deletable"), "deletable.txt");
+
+    expect(submitForDelete.status).toBe(202);
+    const finishedForDelete = await waitForJobCompletion(app, session.accessToken, submitForDelete.body.job.id);
+    expect(finishedForDelete.status).toBe("completed");
+
+    const deleteWithApiKey = await request(app)
+      .delete(`/api/scans/reports/${finishedForDelete.reportId}`)
+      .set("x-api-key", scopedKeyCreate.body.apiKey);
+
+    expect(deleteWithApiKey.status).toBe(403);
+    expect(deleteWithApiKey.body.error.code).toBe("AUTH_API_KEY_SCOPE_REQUIRED");
+    expect(deleteWithApiKey.body.error.details.requiredScopes).toEqual(["reports:delete"]);
   });
 
   it("blocks API keys from account-management endpoints and marks sensitive responses as no-store", async () => {

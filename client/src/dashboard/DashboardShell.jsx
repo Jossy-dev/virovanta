@@ -85,6 +85,7 @@ export default function DashboardShell({
   shareState,
   shareError,
   isCreatingShare,
+  isDeletingReport,
   shareCopied,
   apiKeys,
   notifications,
@@ -98,9 +99,11 @@ export default function DashboardShell({
   onNotificationsViewed,
   onSelectFiles,
   onSubmitScan,
+  onSubmitUrlScan,
   onClearSelectedFiles,
   onOpenReport,
   onCreateShare,
+  onDeleteReport,
   onCopyShare,
   onCreateApiKey,
   onRevokeApiKey,
@@ -270,6 +273,7 @@ export default function DashboardShell({
                       isSubmittingScan={isSubmittingScan}
                       onSelectFiles={onSelectFiles}
                       onSubmitScan={onSubmitScan}
+                      onSubmitUrlScan={onSubmitUrlScan}
                       onClearSelectedFiles={onClearSelectedFiles}
                       jobs={jobs}
                       reports={reports}
@@ -302,6 +306,7 @@ export default function DashboardShell({
                       isSubmittingScan={isSubmittingScan}
                       onSelectFiles={onSelectFiles}
                       onSubmitScan={onSubmitScan}
+                      onSubmitUrlScan={onSubmitUrlScan}
                       onClearSelectedFiles={onClearSelectedFiles}
                       jobs={jobs}
                       activeJob={activeJob}
@@ -319,9 +324,11 @@ export default function DashboardShell({
                       searchQuery={searchQuery}
                       onOpenReport={onOpenReport}
                       onCreateShare={onCreateShare}
+                      onDeleteReport={onDeleteReport}
                       shareState={shareState}
                       shareError={shareError}
                       isCreatingShare={isCreatingShare}
+                      isDeletingReport={isDeletingReport}
                       shareCopied={shareCopied}
                       onCopyShare={onCopyShare}
                       activeRiskMeta={activeRiskMeta}
