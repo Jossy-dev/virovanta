@@ -52,7 +52,7 @@ export function Navbar({
       <div className="flex items-center gap-2">
         <button
           type="button"
-          className="dashboard-brand-control inline-flex rounded-2xl border border-slate-200 p-2 text-slate-600 lg:hidden dark:border-slate-800 dark:text-slate-300"
+          className="dashboard-brand-control inline-flex rounded-2xl border border-slate-200 bg-white p-2 text-slate-700 lg:hidden dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100"
           aria-label="Open navigation"
           onClick={onOpenMobileSidebar}
         >
@@ -63,7 +63,7 @@ export function Navbar({
       <label className="order-3 relative min-w-0 basis-full sm:order-none sm:flex-1">
         <Search
           size={16}
-          className="pointer-events-none absolute left-4 top-1/2 -translate-y-1/2 text-slate-400 dark:text-slate-500"
+          className="pointer-events-none absolute left-4 top-1/2 -translate-y-1/2 text-slate-500 dark:text-slate-300"
         />
         <input
           type="search"
@@ -77,7 +77,7 @@ export function Navbar({
       <div className="ml-auto flex shrink-0 items-center gap-2">
         <button
           type="button"
-          className="dashboard-brand-control inline-flex h-11 w-11 items-center justify-center rounded-2xl border border-slate-200 text-slate-600 dark:border-slate-800 dark:text-slate-300"
+          className="dashboard-brand-control inline-flex h-11 w-11 items-center justify-center rounded-2xl border border-slate-200 bg-white text-slate-700 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100"
           aria-label="Toggle theme"
           onClick={onToggleTheme}
         >
@@ -87,7 +87,7 @@ export function Navbar({
         <div className="relative">
           <button
             type="button"
-            className="dashboard-brand-control relative inline-flex h-11 w-11 items-center justify-center rounded-2xl border border-slate-200 text-slate-600 dark:border-slate-800 dark:text-slate-300"
+            className="dashboard-brand-control relative inline-flex h-11 w-11 items-center justify-center rounded-2xl border border-slate-200 bg-white text-slate-700 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100"
             aria-label="Notifications"
             onClick={() => {
               const next = !showNotifications;
@@ -167,9 +167,9 @@ export function Navbar({
             </span>
             <span className="hidden min-w-0 lg:block">
               <span className="block truncate text-sm font-semibold text-slate-950 dark:text-white">{displayName}</span>
-              <span className="block max-w-[160px] truncate text-xs text-slate-500 dark:text-slate-400">{user?.email}</span>
+              <span className="block max-w-[160px] truncate text-xs text-slate-500 dark:text-slate-300">{user?.email}</span>
             </span>
-            <ChevronDown size={16} className="hidden text-slate-400 lg:block dark:text-slate-500" />
+            <ChevronDown size={16} className="hidden text-slate-500 lg:block dark:text-slate-300" />
           </button>
 
           {showUserMenu ? (

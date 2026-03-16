@@ -8,7 +8,13 @@ import pinoHttp from "pino-http";
 import { RedisStore } from "rate-limit-redis";
 import { config, isCorsOriginAllowed } from "../config.js";
 import { createRedisClient } from "../infrastructure/redis/createRedisClient.js";
-import { createAuthMiddleware, preventSensitiveCaching, requireAuthMethod, requireRole } from "../middleware/authMiddleware.js";
+import {
+  createAuthMiddleware,
+  preventSensitiveCaching,
+  requireApiKeyScopes,
+  requireAuthMethod,
+  requireRole
+} from "../middleware/authMiddleware.js";
 import { errorHandler, notFoundHandler } from "../middleware/errorHandler.js";
 import { requestContext } from "../middleware/requestContext.js";
 import { createAdminRouter } from "../routes/adminRoutes.js";
@@ -232,6 +238,7 @@ export async function createApp(options = {}) {
     "/api/scans",
     createScanRouter({
       requireAuth,
+      requireApiKeyScopes,
       scanQueueService,
       authService,
       notificationService: authService.notificationService,

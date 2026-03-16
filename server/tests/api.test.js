@@ -574,6 +574,8 @@ describe("ViroVanta API", () => {
     expect(sharedReport.status).toBe(200);
     expect(sharedReport.body.shared).toBe(true);
     expect(sharedReport.body.report.id).toBe(firstFinished.reportId);
+    expect(sharedReport.body.report.signature).toBeTruthy();
+    expect(sharedReport.body.integrity?.valid).toBe(true);
 
     const secondSubmit = await request(app)
       .post("/api/scans/jobs")
@@ -593,6 +595,109 @@ describe("ViroVanta API", () => {
     expect(secondReportResponse.status).toBe(200);
     expect(secondReportResponse.body.report.intel.hashSeenBefore).toBe(true);
     expect(secondReportResponse.body.report.intel.previousMatches).toBeGreaterThanOrEqual(1);
+  });
+
+  it("signs reports and verifies integrity with IOC and MITRE ATT&CK enrichment", async () => {
+    const app = await setupTestApp({
+      scanner: async ({ originalName, declaredMimeType }) => ({
+        id: `scan_${Math.random().toString(36).slice(2, 10)}`,
+        createdAt: new Date().toISOString(),
+        completedAt: new Date().toISOString(),
+        verdict: "suspicious",
+        riskScore: 64,
+        file: {
+          originalName,
+          extension: path.extname(originalName || "").toLowerCase() || "(none)",
+          size: 10,
+          sizeDisplay: "10 B",
+          declaredMimeType: declaredMimeType || "unknown",
+          detectedMimeType: "text/plain",
+          detectedFileType: "txt",
+          magicType: "Text",
+          entropy: 1.11,
+          printableRatio: 1,
+          hashes: {
+            md5: "2f249230a8e7c2bf6005ccd2679259ec",
+            sha1: "552f87f495d8ab90f2bc1618f90f2f9f17bb0f6f",
+            sha256: "58ecf218d0ecf1052866f8ef89ea73385f24f6e53b39f5faca1581803fef6a62"
+          }
+        },
+        findings: [
+          {
+            id: "encoded_powershell",
+            title: "Encoded PowerShell execution pattern",
+            description: "PowerShell downloader observed.",
+            evidence: "powershell -enc aGVsbG8= https://bad.example.com 203.0.113.50 attacker@example.com",
+            severity: "critical"
+          }
+        ],
+        engines: {
+          heuristics: {
+            status: "completed",
+            matchedRules: ["encoded_powershell"],
+            findingCount: 1
+          },
+          clamav: {
+            status: "disabled",
+            detail: "disabled"
+          },
+          virustotal: {
+            status: "disabled",
+            detail: "disabled"
+          }
+        },
+        recommendations: ["Block bad.example.com at the gateway."]
+      })
+    });
+
+    const session = await registerAndGetToken(app, "integrity@example.com");
+
+    const submit = await request(app)
+      .post("/api/scans/jobs")
+      .set("Authorization", `Bearer ${session.accessToken}`)
+      .attach("file", Buffer.from("intel"), "intel.txt");
+
+    expect(submit.status).toBe(202);
+
+    const finished = await waitForJobCompletion(app, session.accessToken, submit.body.job.id);
+    expect(finished.status).toBe("completed");
+    expect(finished.reportId).toBeTruthy();
+
+    const reportResponse = await request(app)
+      .get(`/api/scans/reports/${finished.reportId}`)
+      .set("Authorization", `Bearer ${session.accessToken}`);
+
+    expect(reportResponse.status).toBe(200);
+    expect(reportResponse.body.report.signature).toBeTruthy();
+    expect(reportResponse.body.report.iocs.urls).toContain("https://bad.example.com");
+    expect(reportResponse.body.report.iocs.domains).toContain("bad.example.com");
+    expect(reportResponse.body.report.iocs.ips).toContain("203.0.113.50");
+    expect(reportResponse.body.report.iocs.emails).toContain("attacker@example.com");
+    expect(reportResponse.body.report.attackMapping.techniques.some((item) => item.id === "T1059.001")).toBe(true);
+
+    const integrityResponse = await request(app)
+      .get(`/api/scans/reports/${finished.reportId}/integrity`)
+      .set("Authorization", `Bearer ${session.accessToken}`);
+
+    expect(integrityResponse.status).toBe(200);
+    expect(integrityResponse.body.integrity.valid).toBe(true);
+
+    await app.locals.services.store.write((state) => {
+      const storedReport = state.reports.find((candidate) => candidate.id === finished.reportId);
+      if (!storedReport) {
+        throw new Error("Expected report to exist for tamper test");
+      }
+
+      storedReport.riskScore = 0;
+    });
+
+    const tamperedIntegrityResponse = await request(app)
+      .get(`/api/scans/reports/${finished.reportId}/integrity`)
+      .set("Authorization", `Bearer ${session.accessToken}`);
+
+    expect(tamperedIntegrityResponse.status).toBe(200);
+    expect(tamperedIntegrityResponse.body.integrity.valid).toBe(false);
+    expect(tamperedIntegrityResponse.body.integrity.reason).toBe("payload_hash_mismatch");
   });
 
   it("enforces free-tier daily scan quota", async () => {
@@ -707,6 +812,43 @@ describe("ViroVanta API", () => {
 
     const shouldFail = await request(app).get("/api/auth/me").set("x-api-key", apiKey);
     expect(shouldFail.status).toBe(401);
+  });
+
+  it("enforces API key scopes on scan endpoints", async () => {
+    const app = await setupTestApp();
+    const session = await registerAndGetToken(app, "scopes@example.com");
+
+    const submitWithBearer = await request(app)
+      .post("/api/scans/jobs")
+      .set("Authorization", `Bearer ${session.accessToken}`)
+      .attach("file", Buffer.from("scope-seed"), "scope-seed.txt");
+
+    expect(submitWithBearer.status).toBe(202);
+    await waitForJobCompletion(app, session.accessToken, submitWithBearer.body.job.id);
+
+    const scopedKeyCreate = await request(app)
+      .post("/api/auth/api-keys")
+      .set("Authorization", `Bearer ${session.accessToken}`)
+      .send({
+        name: "read-only-jobs",
+        scopes: ["jobs:read"]
+      });
+
+    expect(scopedKeyCreate.status).toBe(201);
+    expect(scopedKeyCreate.body.metadata.scopes).toEqual(["jobs:read"]);
+
+    const listJobs = await request(app).get("/api/scans/jobs").set("x-api-key", scopedKeyCreate.body.apiKey);
+    expect(listJobs.status).toBe(200);
+    expect(Array.isArray(listJobs.body.jobs)).toBe(true);
+
+    const submitWithApiKey = await request(app)
+      .post("/api/scans/jobs")
+      .set("x-api-key", scopedKeyCreate.body.apiKey)
+      .attach("file", Buffer.from("scope-denied"), "scope-denied.txt");
+
+    expect(submitWithApiKey.status).toBe(403);
+    expect(submitWithApiKey.body.error.code).toBe("AUTH_API_KEY_SCOPE_REQUIRED");
+    expect(submitWithApiKey.body.error.details.requiredScopes).toEqual(["jobs:write"]);
   });
 
   it("blocks API keys from account-management endpoints and marks sensitive responses as no-store", async () => {

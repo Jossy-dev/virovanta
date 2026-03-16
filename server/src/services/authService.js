@@ -3,6 +3,7 @@ import jwt from "jsonwebtoken";
 import crypto from "crypto";
 import { createRemoteJWKSet, jwtVerify } from "jose";
 import { HttpError } from "../utils/httpError.js";
+import { normalizeApiKeyScopes } from "../utils/apiKeyScopes.js";
 import { generateOpaqueToken, hashSecret, normalizeEmail, safeText } from "../utils/security.js";
 
 const TOKEN_ALGORITHM = "HS256";
@@ -119,6 +120,7 @@ function publicApiKey(key) {
     id: key.id,
     name: key.name,
     keyPrefix: key.keyPrefix,
+    scopes: normalizeApiKeyScopes(key.scopes, { fallbackToAll: true }),
     createdAt: key.createdAt,
     lastUsedAt: key.lastUsedAt || null,
     revokedAt: key.revokedAt || null
@@ -573,7 +575,7 @@ export class AuthService {
         const key = (user.apiKeys || []).find((candidate) => candidate.keyHash === keyHash && !candidate.revokedAt);
 
         if (key) {
-          return { user, keyId: key.id };
+          return { user, key };
         }
       }
 
@@ -584,21 +586,31 @@ export class AuthService {
       throw new HttpError(401, "Invalid API key.", { code: "AUTH_API_KEY_INVALID" });
     }
 
+    const now = new Date().toISOString();
+
     await this.store.write((state) => {
       const user = state.users.find((candidate) => candidate.id === match.user.id);
       if (!user) {
         return;
       }
 
-      const key = (user.apiKeys || []).find((candidate) => candidate.id === match.keyId);
+      const key = (user.apiKeys || []).find((candidate) => candidate.id === match.key.id);
       if (key) {
-        key.lastUsedAt = new Date().toISOString();
+        key.lastUsedAt = now;
       }
     });
 
     return {
       user: match.user,
-      authMethod: "api_key"
+      authMethod: "api_key",
+      apiKey: {
+        id: match.key.id,
+        name: match.key.name,
+        keyPrefix: match.key.keyPrefix,
+        scopes: normalizeApiKeyScopes(match.key.scopes, { fallbackToAll: true }),
+        createdAt: match.key.createdAt,
+        lastUsedAt: now
+      }
     };
   }
 
@@ -1220,8 +1232,9 @@ export class AuthService {
     return publicUser(user);
   }
 
-  async createApiKey(userId, keyName) {
+  async createApiKey(userId, keyName, requestedScopes) {
     const name = safeText(keyName, { fallback: "Default API Key", maxLength: 40 });
+    const scopes = normalizeApiKeyScopes(requestedScopes, { fallbackToAll: true });
 
     const result = await this.store.write((state) => {
       const user = state.users.find((candidate) => candidate.id === userId);
@@ -1243,6 +1256,7 @@ export class AuthService {
         name,
         keyPrefix: prefix,
         keyHash: hashSecret(rawKey),
+        scopes: [...scopes],
         createdAt: new Date().toISOString(),
         lastUsedAt: null,
         revokedAt: null
@@ -1259,7 +1273,8 @@ export class AuthService {
         userAgent: "",
         metadata: {
           keyId: key.id,
-          name: key.name
+          name: key.name,
+          scopes: key.scopes
         },
         createdAt: key.createdAt
       });

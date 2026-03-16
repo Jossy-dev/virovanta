@@ -123,7 +123,7 @@ export function ReportsView({
                 </div>
                 <div className="rounded-3xl border border-slate-200/80 px-4 py-4 dark:border-slate-800/80">
                   <p className="dashboard-label">SHA256</p>
-                  <p className="mt-2 truncate font-mono text-xs text-slate-600 dark:text-slate-300">{activeReport.file.hashes.sha256}</p>
+                  <p className="mt-2 break-all font-mono text-xs text-slate-600 dark:text-slate-300">{activeReport.file.hashes.sha256}</p>
                 </div>
               </div>
             </section>
@@ -174,7 +174,7 @@ export function ReportsView({
                           </span>
                         </div>
                         <p className="mt-2 text-sm leading-7 text-slate-500 dark:text-slate-400">{finding.description}</p>
-                        <p className="mt-2 font-mono text-xs text-slate-500 dark:text-slate-400">{finding.evidence}</p>
+                        <p className="mt-2 break-all font-mono text-xs text-slate-500 dark:text-slate-400">{finding.evidence}</p>
                       </div>
                     ))}
                   </div>

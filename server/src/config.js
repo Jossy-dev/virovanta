@@ -99,6 +99,7 @@ const corsOrigins = corsOriginRaw
 
 const fallbackJwtSecret = envString("JWT_ACCESS_SECRET", "change-me-in-production-secret");
 const fallbackReportShareSecret = envString("REPORT_SHARE_TOKEN_SECRET", fallbackJwtSecret);
+const fallbackReportIntegritySecret = envString("REPORT_INTEGRITY_SECRET", fallbackReportShareSecret);
 const databaseUrl = envString("DATABASE_URL", "");
 const redisUrl = envString("REDIS_URL", "");
 const supabaseUrl = envString("SUPABASE_URL", "");
@@ -177,6 +178,8 @@ const resolvedConfig = {
   jwtIssuer: envString("JWT_ISSUER", appSlug),
   jwtAudience: envString("JWT_AUDIENCE", `${appSlug}-${DEFAULT_CLIENT_AUDIENCE_SUFFIX}`),
   reportShareTokenSecret: fallbackReportShareSecret,
+  reportIntegritySecret: fallbackReportIntegritySecret,
+  reportIntegrityKeyId: envString("REPORT_INTEGRITY_KEY_ID", `${serviceName}-report-integrity-v1`),
   reportShareTokenIssuer: envString("REPORT_SHARE_TOKEN_ISSUER", appSlug),
   reportShareTokenAudience: envString(
     "REPORT_SHARE_TOKEN_AUDIENCE",
@@ -208,6 +211,10 @@ function assertProductionSecurity(runtimeConfig) {
 
   if (runtimeConfig.reportShareTokenSecret === "change-me-in-production-secret") {
     issues.push("REPORT_SHARE_TOKEN_SECRET must be set to a strong value in production.");
+  }
+
+  if (runtimeConfig.reportIntegritySecret === "change-me-in-production-secret") {
+    issues.push("REPORT_INTEGRITY_SECRET must be set to a strong value in production.");
   }
 
   if (runtimeConfig.dataStoreDriver === "postgres" && !runtimeConfig.databaseUrl) {

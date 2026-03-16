@@ -33,7 +33,10 @@ function toPublicReport(report, findingsLimit = 8) {
     findings: report.findings.slice(0, findingsLimit),
     engines: report.engines,
     recommendations: report.recommendations,
-    intel: report.intel || null
+    intel: report.intel || null,
+    iocs: report.iocs || null,
+    attackMapping: report.attackMapping || null,
+    signature: report.signature || null
   };
 }
 
@@ -95,8 +98,12 @@ export function createPublicRouter({ scanner, config, scanQueueService, createRa
         });
       }
 
+      const integrity =
+        typeof scanQueueService.verifyReportIntegrity === "function" ? scanQueueService.verifyReportIntegrity(report) : null;
+
       res.json({
         report: toPublicReport(report, config.publicQuickScanFindingsLimit),
+        integrity,
         shared: true
       });
     })

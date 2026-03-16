@@ -1,4 +1,5 @@
 import { HttpError } from "../utils/httpError.js";
+import { hasRequiredApiKeyScopes, normalizeApiKeyScopes } from "../utils/apiKeyScopes.js";
 
 export function createAuthMiddleware(authService) {
   return async function requireAuth(req, _res, next) {
@@ -11,7 +12,8 @@ export function createAuthMiddleware(authService) {
         const authResult = await authService.authenticateAccessToken(bearerMatch[1]);
         req.auth = {
           user: authResult.user,
-          method: authResult.authMethod
+          method: authResult.authMethod,
+          apiKey: null
         };
         return next();
       }
@@ -20,7 +22,8 @@ export function createAuthMiddleware(authService) {
         const authResult = await authService.authenticateApiKey(apiKey.trim());
         req.auth = {
           user: authResult.user,
-          method: authResult.authMethod
+          method: authResult.authMethod,
+          apiKey: authResult.apiKey || null
         };
         return next();
       }
@@ -29,6 +32,44 @@ export function createAuthMiddleware(authService) {
     } catch (error) {
       next(error);
     }
+  };
+}
+
+export function requireApiKeyScopes(...requiredScopes) {
+  return function apiKeyScopeGuard(req, _res, next) {
+    if (!req.auth?.user) {
+      return next(new HttpError(401, "Authentication required.", { code: "AUTH_REQUIRED" }));
+    }
+
+    if (req.auth.method !== "api_key") {
+      return next();
+    }
+
+    const normalizedRequiredScopes = normalizeApiKeyScopes(requiredScopes, {
+      fallbackToAll: false
+    });
+
+    if (normalizedRequiredScopes.length === 0) {
+      return next();
+    }
+
+    const grantedScopes = normalizeApiKeyScopes(req.auth.apiKey?.scopes, {
+      fallbackToAll: true
+    });
+
+    if (hasRequiredApiKeyScopes(grantedScopes, normalizedRequiredScopes)) {
+      return next();
+    }
+
+    return next(
+      new HttpError(403, "API key does not include required scope permissions.", {
+        code: "AUTH_API_KEY_SCOPE_REQUIRED",
+        details: {
+          requiredScopes: normalizedRequiredScopes,
+          grantedScopes
+        }
+      })
+    );
   };
 }
 

@@ -49,6 +49,16 @@ const DEFAULT_SCAN_LIMITS = Object.freeze({
   maxUploadMb: 25
 });
 
+const API_KEY_SCOPE_OPTIONS = Object.freeze([
+  "jobs:read",
+  "jobs:write",
+  "reports:read",
+  "reports:share",
+  "analytics:read"
+]);
+
+const DEFAULT_API_KEY_SCOPES = Object.freeze([...API_KEY_SCOPE_OPTIONS]);
+
 const SESSION_PERSISTENCE_LOCAL = "local";
 const SESSION_PERSISTENCE_SESSION = "session";
 
@@ -161,6 +171,7 @@ function AppContent() {
   const [apiKeys, setApiKeys] = useState([]);
   const [newApiKey, setNewApiKey] = useState("");
   const [newApiKeyName, setNewApiKeyName] = useState("Default Key");
+  const [newApiKeyScopes, setNewApiKeyScopes] = useState(DEFAULT_API_KEY_SCOPES);
   const [isCreatingKey, setIsCreatingKey] = useState(false);
   const [shareState, setShareState] = useState({
     url: "",
@@ -862,6 +873,7 @@ function AppContent() {
     setActiveJob(null);
     setApiKeys([]);
     setNewApiKey("");
+    setNewApiKeyScopes(DEFAULT_API_KEY_SCOPES);
     setSearchQuery("");
     clearSelectedFiles();
     setShareState({ url: "", expiresAt: "" });
@@ -930,7 +942,7 @@ function AppContent() {
     }
   }
 
-  async function createApiKey() {
+  async function createApiKey(requestInput = null) {
     if (!session || isCreatingKey) {
       return;
     }
@@ -939,16 +951,36 @@ function AppContent() {
     setNewApiKey("");
 
     try {
-      const payload = await apiRequest("/api/auth/api-keys", {
+      const requestedName = String(requestInput?.name ?? newApiKeyName).trim();
+      const requestedScopes = Array.isArray(requestInput?.scopes) ? requestInput.scopes : newApiKeyScopes;
+      const normalizedScopes = requestedScopes
+        .map((value) => String(value || "").trim().toLowerCase())
+        .filter((value, index, source) => value && source.indexOf(value) === index && API_KEY_SCOPE_OPTIONS.includes(value));
+
+      if (requestedName.length < 3) {
+        toast.error("API key name must be at least 3 characters.");
+        return;
+      }
+
+      if (normalizedScopes.length === 0) {
+        toast.error("Select at least one scope for this API key.");
+        return;
+      }
+
+      const responsePayload = await apiRequest("/api/auth/api-keys", {
         method: "POST",
         body: {
-          name: newApiKeyName
+          name: requestedName,
+          scopes: normalizedScopes
         },
         authSession: session
       });
 
-      setNewApiKey(payload.apiKey || "");
+      setNewApiKey(responsePayload.apiKey || "");
+      setNewApiKeyName(requestedName);
+      setNewApiKeyScopes(normalizedScopes);
       await Promise.all([refreshApiKeys(session), refreshNotifications(session)]);
+      toast.success("API key created. Copy it now, it will not be shown again.");
     } catch (error) {
       toast.error(error.message || "Could not create API key.");
     } finally {
@@ -1195,8 +1227,10 @@ function AppContent() {
                   apiKeys={apiKeys}
                   newApiKey={newApiKey}
                   newApiKeyName={newApiKeyName}
+                  newApiKeyScopes={newApiKeyScopes}
                   isCreatingKey={isCreatingKey}
                   setNewApiKeyName={setNewApiKeyName}
+                  setNewApiKeyScopes={setNewApiKeyScopes}
                   notifications={notifications}
                   onLogout={logout}
                   onNotificationsViewed={markNotificationsViewed}

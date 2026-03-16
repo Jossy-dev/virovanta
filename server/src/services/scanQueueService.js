@@ -4,6 +4,8 @@ import path from "path";
 import { Queue, Worker } from "bullmq";
 import { createRedisClient } from "../infrastructure/redis/createRedisClient.js";
 import { HttpError } from "../utils/httpError.js";
+import { signReport, verifySignedReport } from "../utils/reportIntegrity.js";
+import { enrichReportThreatIntel } from "../utils/threatIntel.js";
 
 const VERDICT_RANK = {
   clean: 1,
@@ -84,7 +86,8 @@ function toReportSummary(report) {
     fileSize: report.file.size,
     findingCount: report.findings.length,
     topFinding: report.findings[0]?.title || "No notable findings",
-    intel: report.intel || null
+    intel: report.intel || null,
+    iocCount: Number(report?.iocs?.total) || 0
   };
 }
 
@@ -589,6 +592,12 @@ export class ScanQueueService {
     return this.store.read((state) => state.reports.find((candidate) => candidate.id === reportId) || null);
   }
 
+  verifyReportIntegrity(report) {
+    return verifySignedReport(report, {
+      secret: this.config.reportIntegritySecret
+    });
+  }
+
   async #startBullQueue() {
     if (!this.config.redisUrl) {
       throw new Error("REDIS_URL is required when QUEUE_PROVIDER=bullmq.");
@@ -772,36 +781,36 @@ export class ScanQueueService {
       });
 
       const completedAt = new Date().toISOString();
-      let artifacts = null;
-
-      try {
-        artifacts = await this.#persistArtifacts(item, report, scanFilePath);
-      } catch (error) {
-        this.logger.error({ err: error, jobId: item.jobId }, "Artifact persistence failed. Continuing with completed scan report.");
-      }
-
-      await this.store.write((state) => {
+      const persistedReport = await this.store.write((state) => {
         const job = state.jobs.find((candidate) => candidate.id === item.jobId);
 
         if (!job) {
-          return;
+          return null;
         }
 
         const intel = buildReportIntel(report, state.reports);
+        const threatIntel = enrichReportThreatIntel(report);
 
-        const persistedReport = {
-          ...report,
-          ownerUserId: item.userId,
-          queuedJobId: item.jobId,
-          completedAt,
-          intel,
-          artifacts
-        };
+        const signedReport = signReport(
+          {
+            ...report,
+            ownerUserId: item.userId,
+            queuedJobId: item.jobId,
+            completedAt,
+            intel,
+            ...threatIntel,
+            artifacts: null
+          },
+          {
+            secret: this.config.reportIntegritySecret,
+            keyId: this.config.reportIntegrityKeyId
+          }
+        );
 
-        state.reports.unshift(persistedReport);
+        state.reports.unshift(signedReport);
 
         job.status = "completed";
-        job.reportId = persistedReport.id;
+        job.reportId = signedReport.id;
         job.completedAt = completedAt;
         job.updatedAt = completedAt;
         job.errorMessage = null;
@@ -814,13 +823,37 @@ export class ScanQueueService {
           userAgent: "",
           metadata: {
             jobId: job.id,
-            reportId: persistedReport.id,
-            verdict: persistedReport.verdict,
-            riskScore: persistedReport.riskScore
+            reportId: signedReport.id,
+            verdict: signedReport.verdict,
+            riskScore: signedReport.riskScore
           },
           createdAt: completedAt
         });
+
+        return signedReport;
       });
+
+      if (!persistedReport) {
+        return;
+      }
+
+      let artifacts = null;
+      try {
+        artifacts = await this.#persistArtifacts(item, persistedReport, scanFilePath);
+      } catch (error) {
+        this.logger.error({ err: error, jobId: item.jobId }, "Artifact persistence failed. Continuing with completed scan report.");
+      }
+
+      if (artifacts) {
+        await this.store.write((state) => {
+          const storedReport = state.reports.find((candidate) => candidate.id === persistedReport.id);
+          if (!storedReport) {
+            return;
+          }
+
+          storedReport.artifacts = artifacts;
+        });
+      }
 
       await this.notificationService?.create({
         userId: item.userId,
@@ -829,8 +862,8 @@ export class ScanQueueService {
         title: "Report ready",
         detail: `${item.originalName} finished scanning with a ${report.verdict} verdict.`,
         entityType: "report",
-        entityId: report.id,
-        dedupeKey: `report-ready:${report.id}`
+        entityId: persistedReport.id,
+        dedupeKey: `report-ready:${persistedReport.id}`
       });
     } catch (error) {
       const failedAt = new Date().toISOString();

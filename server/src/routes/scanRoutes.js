@@ -7,6 +7,7 @@ import { config as defaultConfig } from "../config.js";
 import { asyncHandler } from "../utils/asyncHandler.js";
 import { HttpError } from "../utils/httpError.js";
 import { createReportShareToken } from "../utils/reportShareToken.js";
+import { API_KEY_SCOPES } from "../utils/apiKeyScopes.js";
 import { validateSchema } from "../utils/validation.js";
 import { paginationSchema } from "../validation/scanSchemas.js";
 
@@ -24,6 +25,7 @@ function collectUploadedFiles(req) {
 
 export function createScanRouter({
   requireAuth,
+  requireApiKeyScopes = () => (_req, _res, next) => next(),
   scanQueueService,
   authService,
   notificationService = null,
@@ -53,6 +55,7 @@ export function createScanRouter({
 
   scanRouter.get(
     "/jobs",
+    requireApiKeyScopes(API_KEY_SCOPES.JOBS_READ),
     asyncHandler(async (req, res) => {
       const { limit } = validateSchema(paginationSchema, req.query);
       const jobs = await scanQueueService.listJobsForUser(req.auth.user, limit);
@@ -62,6 +65,7 @@ export function createScanRouter({
 
   scanRouter.get(
     "/jobs/:jobId",
+    requireApiKeyScopes(API_KEY_SCOPES.JOBS_READ),
     asyncHandler(async (req, res) => {
       const job = await scanQueueService.getJobForUser(req.params.jobId, req.auth.user);
       res.json({ job });
@@ -70,6 +74,7 @@ export function createScanRouter({
 
   scanRouter.post(
     "/jobs",
+    requireApiKeyScopes(API_KEY_SCOPES.JOBS_WRITE),
     upload.fields([
       { name: "file", maxCount: 1 },
       { name: "files", maxCount: config.maxBatchUploadFiles }
@@ -132,6 +137,7 @@ export function createScanRouter({
 
   scanRouter.get(
     "/reports",
+    requireApiKeyScopes(API_KEY_SCOPES.REPORTS_READ),
     asyncHandler(async (req, res) => {
       const { limit } = validateSchema(paginationSchema, req.query);
       const reports = await scanQueueService.listReportsForUser(req.auth.user, limit);
@@ -141,6 +147,7 @@ export function createScanRouter({
 
   scanRouter.get(
     "/reports/:reportId",
+    requireApiKeyScopes(API_KEY_SCOPES.REPORTS_READ),
     asyncHandler(async (req, res) => {
       const report = await scanQueueService.getReportForUser(req.params.reportId, req.auth.user);
       res.json({ report });
@@ -148,7 +155,21 @@ export function createScanRouter({
   );
 
   scanRouter.get(
+    "/reports/:reportId/integrity",
+    requireApiKeyScopes(API_KEY_SCOPES.REPORTS_READ),
+    asyncHandler(async (req, res) => {
+      const report = await scanQueueService.getReportForUser(req.params.reportId, req.auth.user);
+      const integrity = scanQueueService.verifyReportIntegrity(report);
+      res.json({
+        reportId: report.id,
+        integrity
+      });
+    })
+  );
+
+  scanRouter.get(
     "/analytics",
+    requireApiKeyScopes(API_KEY_SCOPES.ANALYTICS_READ),
     asyncHandler(async (req, res) => {
       const analytics = await scanQueueService.getAnalyticsForUser(req.auth.user);
       res.json({ analytics });
@@ -157,6 +178,7 @@ export function createScanRouter({
 
   scanRouter.post(
     "/reports/:reportId/share",
+    requireApiKeyScopes(API_KEY_SCOPES.REPORTS_SHARE),
     asyncHandler(async (req, res) => {
       const report = await scanQueueService.getReportForUser(req.params.reportId, req.auth.user);
       const share = createReportShareToken({

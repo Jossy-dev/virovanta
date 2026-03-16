@@ -49,7 +49,7 @@ export function Sidebar({
             {!collapsed ? (
               <div className="min-w-0">
                 <p className="truncate text-sm font-semibold text-slate-950 dark:text-white">{appName}</p>
-                <p className="truncate text-xs text-slate-500 dark:text-slate-400">{tagline}</p>
+                <p className="truncate text-xs text-slate-500 dark:text-slate-300">{tagline}</p>
               </div>
             ) : null}
           </div>
@@ -57,7 +57,7 @@ export function Sidebar({
           <div className={cn("flex items-center gap-2", collapsed && "justify-center")}>
             <button
               type="button"
-              className="dashboard-brand-control hidden cursor-pointer rounded-full border border-slate-200 p-2 text-slate-500 lg:inline-flex dark:border-slate-800 dark:text-slate-400"
+              className="dashboard-brand-control hidden cursor-pointer rounded-full border border-slate-200 bg-white p-2 text-slate-700 lg:inline-flex dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100"
               onClick={onToggleCollapse}
               aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"}
               title={collapsed ? "Expand sidebar" : "Collapse sidebar"}
@@ -66,7 +66,7 @@ export function Sidebar({
             </button>
             <button
               type="button"
-              className="dashboard-brand-control inline-flex cursor-pointer rounded-full border border-slate-200 p-2 text-slate-500 lg:hidden dark:border-slate-800 dark:text-slate-400"
+              className="dashboard-brand-control inline-flex cursor-pointer rounded-full border border-slate-200 bg-white p-2 text-slate-700 lg:hidden dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100"
               onClick={onCloseMobile}
               aria-label="Close sidebar"
               title="Close sidebar"
@@ -95,7 +95,7 @@ export function Sidebar({
                   "group relative flex w-full cursor-pointer items-center gap-3 rounded-2xl px-3 py-3 text-left transition",
                   active
                     ? "bg-viro-600 text-white shadow-soft dark:bg-viro-500 dark:text-white"
-                    : "text-slate-600 hover:bg-viro-50 hover:text-viro-700 dark:text-slate-300 dark:hover:bg-viro-900/35 dark:hover:text-emerald-200"
+                    : "bg-white/85 text-slate-700 hover:bg-viro-50 hover:text-viro-700 dark:bg-slate-900/70 dark:text-slate-100 dark:hover:bg-viro-900/35 dark:hover:text-emerald-200"
                 )}
               >
                 <span
@@ -111,7 +111,7 @@ export function Sidebar({
                 {!collapsed ? (
                   <span className="min-w-0">
                     <span className="block truncate text-sm font-semibold">{item.label}</span>
-                    <span className={cn("block truncate text-xs", active ? "text-white/70 dark:text-slate-500" : "text-slate-400")}>
+                    <span className={cn("block truncate text-xs", active ? "text-white/80" : "text-slate-500 dark:text-slate-300")}>
                       {item.description}
                     </span>
                   </span>

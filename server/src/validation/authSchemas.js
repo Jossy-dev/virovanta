@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { API_KEY_SCOPE_VALUES } from "../utils/apiKeyScopes.js";
 
 const usernameSchema = z.string().trim().min(2).max(80);
 
@@ -47,7 +48,8 @@ export const usernameAvailabilityQuerySchema = z.object({
 });
 
 export const createApiKeySchema = z.object({
-  name: z.string().trim().min(3).max(40)
+  name: z.string().trim().min(3).max(40),
+  scopes: z.array(z.enum(API_KEY_SCOPE_VALUES)).min(1).max(API_KEY_SCOPE_VALUES.length).optional()
 });
 
 export const notificationsQuerySchema = z.object({

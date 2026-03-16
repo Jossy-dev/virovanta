@@ -32,6 +32,7 @@ html,
 body,
 #root {
   min-height: 100%;
+  overflow-x: clip;
 }
 
 html {
@@ -846,17 +847,36 @@ input:focus-visible,
 .landing-process-grid {
   display: grid;
   gap: 0.75rem;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: 1fr;
 }
 
 .landing-seo-item,
 .landing-process-step {
+  align-items: flex-start;
   background: var(--surface-soft);
   border: 1px solid var(--line);
   border-radius: 16px;
+  display: flex;
+  gap: 0.7rem;
+  padding: 0.9rem;
+}
+
+.landing-seo-bullet {
+  background: var(--primary-soft);
+  border: 1px solid var(--line-strong);
+  border-radius: 999px;
+  display: inline-block;
+  flex-shrink: 0;
+  height: 0.72rem;
+  margin-top: 0.36rem;
+  width: 0.72rem;
+}
+
+.landing-seo-copy,
+.landing-process-copy {
   display: grid;
   gap: 0.42rem;
-  padding: 0.9rem;
+  min-width: 0;
 }
 
 .landing-seo-item h3,
@@ -873,10 +893,35 @@ input:focus-visible,
 }
 
 .landing-process-step span {
-  color: var(--primary);
+  align-items: center;
+  background: var(--primary-soft);
+  border: 1px solid var(--line-strong);
+  border-radius: 999px;
+  color: var(--primary-strong);
+  display: inline-flex;
+  flex-shrink: 0;
   font-family: "JetBrains Mono", monospace;
   font-size: 0.75rem;
+  font-weight: 600;
+  justify-content: center;
   letter-spacing: 0.08em;
+  min-height: 1.6rem;
+  min-width: 1.6rem;
+  padding: 0 0.28rem;
+}
+
+@media (min-width: 920px) {
+  .landing-seo-grid,
+  .landing-process-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (min-width: 1320px) {
+  .landing-seo-grid,
+  .landing-process-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
 }
 
 .marketing-shell {

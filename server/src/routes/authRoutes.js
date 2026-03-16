@@ -183,7 +183,7 @@ export function createAuthRouter({ authService, requireAuth, requireAuthMethod, 
     ...requireInteractiveAuth,
     asyncHandler(async (req, res) => {
       const payload = validateSchema(createApiKeySchema, req.body);
-      const result = await authService.createApiKey(req.auth.user.id, payload.name);
+      const result = await authService.createApiKey(req.auth.user.id, payload.name, payload.scopes);
       res.status(201).json(result);
     })
   );

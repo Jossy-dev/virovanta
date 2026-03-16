@@ -260,16 +260,25 @@ export default function LandingPage({
         </div>
         <div className="landing-seo-grid">
           <article className="landing-seo-item">
-            <h3>Email attachments and downloads</h3>
-            <p>Check suspicious attachments, downloaded files, and unknown documents before users open them.</p>
+            <span className="landing-seo-bullet" aria-hidden="true" />
+            <div className="landing-seo-copy">
+              <h3>Email attachments and downloads</h3>
+              <p>Check suspicious attachments, downloaded files, and unknown documents before users open them.</p>
+            </div>
           </article>
           <article className="landing-seo-item">
-            <h3>Scripts, executables, and archives</h3>
-            <p>Inspect scripts, installers, executables, and archive files for malware signals and risky indicators.</p>
+            <span className="landing-seo-bullet" aria-hidden="true" />
+            <div className="landing-seo-copy">
+              <h3>Scripts, executables, and archives</h3>
+              <p>Inspect scripts, installers, executables, and archive files for malware signals and risky indicators.</p>
+            </div>
           </article>
           <article className="landing-seo-item">
-            <h3>Plain-language risk reports</h3>
-            <p>Get a verdict, risk score, findings, hashes, and next-step guidance without requiring deep security expertise.</p>
+            <span className="landing-seo-bullet" aria-hidden="true" />
+            <div className="landing-seo-copy">
+              <h3>Plain-language risk reports</h3>
+              <p>Get a verdict, risk score, findings, hashes, and next-step guidance without requiring deep security expertise.</p>
+            </div>
           </article>
         </div>
       </motion.section>
@@ -282,18 +291,24 @@ export default function LandingPage({
         <div className="landing-process-grid">
           <article className="landing-process-step">
             <span>01</span>
-            <h3>Upload suspicious files</h3>
-            <p>Start with a quick guest test or sign in to queue one or many files for analysis.</p>
+            <div className="landing-process-copy">
+              <h3>Upload suspicious files</h3>
+              <p>Start with a quick guest test or sign in to queue one or many files for analysis.</p>
+            </div>
           </article>
           <article className="landing-process-step">
             <span>02</span>
-            <h3>Run layered analysis</h3>
-            <p>The app inspects file structure, entropy, hashes, anomaly signals, and malware-related indicators.</p>
+            <div className="landing-process-copy">
+              <h3>Run layered analysis</h3>
+              <p>The app inspects file structure, entropy, hashes, anomaly signals, and malware-related indicators.</p>
+            </div>
           </article>
           <article className="landing-process-step">
             <span>03</span>
-            <h3>Review the report</h3>
-            <p>Use the risk score, findings, recommendations, and history view to decide what to do next.</p>
+            <div className="landing-process-copy">
+              <h3>Review the report</h3>
+              <p>Use the risk score, findings, recommendations, and history view to decide what to do next.</p>
+            </div>
           </article>
         </div>
       </motion.section>

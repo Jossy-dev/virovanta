@@ -90,8 +90,10 @@ export default function DashboardShell({
   notifications,
   newApiKey,
   newApiKeyName,
+  newApiKeyScopes,
   isCreatingKey,
   setNewApiKeyName,
+  setNewApiKeyScopes,
   onLogout,
   onNotificationsViewed,
   onSelectFiles,
@@ -206,8 +208,8 @@ export default function DashboardShell({
 
   return (
     <div className={theme === "dark" ? "dark" : ""}>
-      <main className="dashboard-page min-h-screen overflow-x-hidden">
-        <div className="mx-auto flex max-w-[1760px] flex-col gap-4 px-3 py-3 sm:px-4 sm:py-4 lg:flex-row lg:gap-6 lg:px-8">
+      <main className="dashboard-page min-h-screen overflow-x-clip">
+        <div className="mx-auto flex w-full max-w-[1760px] min-w-0 flex-col gap-4 overflow-x-clip px-3 py-3 sm:px-4 sm:py-4 lg:flex-row lg:gap-6 lg:px-8">
           <Sidebar
             items={NAV_ITEMS}
             activePath={activeItem.path}
@@ -225,7 +227,7 @@ export default function DashboardShell({
             onCloseMobile={() => setMobileSidebarOpen(false)}
           />
 
-          <div className={cn("min-w-0 flex-1", !isDesktop && mobileSidebarOpen && "overflow-hidden")}>
+          <div className={cn("min-w-0 flex-1 overflow-x-clip", !isDesktop && mobileSidebarOpen && "overflow-hidden")}>
             <Navbar
               searchQuery={searchQuery}
               onSearchChange={onSearchChange}
@@ -341,7 +343,9 @@ export default function DashboardShell({
                       isCreatingKey={isCreatingKey}
                       newApiKey={newApiKey}
                       apiKeys={apiKeys}
+                      newApiKeyScopes={newApiKeyScopes}
                       onRevokeApiKey={onRevokeApiKey}
+                      setNewApiKeyScopes={setNewApiKeyScopes}
                     />
                   ) : null}
                 </Suspense>

@@ -551,6 +551,221 @@ describe("App", () => {
     }
   });
 
+  it("creates API keys with the selected scope set from settings", async () => {
+    const restoreMatchMedia = setDesktopMatchMedia(true);
+    window.history.replaceState({}, "", "/app/settings");
+
+    localStorage.setItem(
+      SESSION_STORAGE_KEY,
+      JSON.stringify({
+        accessToken: "access-token",
+        refreshToken: "refresh-token",
+        user: {
+          username: "analyst_ops",
+          name: "analyst_ops",
+          email: "analyst@example.com",
+          role: "user"
+        },
+        usage: null
+      })
+    );
+
+    const fetchMock = vi.fn(async (input, init = {}) => {
+      const url = String(input);
+      const method = String(init?.method || "GET").toUpperCase();
+
+      if (url.endsWith("/api/auth/me")) {
+        return new Response(
+          JSON.stringify({
+            user: {
+              username: "analyst_ops",
+              name: "analyst_ops",
+              email: "analyst@example.com",
+              role: "user"
+            },
+            usage: {
+              windowStartedAt: "2026-03-13T00:00:00.000Z",
+              used: 1,
+              remaining: 39,
+              limit: 40
+            },
+            scanLimits: {
+              maxFilesPerBatch: 10,
+              maxUploadMb: 25
+            },
+            authMethod: "bearer"
+          }),
+          {
+            status: 200,
+            headers: { "Content-Type": "application/json" }
+          }
+        );
+      }
+
+      if (url.includes("/api/scans/jobs")) {
+        return new Response(JSON.stringify({ jobs: [] }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" }
+        });
+      }
+
+      if (url.includes("/api/scans/reports")) {
+        return new Response(JSON.stringify({ reports: [] }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" }
+        });
+      }
+
+      if (url.includes("/api/scans/analytics")) {
+        return new Response(
+          JSON.stringify({
+            analytics: {
+              comparisonWindowDays: 30,
+              summary: {
+                totalJobs: 0,
+                activeJobs: 0,
+                queuedJobs: 0,
+                processingJobs: 0,
+                completedJobs: 0,
+                failedJobs: 0,
+                totalReports: 0,
+                cleanReports: 0,
+                suspiciousReports: 0,
+                maliciousReports: 0,
+                flaggedReports: 0,
+                cleanRate: 0,
+                averageRiskScore: 0,
+                highestRiskScore: 0
+              },
+              windows: {
+                current: {
+                  reports: 0,
+                  flaggedReports: 0,
+                  cleanRate: 0,
+                  averageRiskScore: 0,
+                  failedJobs: 0
+                },
+                previous: {
+                  reports: 0,
+                  flaggedReports: 0,
+                  cleanRate: 0,
+                  averageRiskScore: 0,
+                  failedJobs: 0
+                }
+              },
+              timeSeries: [],
+              postureBreakdown: [
+                { label: "Clean", value: 0 },
+                { label: "Suspicious", value: 0 },
+                { label: "Malicious", value: 0 }
+              ],
+              queueBreakdown: [
+                { label: "Queued", value: 0 },
+                { label: "Processing", value: 0 },
+                { label: "Completed", value: 0 },
+                { label: "Failed", value: 0 }
+              ],
+              riskDistribution: [
+                { label: "0-24", value: 0 },
+                { label: "25-49", value: 0 },
+                { label: "50-74", value: 0 },
+                { label: "75-100", value: 0 }
+              ],
+              fileTypeBreakdown: [],
+              latestReport: null,
+              highestRiskReport: null
+            }
+          }),
+          {
+            status: 200,
+            headers: { "Content-Type": "application/json" }
+          }
+        );
+      }
+
+      if (url.includes("/api/auth/api-keys") && method === "GET") {
+        return new Response(JSON.stringify({ keys: [] }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" }
+        });
+      }
+
+      if (url.includes("/api/auth/api-keys") && method === "POST") {
+        return new Response(
+          JSON.stringify({
+            apiKey: "svk_test.visible_once",
+            metadata: {
+              id: "key_1",
+              name: "Scoped Integration",
+              keyPrefix: "svk_test",
+              scopes: ["jobs:read", "reports:read"],
+              createdAt: "2026-03-15T11:00:00.000Z",
+              lastUsedAt: null,
+              revokedAt: null
+            }
+          }),
+          {
+            status: 201,
+            headers: { "Content-Type": "application/json" }
+          }
+        );
+      }
+
+      if (url.includes("/api/auth/notifications")) {
+        return new Response(
+          JSON.stringify({
+            notifications: [],
+            unreadCount: 0
+          }),
+          {
+            status: 200,
+            headers: { "Content-Type": "application/json" }
+          }
+        );
+      }
+
+      if (url.endsWith("/api/public/status")) {
+        return mockGuestStatus();
+      }
+
+      throw new Error(`Unexpected fetch: ${method} ${url}`);
+    });
+
+    vi.stubGlobal("fetch", fetchMock);
+
+    try {
+      render(<App />);
+
+      expect(await screen.findByText(/automation access/i)).toBeInTheDocument();
+
+      const keyNameInput = screen.getByLabelText(/key name/i);
+      await userEvent.clear(keyNameInput);
+      await userEvent.type(keyNameInput, "Scoped Integration");
+
+      const jobsWriteOption = screen.getByRole("checkbox", { name: /jobs write/i });
+      expect(jobsWriteOption).toBeChecked();
+      await userEvent.click(jobsWriteOption);
+      expect(jobsWriteOption).not.toBeChecked();
+
+      await userEvent.click(screen.getByRole("button", { name: /create api key/i }));
+
+      expect(await screen.findByText(/api key created successfully/i)).toBeInTheDocument();
+      expect(screen.getByText(/copy and store this key now/i)).toBeInTheDocument();
+
+      const postCall = fetchMock.mock.calls.find(([url, init]) => {
+        return String(url).includes("/api/auth/api-keys") && String(init?.method || "GET").toUpperCase() === "POST";
+      });
+
+      expect(postCall).toBeTruthy();
+      const requestBody = JSON.parse(String(postCall[1].body || "{}"));
+      expect(requestBody.name).toBe("Scoped Integration");
+      expect(requestBody.scopes).toContain("jobs:read");
+      expect(requestBody.scopes).not.toContain("jobs:write");
+    } finally {
+      restoreMatchMedia();
+    }
+  });
+
   it("opens the mobile navigation drawer from the hamburger menu", async () => {
     const restoreMatchMedia = setDesktopMatchMedia(false);
     window.history.replaceState({}, "", "/app/dashboard");
