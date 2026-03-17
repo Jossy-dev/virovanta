@@ -293,7 +293,7 @@ const ROUTES = [
       </section>
       <section class="seo-section">
         <h2>Privacy and retention</h2>
-        <p>Reports remain private by default. User-initiated report deletion hides records immediately while retention policy remains active.</p>
+        <p>Reports remain private by default. Users can delete reports from workspace history at any time.</p>
       </section>
       `
     })
@@ -421,6 +421,19 @@ const ROUTES = [
     snapshotHtml: buildPrivateSnapshot({
       heading: `${APP_NAME} settings`,
       description: "Manage API keys and dashboard preferences after signing in."
+    })
+  },
+  {
+    id: "app-docs",
+    path: "/app/docs",
+    title: `Docs | ${APP_NAME}`,
+    description: `Authenticated ${APP_NAME} API reference and integration guides.`,
+    robots: PRIVATE_ROBOTS,
+    indexable: false,
+    staticRender: true,
+    snapshotHtml: buildPrivateSnapshot({
+      heading: `${APP_NAME} API docs`,
+      description: "Read authentication, endpoints, and integration examples after signing in."
     })
   },
   {

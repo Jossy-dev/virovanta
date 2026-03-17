@@ -82,4 +82,59 @@
     @apply pointer-events-none absolute left-full top-1/2 z-30 ml-3 -translate-y-1/2 whitespace-nowrap rounded-xl border border-slate-200/90 bg-white px-3 py-2 text-xs font-medium text-slate-700 opacity-0 shadow-soft transition duration-150 group-hover:visible group-hover:opacity-100 dark:border-slate-800/90 dark:bg-slate-950 dark:text-slate-200;
     visibility: hidden;
   }
+
+  .docs-code {
+    @apply dashboard-scrollbar bg-slate-900 text-slate-100;
+    font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New",
+      monospace;
+  }
+
+  .docs-code .token.comment,
+  .docs-code .token.prolog,
+  .docs-code .token.doctype,
+  .docs-code .token.cdata {
+    color: #7f8ea3;
+  }
+
+  .docs-code .token.punctuation {
+    color: #dbe4ef;
+  }
+
+  .docs-code .token.property,
+  .docs-code .token.tag,
+  .docs-code .token.boolean,
+  .docs-code .token.number,
+  .docs-code .token.constant,
+  .docs-code .token.symbol,
+  .docs-code .token.deleted {
+    color: #8be9fd;
+  }
+
+  .docs-code .token.selector,
+  .docs-code .token.attr-name,
+  .docs-code .token.string,
+  .docs-code .token.char,
+  .docs-code .token.builtin,
+  .docs-code .token.inserted {
+    color: #8be28b;
+  }
+
+  .docs-code .token.operator,
+  .docs-code .token.entity,
+  .docs-code .token.url,
+  .docs-code .language-css .token.string,
+  .docs-code .style .token.string {
+    color: #d5dce7;
+  }
+
+  .docs-code .token.atrule,
+  .docs-code .token.attr-value,
+  .docs-code .token.keyword {
+    color: #c5a3ff;
+  }
+
+  .docs-code .token.function,
+  .docs-code .token.class-name {
+    color: #ffcb6b;
+  }
 }

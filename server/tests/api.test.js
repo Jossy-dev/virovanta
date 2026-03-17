@@ -270,7 +270,7 @@ describe("ViroVanta API", () => {
     expect(status.body.reliability.deterministicErrorResponses).toBe(true);
     expect(status.body.limits.guestQuickScan.maxUploadMb).toBeGreaterThan(0);
     expect(status.body.limits.authenticated.maxFilesPerBatch).toBeGreaterThan(0);
-    expect(status.body.compliance.userDeleteMode).toBe("soft_delete");
+    expect(status.body.compliance.userDeleteMode).toBe("delete");
   });
 
   it("checks username availability and blocks duplicate usernames", async () => {

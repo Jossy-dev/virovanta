@@ -108,9 +108,9 @@ export function createPublicRouter({ scanner, config, scanQueueService, createRa
       },
       compliance: {
         reportsPrivateByDefault: true,
-        userDeleteMode: "soft_delete",
+        userDeleteMode: "delete",
         reportRetentionDays,
-        note: "Deleting a report hides it from user history immediately. Records remain retained until retention expiry."
+        note: "Deleting a report removes it from user history."
       }
     });
   });

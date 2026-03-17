@@ -27,7 +27,7 @@ const API_SCOPE_OPTIONS = Object.freeze([
   {
     value: "reports:delete",
     label: "Reports Delete",
-    description: "Hide reports from user history while retaining records through policy expiry."
+    description: "Delete reports from the user workspace."
   },
   {
     value: "analytics:read",

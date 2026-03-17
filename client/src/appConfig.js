@@ -8,6 +8,15 @@ function envString(name, fallback = "") {
   return normalized || fallback;
 }
 
+function envNumber(name, fallback, { min = Number.NEGATIVE_INFINITY, max = Number.POSITIVE_INFINITY } = {}) {
+  const value = Number(import.meta.env?.[name]);
+  if (!Number.isFinite(value)) {
+    return fallback;
+  }
+
+  return Math.min(max, Math.max(min, value));
+}
+
 function normalizeSlug(value, fallback = "app") {
   const normalized = String(value || "")
     .trim()
@@ -34,6 +43,8 @@ export const APP_NAME = defaultAppName;
 export const APP_SLUG = defaultAppSlug;
 export const APP_TAGLINE = envString("VITE_APP_TAGLINE", "Smart file malware and anomaly scanning");
 export const SESSION_STORAGE_KEY = envString("VITE_SESSION_STORAGE_KEY", `${defaultAppSlug}-session`);
+export const SESSION_IDLE_TIMEOUT_MINUTES = envNumber("VITE_SESSION_IDLE_TIMEOUT_MINUTES", 60, { min: 5, max: 240 });
+export const SESSION_ABSOLUTE_TIMEOUT_HOURS = envNumber("VITE_SESSION_ABSOLUTE_TIMEOUT_HOURS", 24, { min: 1, max: 168 });
 export const LOGO_ALT_TEXT = `${APP_NAME} logo`;
 export const SITE_URL = siteUrl;
 export const SEO_DEFAULT_TITLE = envString("VITE_SEO_TITLE", `${APP_NAME} | Malware and File Threat Scanner`);

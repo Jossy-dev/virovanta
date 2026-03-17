@@ -1,6 +1,6 @@
 import { lazy, Suspense, useEffect, useMemo, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
-import { BarChart3, FileBarChart2, LayoutDashboard, Settings2, ShieldCheck } from "lucide-react";
+import { BarChart3, BookOpenText, FileBarChart2, LayoutDashboard, Settings2, ShieldCheck } from "lucide-react";
 import { Navigate, useLocation, useNavigate } from "react-router-dom";
 import { toast } from "sonner";
 import { getUserName, resolveDesktopViewport } from "../appUtils";
@@ -17,6 +17,7 @@ const AnalyticsView = lazyNamed(() => import("./views/AnalyticsView"), "Analytic
 const ProjectsView = lazyNamed(() => import("./views/ProjectsView"), "ProjectsView");
 const ReportsView = lazyNamed(() => import("./views/ReportsView"), "ReportsView");
 const SettingsView = lazyNamed(() => import("./views/SettingsView"), "SettingsView");
+const DocsView = lazyNamed(() => import("./views/DocsView"), "DocsView");
 
 const NAV_ITEMS = [
   {
@@ -53,15 +54,46 @@ const NAV_ITEMS = [
     label: "Settings",
     description: "Keys and preferences",
     icon: Settings2
+  },
+  {
+    id: "docs",
+    path: "/app/docs",
+    label: "Docs",
+    description: "API guides and examples",
+    icon: BookOpenText
   }
 ];
+
+const VERDICT_FILTER_VALUES = Object.freeze(["clean", "suspicious", "malicious"]);
+
+function normalizeVerdictFilterValue(value) {
+  const normalized = String(value || "")
+    .trim()
+    .toLowerCase();
+
+  if (VERDICT_FILTER_VALUES.includes(normalized)) {
+    return normalized;
+  }
+
+  return "";
+}
 
 function SectionLoading() {
   return (
     <section className="dashboard-shell-surface p-6 sm:p-8">
-      <p className="dashboard-label">Loading view</p>
-      <h3 className="mt-2 text-xl font-semibold tracking-[-0.03em] text-slate-950 dark:text-white">Preparing workspace section</h3>
-      <p className="mt-2 text-sm text-slate-500 dark:text-slate-400">Loading the selected dashboard area.</p>
+      <div className="flex min-h-[72px] items-start gap-3" role="status" aria-live="polite" aria-busy="true">
+        <span className="relative mt-2 inline-flex h-5 w-5 shrink-0 items-center justify-center" aria-hidden="true">
+          <span className="absolute h-5 w-5 rounded-full bg-emerald-400/75 motion-safe:animate-ping motion-reduce:animate-none" />
+          <span className="relative h-3.5 w-3.5 rounded-full bg-emerald-600 motion-safe:animate-pulse motion-reduce:animate-none" />
+        </span>
+        <div className="flex-1">
+          <p className="dashboard-label">Loading view</p>
+          <h3 className="mt-2 text-xl font-semibold tracking-[-0.03em] text-slate-950 dark:text-white">
+            Preparing workspace section
+          </h3>
+          <p className="mt-2 text-sm text-slate-500 dark:text-slate-400">Loading the selected dashboard area.</p>
+        </div>
+      </div>
     </section>
   );
 }
@@ -115,6 +147,7 @@ export default function DashboardShell({
   prefersReducedMotion,
   currentDateLabel,
   quotaText,
+  isSyncingData = false,
   analytics,
   themePalette
 }) {
@@ -170,6 +203,10 @@ export default function DashboardShell({
       NAV_ITEMS.find((item) => location.pathname === item.path || location.pathname.startsWith(`${item.path}/`)) || null
     );
   }, [location.pathname]);
+  const verdictFilter = useMemo(() => {
+    const params = new URLSearchParams(location.search || "");
+    return normalizeVerdictFilterValue(params.get("verdict"));
+  }, [location.search]);
 
   const userName = useMemo(() => getUserName(session?.user), [session?.user]);
   const effectiveSidebarCollapsed = isDesktop ? sidebarCollapsed : false;
@@ -195,9 +232,19 @@ export default function DashboardShell({
     toast.message("Project workspace opened.");
   };
 
-  const openHistory = () => {
-    navigate("/app/history");
-    toast.message("History view opened.");
+  const openHistory = (nextVerdictFilter = "") => {
+    const normalizedVerdictFilter = normalizeVerdictFilterValue(nextVerdictFilter);
+    navigate(normalizedVerdictFilter ? `/app/history?verdict=${encodeURIComponent(normalizedVerdictFilter)}` : "/app/history");
+    toast.message(normalizedVerdictFilter ? `Showing ${normalizedVerdictFilter} reports.` : "History view opened.");
+  };
+
+  const openHistoryByVerdict = (verdictLabel) => {
+    const normalizedVerdictFilter = normalizeVerdictFilterValue(verdictLabel);
+    if (!normalizedVerdictFilter) {
+      return;
+    }
+
+    openHistory(normalizedVerdictFilter);
   };
 
   const openReportWorkspace = (reportId) => {
@@ -251,6 +298,15 @@ export default function DashboardShell({
                 </h2>
               </div>
               <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap">
+                {isSyncingData ? (
+                  <div className="inline-flex items-center gap-2 rounded-full border border-emerald-200 bg-emerald-50 px-4 py-2 text-sm text-emerald-800 dark:border-emerald-900/70 dark:bg-emerald-950/40 dark:text-emerald-200">
+                    <span className="relative inline-flex h-3 w-3 items-center justify-center" aria-hidden="true">
+                      <span className="absolute h-3 w-3 rounded-full bg-emerald-400/70 motion-safe:animate-ping motion-reduce:animate-none" />
+                      <span className="relative h-2 w-2 rounded-full bg-emerald-600 motion-safe:animate-pulse motion-reduce:animate-none" />
+                    </span>
+                    <span>Syncing latest data</span>
+                  </div>
+                ) : null}
                 <div className="dashboard-brand-outline">{quotaText}</div>
                 <div className="rounded-full border border-slate-200 bg-white px-4 py-2 text-sm text-slate-500 dark:border-slate-800 dark:bg-slate-950 dark:text-slate-400">
                   {storedReportCount} reports stored
@@ -293,6 +349,7 @@ export default function DashboardShell({
                       analytics={analytics}
                       formatDateTime={formatDateTime}
                       themePalette={themePalette}
+                      onSelectPosture={openHistoryByVerdict}
                     />
                   ) : null}
 
@@ -322,6 +379,8 @@ export default function DashboardShell({
                       reports={reports}
                       activeReport={activeReport}
                       searchQuery={searchQuery}
+                      verdictFilter={verdictFilter}
+                      onClearVerdictFilter={() => openHistory("")}
                       onOpenReport={onOpenReport}
                       onCreateShare={onCreateShare}
                       onDeleteReport={onDeleteReport}
@@ -355,6 +414,8 @@ export default function DashboardShell({
                       setNewApiKeyScopes={setNewApiKeyScopes}
                     />
                   ) : null}
+
+                  {activeItem.id === "docs" ? <DocsView /> : null}
                 </Suspense>
               </motion.section>
             </AnimatePresence>

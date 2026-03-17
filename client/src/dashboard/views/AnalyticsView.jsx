@@ -93,7 +93,19 @@ function formatRiskScore(value) {
   return `${Math.round(Number(value) || 0)}/100`;
 }
 
-export function AnalyticsView({ analytics, formatDateTime, themePalette }) {
+function normalizeVerdictLabel(value) {
+  const normalized = String(value || "")
+    .trim()
+    .toLowerCase();
+
+  if (normalized === "clean" || normalized === "suspicious" || normalized === "malicious") {
+    return normalized;
+  }
+
+  return "";
+}
+
+export function AnalyticsView({ analytics, formatDateTime, themePalette, onSelectPosture = () => {} }) {
   const comparisonWindowDays = Number(analytics?.comparisonWindowDays) || 30;
   const summary = analytics?.summary || {};
   const windows = analytics?.windows || {};
@@ -193,7 +205,7 @@ export function AnalyticsView({ analytics, formatDateTime, themePalette }) {
         <ChartCard
           title="Security posture"
           subtitle="Verdict distribution"
-          action={<span className="dashboard-label">All stored reports</span>}
+          action={<span className="dashboard-label">Click a bar to open matching reports</span>}
         >
           {postureTotal === 0 ? (
             <ChartEmptyState message="No completed reports are available yet, so there is no verdict distribution to plot." />
@@ -207,7 +219,19 @@ export function AnalyticsView({ analytics, formatDateTime, themePalette }) {
                   <Tooltip content={<ChartTooltip />} />
                   <Bar dataKey="value" name="Reports" radius={[10, 10, 0, 0]}>
                     {analytics.postureBreakdown.map((entry, index) => (
-                      <Cell key={entry.label} fill={themePalette.pie[index % themePalette.pie.length]} />
+                      <Cell
+                        key={entry.label}
+                        fill={themePalette.pie[index % themePalette.pie.length]}
+                        cursor={Number(entry?.value) > 0 ? "pointer" : "default"}
+                        onClick={() => {
+                          const normalizedVerdict = normalizeVerdictLabel(entry?.label);
+                          if (!normalizedVerdict || Number(entry?.value) <= 0) {
+                            return;
+                          }
+
+                          onSelectPosture(normalizedVerdict);
+                        }}
+                      />
                     ))}
                   </Bar>
                 </BarChart>

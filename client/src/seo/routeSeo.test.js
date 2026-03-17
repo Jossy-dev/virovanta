@@ -14,6 +14,7 @@ describe("routeSeo", () => {
   it("marks auth and app routes as noindex", () => {
     expect(getSeoForPath("/signin").robots).toMatch(/^noindex/i);
     expect(getSeoForPath("/app/dashboard").robots).toMatch(/^noindex/i);
+    expect(getSeoForPath("/app/docs").robots).toMatch(/^noindex/i);
     expect(getSeoForPath("/report/example-token").robots).toMatch(/^noindex/i);
   });
 

@@ -1,14 +1,33 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { ArrowUpRight, Share2, Trash2 } from "lucide-react";
 import { WidgetCard } from "../components/WidgetCard";
 import { filterCollection } from "../dashboardUtils";
 
 const REPORTS_PAGE_SIZE = 12;
+const VERDICT_FILTER_VALUES = Object.freeze(["clean", "suspicious", "malicious"]);
+
+function normalizeVerdictValue(value) {
+  const normalized = String(value || "")
+    .trim()
+    .toLowerCase();
+
+  if (VERDICT_FILTER_VALUES.includes(normalized)) {
+    return normalized;
+  }
+
+  return "";
+}
+
+function SkeletonBar({ className = "" }) {
+  return <span className={`block animate-pulse rounded bg-slate-200/85 dark:bg-slate-800/85 ${className}`} aria-hidden="true" />;
+}
 
 export function ReportsView({
   reports,
   activeReport,
   searchQuery,
+  verdictFilter = "",
+  onClearVerdictFilter = () => {},
   onOpenReport,
   onCreateShare,
   onDeleteReport,
@@ -24,8 +43,38 @@ export function ReportsView({
   getDisplayFileType,
   formatVerdictLabel
 }) {
-  const filteredReports = filterCollection(reports, searchQuery, ["fileName", "verdict", "id", "sourceType"]);
-  const isLinkReport = activeReport?.sourceType === "url";
+  const normalizedVerdictFilter = normalizeVerdictValue(verdictFilter);
+  const verdictFilteredReports = useMemo(() => {
+    if (!normalizedVerdictFilter) {
+      return reports;
+    }
+
+    return reports.filter((report) => normalizeVerdictValue(report?.verdict) === normalizedVerdictFilter);
+  }, [reports, normalizedVerdictFilter]);
+  const filteredReports = useMemo(
+    () => filterCollection(verdictFilteredReports, searchQuery, ["fileName", "verdict", "id", "sourceType"]),
+    [verdictFilteredReports, searchQuery]
+  );
+  const selectedReport = useMemo(() => {
+    if (!activeReport || !activeReport.id) {
+      return null;
+    }
+
+    return filteredReports.some((report) => report.id === activeReport.id) ? activeReport : null;
+  }, [activeReport, filteredReports]);
+  const [pendingSelectedReportId, setPendingSelectedReportId] = useState("");
+  const selectedListReportId = pendingSelectedReportId || selectedReport?.id || "";
+  const pendingReportSummary = useMemo(() => {
+    if (!pendingSelectedReportId) {
+      return null;
+    }
+
+    return filteredReports.find((report) => report.id === pendingSelectedReportId) || null;
+  }, [filteredReports, pendingSelectedReportId]);
+  const isReportDetailsLoading = Boolean(pendingSelectedReportId) && pendingSelectedReportId !== selectedReport?.id;
+  const hasSelectedOrPendingReport = Boolean(selectedReport || pendingReportSummary);
+  const selectedSourceType = pendingReportSummary?.sourceType || selectedReport?.sourceType || "file";
+  const isLinkReport = selectedSourceType === "url";
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [visibleReportCount, setVisibleReportCount] = useState(REPORTS_PAGE_SIZE);
   const visibleReports = useMemo(
@@ -33,22 +82,60 @@ export function ReportsView({
     [filteredReports, visibleReportCount]
   );
   const canLoadMoreReports = filteredReports.length > visibleReportCount;
+  const handleOpenReport = useCallback((reportId) => {
+    if (!reportId || reportId === selectedListReportId) {
+      return;
+    }
+
+    setPendingSelectedReportId(reportId);
+    Promise.resolve(onOpenReport(reportId)).catch(() => {
+      setPendingSelectedReportId((current) => (current === reportId ? "" : current));
+    });
+  }, [onOpenReport, selectedListReportId]);
 
   useEffect(() => {
     setConfirmDelete(false);
-  }, [activeReport?.id]);
+  }, [selectedReport?.id]);
+
+  useEffect(() => {
+    if (!pendingSelectedReportId) {
+      return;
+    }
+
+    if (selectedReport?.id === pendingSelectedReportId) {
+      setPendingSelectedReportId("");
+    }
+  }, [pendingSelectedReportId, selectedReport?.id]);
+
+  useEffect(() => {
+    if (!pendingSelectedReportId) {
+      return;
+    }
+
+    if (!filteredReports.some((report) => report.id === pendingSelectedReportId)) {
+      setPendingSelectedReportId("");
+    }
+  }, [filteredReports, pendingSelectedReportId]);
 
   useEffect(() => {
     setVisibleReportCount(REPORTS_PAGE_SIZE);
-  }, [searchQuery]);
+  }, [searchQuery, normalizedVerdictFilter]);
 
   useEffect(() => {
-    const activeIndex = filteredReports.findIndex((report) => report.id === activeReport?.id);
+    const activeIndex = filteredReports.findIndex((report) => report.id === selectedListReportId);
     if (activeIndex >= 0 && activeIndex >= visibleReportCount) {
       const pagesRequired = Math.ceil((activeIndex + 1) / REPORTS_PAGE_SIZE);
       setVisibleReportCount(pagesRequired * REPORTS_PAGE_SIZE);
     }
-  }, [activeReport?.id, filteredReports, visibleReportCount]);
+  }, [selectedListReportId, filteredReports, visibleReportCount]);
+
+  useEffect(() => {
+    if (!normalizedVerdictFilter || filteredReports.length === 0 || selectedListReportId) {
+      return;
+    }
+
+    handleOpenReport(filteredReports[0].id);
+  }, [filteredReports, normalizedVerdictFilter, selectedListReportId, handleOpenReport]);
 
   return (
     <div className="grid gap-6 xl:grid-cols-[360px_minmax(0,1fr)]">
@@ -56,28 +143,58 @@ export function ReportsView({
         <div className="mb-4">
           <p className="dashboard-label">Reports</p>
           <h2 className="text-xl font-semibold tracking-[-0.03em] text-slate-950 dark:text-white">Scan history</h2>
+          {normalizedVerdictFilter ? (
+            <div className="mt-3 flex flex-wrap items-center gap-2">
+              <span className="rounded-full border border-viro-200 bg-viro-50 px-2.5 py-1 text-xs font-medium text-viro-700 dark:border-viro-800 dark:bg-viro-900/35 dark:text-viro-200">
+                Filter: {formatVerdictLabel(normalizedVerdictFilter)}
+              </span>
+              <button
+                type="button"
+                onClick={onClearVerdictFilter}
+                className="dashboard-brand-outline px-3 py-1.5 text-xs"
+              >
+                Clear filter
+              </button>
+            </div>
+          ) : null}
         </div>
-        <div className="dashboard-scrollbar max-h-[34vh] space-y-2 overflow-y-auto pr-1 sm:max-h-[48vh] xl:max-h-[68vh]">
+        <div className="dashboard-scrollbar max-h-[34vh] overflow-y-auto rounded-none border border-slate-200 bg-white dark:border-slate-800 dark:bg-slate-950 sm:max-h-[48vh] xl:max-h-[68vh]">
           {filteredReports.length === 0 ? (
-            <p className="text-sm text-slate-500 dark:text-slate-400">No reports available.</p>
+            <p className="px-4 py-4 text-sm text-slate-500 dark:text-slate-400">
+              {normalizedVerdictFilter
+                ? `No ${formatVerdictLabel(normalizedVerdictFilter).toLowerCase()} reports available.`
+                : "No reports available."}
+            </p>
           ) : (
-            visibleReports.map((report) => {
-              const isActive = report.id === activeReport?.id;
+            visibleReports.map((report, index) => {
+              const isActive = report.id === selectedListReportId;
+              const isPendingActive = report.id === pendingSelectedReportId && pendingSelectedReportId !== selectedReport?.id;
+              const isAlternateRow = index % 2 === 1;
 
               return (
                 <button
                   key={report.id}
                   type="button"
-                  onClick={() => onOpenReport(report.id)}
-                  className={`w-full cursor-pointer rounded-3xl border px-4 py-4 text-left transition ${
+                  onClick={() => handleOpenReport(report.id)}
+                  className={`w-full cursor-pointer rounded-none border-b border-slate-200/80 px-4 py-4 text-left transition-colors duration-150 last:border-b-0 dark:border-slate-800/80 ${
                     isActive
-                      ? "border-viro-600 bg-viro-600 text-white dark:border-viro-500 dark:bg-viro-500 dark:text-white"
-                      : "border-slate-200 bg-white hover:border-viro-200 hover:bg-viro-50 dark:border-slate-800 dark:bg-slate-950 dark:hover:border-viro-800 dark:hover:bg-viro-900/25"
+                      ? "bg-viro-600 text-white dark:bg-viro-500 dark:text-white"
+                      : isAlternateRow
+                        ? "bg-slate-50/70 hover:bg-viro-50/70 dark:bg-slate-900/65 dark:hover:bg-viro-900/25"
+                        : "bg-white hover:bg-slate-50 dark:bg-slate-950 dark:hover:bg-viro-900/20"
                   }`}
                 >
-                  <p className={`truncate text-sm font-semibold ${isActive ? "text-white dark:text-white" : "text-slate-900 dark:text-slate-100"}`}>
-                    {report.fileName}
-                  </p>
+                  <div className="flex items-center justify-between gap-3">
+                    <p className={`truncate text-sm font-semibold ${isActive ? "text-white dark:text-white" : "text-slate-900 dark:text-slate-100"}`}>
+                      {report.fileName}
+                    </p>
+                    {isPendingActive ? (
+                      <span className="inline-flex items-center gap-1 text-[10px] font-medium uppercase tracking-[0.12em] text-white/80 dark:text-white/80">
+                        <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-white/90" />
+                        Loading
+                      </span>
+                    ) : null}
+                  </div>
                   <p className={`mt-1 text-xs ${isActive ? "text-white/80 dark:text-white/80" : "text-slate-500 dark:text-slate-300"}`}>
                     {formatDateTime(report.completedAt)}
                   </p>
@@ -115,22 +232,100 @@ export function ReportsView({
       </aside>
 
       <div className="space-y-6">
-        {!activeReport ? (
+        {!hasSelectedOrPendingReport ? (
           <WidgetCard title="No report selected" subtitle="Choose a report from the left">
             <p className="text-sm leading-7 text-slate-500 dark:text-slate-400">
               Select a completed report to inspect file or URL metadata, findings, recommendations, and any shared link details.
             </p>
           </WidgetCard>
-        ) : (
+        ) : isReportDetailsLoading ? (
+          <>
+            <section className="dashboard-shell-surface p-4 sm:p-6" aria-live="polite" aria-busy="true">
+              <div className="flex flex-col gap-4 sm:flex-row sm:flex-wrap sm:items-start sm:justify-between">
+                <div>
+                  <p className="dashboard-label">Selected report</p>
+                  <h2 className="mt-2 text-xl font-semibold tracking-[-0.04em] text-slate-950 dark:text-white sm:text-2xl">
+                    {pendingReportSummary?.fileName || "Loading report"}
+                  </h2>
+                  <p className="mt-2 inline-flex items-center gap-2 text-sm text-slate-500 dark:text-slate-400">
+                    <span className="h-2 w-2 animate-pulse rounded-full bg-viro-500 dark:bg-viro-400" />
+                    Loading report details...
+                  </p>
+                </div>
+                <div className="flex w-full flex-col gap-3 sm:w-auto sm:flex-row sm:flex-wrap">
+                  <SkeletonBar className="h-10 w-40 rounded-full" />
+                  <SkeletonBar className="h-10 w-40 rounded-full" />
+                  <SkeletonBar className="h-10 w-40 rounded-full" />
+                </div>
+              </div>
+
+              <div className="mt-6 grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+                <div className="rounded-3xl border border-slate-200/80 px-4 py-4 dark:border-slate-800/80">
+                  <p className="dashboard-label">{isLinkReport ? "URL host" : "Detected type"}</p>
+                  <SkeletonBar className="mt-2 h-4 w-3/4" />
+                </div>
+                <div className="rounded-3xl border border-slate-200/80 px-4 py-4 dark:border-slate-800/80">
+                  <p className="dashboard-label">{isLinkReport ? "Fetched bytes" : "File size"}</p>
+                  <SkeletonBar className="mt-2 h-4 w-2/3" />
+                </div>
+                <div className="rounded-3xl border border-slate-200/80 px-4 py-4 dark:border-slate-800/80">
+                  <p className="dashboard-label">Verdict</p>
+                  <SkeletonBar className="mt-2 h-4 w-1/2" />
+                </div>
+                <div className="rounded-3xl border border-slate-200/80 px-4 py-4 dark:border-slate-800/80">
+                  <p className="dashboard-label">{isLinkReport ? "URL hash (SHA256)" : "SHA256"}</p>
+                  <SkeletonBar className="mt-2 h-3 w-full" />
+                </div>
+              </div>
+
+              {isLinkReport ? (
+                <div className="mt-4 grid gap-4 sm:grid-cols-2">
+                  <div className="rounded-3xl border border-slate-200/80 px-4 py-4 dark:border-slate-800/80">
+                    <p className="dashboard-label">Final URL</p>
+                    <SkeletonBar className="mt-2 h-3 w-full" />
+                  </div>
+                  <div className="rounded-3xl border border-slate-200/80 px-4 py-4 dark:border-slate-800/80">
+                    <p className="dashboard-label">Redirects</p>
+                    <SkeletonBar className="mt-2 h-4 w-1/4" />
+                  </div>
+                </div>
+              ) : null}
+            </section>
+
+            <div className="grid gap-6 xl:grid-cols-[1.15fr_0.85fr]">
+              <WidgetCard title="Findings" subtitle="What the scanner detected">
+                <div className="space-y-3">
+                  <div className="rounded-3xl border border-slate-200/80 px-4 py-4 dark:border-slate-800/80">
+                    <SkeletonBar className="h-4 w-2/3" />
+                    <SkeletonBar className="mt-3 h-3 w-full" />
+                    <SkeletonBar className="mt-2 h-3 w-5/6" />
+                  </div>
+                  <div className="rounded-3xl border border-slate-200/80 px-4 py-4 dark:border-slate-800/80">
+                    <SkeletonBar className="h-4 w-1/2" />
+                    <SkeletonBar className="mt-3 h-3 w-full" />
+                  </div>
+                </div>
+              </WidgetCard>
+
+              <WidgetCard title="Recommendations" subtitle="Suggested next steps">
+                <div className="space-y-3">
+                  <SkeletonBar className="h-10 w-full rounded-2xl" />
+                  <SkeletonBar className="h-10 w-full rounded-2xl" />
+                  <SkeletonBar className="h-10 w-5/6 rounded-2xl" />
+                </div>
+              </WidgetCard>
+            </div>
+          </>
+        ) : selectedReport ? (
           <>
             <section className="dashboard-shell-surface p-4 sm:p-6">
               <div className="flex flex-col gap-4 sm:flex-row sm:flex-wrap sm:items-start sm:justify-between">
                 <div>
                   <p className="dashboard-label">Selected report</p>
                   <h2 className="mt-2 text-xl font-semibold tracking-[-0.04em] text-slate-950 dark:text-white sm:text-2xl">
-                    {activeReport.file.originalName}
+                    {selectedReport.file.originalName}
                   </h2>
-                  <p className="mt-2 text-sm text-slate-500 dark:text-slate-400">{formatDateTime(activeReport.completedAt)}</p>
+                  <p className="mt-2 text-sm text-slate-500 dark:text-slate-400">{formatDateTime(selectedReport.completedAt)}</p>
                 </div>
                 <div className="flex w-full flex-col gap-3 sm:w-auto sm:flex-row sm:flex-wrap">
                   <span
@@ -142,7 +337,7 @@ export function ReportsView({
                           : "bg-emerald-50 text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-300"
                     }`}
                   >
-                    {activeReport.riskScore}/100 {activeRiskMeta.label}
+                    {selectedReport.riskScore}/100 {activeRiskMeta.label}
                   </span>
                   <button
                     type="button"
@@ -162,7 +357,7 @@ export function ReportsView({
                       }
 
                       setConfirmDelete(false);
-                      void onDeleteReport(activeReport.id);
+                      void onDeleteReport(selectedReport.id);
                     }}
                     disabled={isDeletingReport}
                     className={`inline-flex w-full items-center justify-center gap-2 rounded-full border px-4 py-2.5 text-sm transition disabled:cursor-not-allowed disabled:opacity-45 sm:w-auto ${
@@ -172,14 +367,14 @@ export function ReportsView({
                     }`}
                   >
                     <Trash2 size={16} />
-                    {isDeletingReport ? "Hiding..." : confirmDelete ? "Confirm hide report" : "Hide report"}
+                    {isDeletingReport ? "Deleting..." : confirmDelete ? "Confirm delete report" : "Delete report"}
                   </button>
                 </div>
               </div>
 
               {confirmDelete ? (
                 <div className="mt-4 rounded-2xl border border-rose-200 bg-rose-50/60 px-4 py-3 text-sm text-rose-700 dark:border-rose-800 dark:bg-rose-950/30 dark:text-rose-200">
-                  Report will be hidden from history immediately. Retention remains active for policy/audit expiry.
+                  Report will be deleted from your workspace immediately.
                 </div>
               ) : null}
 
@@ -187,20 +382,20 @@ export function ReportsView({
                 <div className="rounded-3xl border border-slate-200/80 px-4 py-4 dark:border-slate-800/80">
                   <p className="dashboard-label">{isLinkReport ? "URL host" : "Detected type"}</p>
                   <p className="mt-2 text-sm font-semibold text-slate-950 dark:text-white">
-                    {isLinkReport ? activeReport?.url?.hostname || "Unknown host" : getDisplayFileType(activeReport.file)}
+                    {isLinkReport ? selectedReport?.url?.hostname || "Unknown host" : getDisplayFileType(selectedReport.file)}
                   </p>
                 </div>
                 <div className="rounded-3xl border border-slate-200/80 px-4 py-4 dark:border-slate-800/80">
                   <p className="dashboard-label">{isLinkReport ? "Fetched bytes" : "File size"}</p>
-                  <p className="mt-2 text-sm font-semibold text-slate-950 dark:text-white">{formatBytes(activeReport.file.size)}</p>
+                  <p className="mt-2 text-sm font-semibold text-slate-950 dark:text-white">{formatBytes(selectedReport.file.size)}</p>
                 </div>
                 <div className="rounded-3xl border border-slate-200/80 px-4 py-4 dark:border-slate-800/80">
                   <p className="dashboard-label">Verdict</p>
-                  <p className="mt-2 text-sm font-semibold text-slate-950 dark:text-white">{formatVerdictLabel(activeReport.verdict)}</p>
+                  <p className="mt-2 text-sm font-semibold text-slate-950 dark:text-white">{formatVerdictLabel(selectedReport.verdict)}</p>
                 </div>
                 <div className="rounded-3xl border border-slate-200/80 px-4 py-4 dark:border-slate-800/80">
                   <p className="dashboard-label">{isLinkReport ? "URL hash (SHA256)" : "SHA256"}</p>
-                  <p className="mt-2 break-all font-mono text-xs text-slate-600 dark:text-slate-300">{activeReport.file.hashes.sha256}</p>
+                  <p className="mt-2 break-all font-mono text-xs text-slate-600 dark:text-slate-300">{selectedReport.file.hashes.sha256}</p>
                 </div>
               </div>
 
@@ -208,12 +403,12 @@ export function ReportsView({
                 <div className="mt-4 grid gap-4 sm:grid-cols-2">
                   <div className="rounded-3xl border border-slate-200/80 px-4 py-4 dark:border-slate-800/80">
                     <p className="dashboard-label">Final URL</p>
-                    <p className="mt-2 break-all text-xs text-slate-700 dark:text-slate-300">{activeReport?.url?.final || activeReport.file.originalName}</p>
+                    <p className="mt-2 break-all text-xs text-slate-700 dark:text-slate-300">{selectedReport?.url?.final || selectedReport.file.originalName}</p>
                   </div>
                   <div className="rounded-3xl border border-slate-200/80 px-4 py-4 dark:border-slate-800/80">
                     <p className="dashboard-label">Redirects</p>
                     <p className="mt-2 text-sm font-semibold text-slate-950 dark:text-white">
-                      {Array.isArray(activeReport?.url?.redirects) ? activeReport.url.redirects.length : 0}
+                      {Array.isArray(selectedReport?.url?.redirects) ? selectedReport.url.redirects.length : 0}
                     </p>
                   </div>
                 </div>
@@ -253,13 +448,13 @@ export function ReportsView({
 
             <div className="grid gap-6 xl:grid-cols-[1.15fr_0.85fr]">
               <WidgetCard title="Findings" subtitle="What the scanner detected">
-                {activeReport.findings.length === 0 ? (
+                {selectedReport.findings.length === 0 ? (
                   <p className="text-sm leading-7 text-slate-500 dark:text-slate-400">
                     No notable indicators were detected in this {isLinkReport ? "URL target" : "file"}.
                   </p>
                 ) : (
                   <div className="space-y-3">
-                    {activeReport.findings.map((finding) => (
+                    {selectedReport.findings.map((finding) => (
                       <div key={`${finding.id}-${finding.title}`} className="rounded-3xl border border-slate-200/80 px-4 py-4 dark:border-slate-800/80">
                         <div className="flex items-center justify-between gap-3">
                           <p className="text-sm font-semibold text-slate-950 dark:text-white">{finding.title}</p>
@@ -277,7 +472,7 @@ export function ReportsView({
 
               <WidgetCard title="Recommendations" subtitle="Suggested next steps">
                 <ul className="space-y-3">
-                  {activeReport.recommendations.map((item) => (
+                  {selectedReport.recommendations.map((item) => (
                     <li key={item} className="rounded-2xl border border-slate-200/80 px-4 py-3 text-sm leading-7 text-slate-600 dark:border-slate-800/80 dark:text-slate-300">
                       {item}
                     </li>
@@ -286,15 +481,15 @@ export function ReportsView({
               </WidgetCard>
             </div>
 
-            {isLinkReport && activeReport?.technicalIndicators ? (
+            {isLinkReport && selectedReport?.technicalIndicators ? (
               <WidgetCard title="Technical Indicators" subtitle="Link analysis signals">
                 <pre className="dashboard-scrollbar overflow-x-auto rounded-2xl border border-slate-200/80 bg-slate-50 p-3 text-xs text-slate-700 dark:border-slate-800/80 dark:bg-slate-900 dark:text-slate-300">
-                  {JSON.stringify(activeReport.technicalIndicators, null, 2)}
+                  {JSON.stringify(selectedReport.technicalIndicators, null, 2)}
                 </pre>
               </WidgetCard>
             ) : null}
           </>
-        )}
+        ) : null}
       </div>
     </div>
   );

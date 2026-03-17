@@ -30,9 +30,9 @@ const DEFAULT_STATUS = Object.freeze({
   },
   compliance: {
     reportsPrivateByDefault: true,
-    userDeleteMode: "soft_delete",
+    userDeleteMode: "delete",
     reportRetentionDays: 90,
-    note: "Deleting a report hides it from history while retention remains active."
+    note: "Deleting a report removes it from user history."
   }
 });
 
@@ -210,8 +210,8 @@ export default function StatusPage({ appName, appTagline, logoAltText, brandMark
             <p>Authenticated reports are account-scoped and are not publicly exposed unless a share link is explicitly created.</p>
           </article>
           <article className="marketing-card">
-            <h3>User-initiated report hiding</h3>
-            <p>Users can hide reports from dashboard history without immediate physical deletion from retention storage.</p>
+            <h3>User-initiated report deletion</h3>
+            <p>Users can delete reports from dashboard history.</p>
           </article>
           <article className="marketing-card">
             <h3>Retention window</h3>

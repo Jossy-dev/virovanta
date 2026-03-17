@@ -9,6 +9,8 @@ import {
   HERO_BG_DEFAULT,
   HERO_BG_VARIANTS,
   LOGO_ALT_TEXT,
+  SESSION_ABSOLUTE_TIMEOUT_HOURS,
+  SESSION_IDLE_TIMEOUT_MINUTES,
   SESSION_STORAGE_KEY,
   buildApiUrl,
   buildSiteUrl
@@ -63,6 +65,163 @@ const DEFAULT_API_KEY_SCOPES = Object.freeze([...API_KEY_SCOPE_OPTIONS]);
 
 const SESSION_PERSISTENCE_LOCAL = "local";
 const SESSION_PERSISTENCE_SESSION = "session";
+const SESSION_HARD_MAX_AGE_MS = Math.max(60 * 60 * 1000, Math.floor(Number(SESSION_ABSOLUTE_TIMEOUT_HOURS) || 24) * 60 * 60 * 1000);
+const SESSION_IDLE_MAX_AGE_MS = Math.max(5 * 60 * 1000, Math.floor(Number(SESSION_IDLE_TIMEOUT_MINUTES) || 60) * 60 * 1000);
+const ACTIVITY_TOUCH_THROTTLE_MS = 15 * 1000;
+const DASHBOARD_CACHE_VERSION = 1;
+const DASHBOARD_CACHE_TTL_MS = 2 * 60 * 1000;
+const DASHBOARD_CACHE_KEY = `${SESSION_STORAGE_KEY}-dashboard-cache`;
+const ACCESS_TOKEN_FALLBACK_TTL_SECONDS = 15 * 60;
+const ACCESS_TOKEN_REFRESH_SKEW_MS = 90 * 1000;
+const ACCESS_TOKEN_MIN_REFRESH_DELAY_MS = 15 * 1000;
+const ACCESS_TOKEN_UNKNOWN_REFRESH_DELAY_MS = 5 * 60 * 1000;
+const AUTH_INVALID_CODES = new Set([
+  "AUTH_REFRESH_INVALID",
+  "AUTH_TOKEN_INVALID",
+  "AUTH_UNAUTHORIZED",
+  "AUTH_REQUIRED",
+  "AUTH_SESSION_EXPIRED",
+  "AUTH_SESSION_IDLE_EXPIRED"
+]);
+
+function resolveSessionStartedAt(value, fallbackMs = Date.now()) {
+  const parsed = Date.parse(String(value || ""));
+  if (Number.isFinite(parsed)) {
+    return new Date(parsed).toISOString();
+  }
+
+  return new Date(fallbackMs).toISOString();
+}
+
+function resolveSessionLastActivityAt(value, fallbackMs = Date.now()) {
+  const parsed = Date.parse(String(value || ""));
+  if (Number.isFinite(parsed)) {
+    return new Date(parsed).toISOString();
+  }
+
+  return new Date(fallbackMs).toISOString();
+}
+
+function getSessionStartedAtMs(sessionLike) {
+  const parsed = Date.parse(String(sessionLike?.sessionStartedAt || ""));
+  return Number.isFinite(parsed) ? parsed : NaN;
+}
+
+function getSessionLastActivityAtMs(sessionLike) {
+  const parsed = Date.parse(String(sessionLike?.lastActivityAt || ""));
+  return Number.isFinite(parsed) ? parsed : NaN;
+}
+
+function isSessionHardExpired(sessionLike) {
+  const startedAtMs = getSessionStartedAtMs(sessionLike);
+  if (!Number.isFinite(startedAtMs)) {
+    return false;
+  }
+
+  return Date.now() - startedAtMs >= SESSION_HARD_MAX_AGE_MS;
+}
+
+function isSessionIdleExpired(sessionLike) {
+  const lastActivityAtMs = getSessionLastActivityAtMs(sessionLike);
+  if (!Number.isFinite(lastActivityAtMs)) {
+    return false;
+  }
+
+  return Date.now() - lastActivityAtMs >= SESSION_IDLE_MAX_AGE_MS;
+}
+
+function getSessionHardExpiryDelay(sessionLike) {
+  const startedAtMs = getSessionStartedAtMs(sessionLike);
+  if (!Number.isFinite(startedAtMs)) {
+    return SESSION_HARD_MAX_AGE_MS;
+  }
+
+  const remainingMs = startedAtMs + SESSION_HARD_MAX_AGE_MS - Date.now();
+  return Math.max(0, remainingMs);
+}
+
+function getSessionIdleExpiryDelay(sessionLike) {
+  const lastActivityAtMs = getSessionLastActivityAtMs(sessionLike);
+  if (!Number.isFinite(lastActivityAtMs)) {
+    return SESSION_IDLE_MAX_AGE_MS;
+  }
+
+  const remainingMs = lastActivityAtMs + SESSION_IDLE_MAX_AGE_MS - Date.now();
+  return Math.max(0, remainingMs);
+}
+
+function createSessionExpiredError() {
+  const error = new Error("Session expired. Please sign in again.");
+  error.status = 401;
+  error.code = "AUTH_SESSION_EXPIRED";
+  return error;
+}
+
+function createSessionIdleExpiredError() {
+  const error = new Error("Session timed out due to inactivity. Please sign in again.");
+  error.status = 401;
+  error.code = "AUTH_SESSION_IDLE_EXPIRED";
+  return error;
+}
+
+function resolveAccessTokenExpiresAt(expiresInSeconds) {
+  const ttlSeconds = Number(expiresInSeconds);
+  const safeTtlSeconds = Number.isFinite(ttlSeconds) && ttlSeconds > 0 ? ttlSeconds : ACCESS_TOKEN_FALLBACK_TTL_SECONDS;
+  return new Date(Date.now() + safeTtlSeconds * 1000).toISOString();
+}
+
+function resolveSessionPersistenceMode(mode, fallback = SESSION_PERSISTENCE_LOCAL) {
+  return mode === SESSION_PERSISTENCE_SESSION ? SESSION_PERSISTENCE_SESSION : fallback;
+}
+
+function isAuthInvalidError(error) {
+  const code = String(error?.code || "").trim().toUpperCase();
+  if (AUTH_INVALID_CODES.has(code)) {
+    return true;
+  }
+
+  return Number(error?.status) === 401;
+}
+
+function getTokenRefreshDelay(accessTokenExpiresAt) {
+  const expiresAtMs = Date.parse(String(accessTokenExpiresAt || ""));
+  if (!Number.isFinite(expiresAtMs)) {
+    return ACCESS_TOKEN_UNKNOWN_REFRESH_DELAY_MS;
+  }
+
+  const refreshInMs = expiresAtMs - Date.now() - ACCESS_TOKEN_REFRESH_SKEW_MS;
+  return Math.max(ACCESS_TOKEN_MIN_REFRESH_DELAY_MS, refreshInMs);
+}
+
+function shouldRefreshAccessToken(sessionLike) {
+  if (!sessionLike?.refreshToken) {
+    return false;
+  }
+
+  const expiresAtMs = Date.parse(String(sessionLike?.accessTokenExpiresAt || ""));
+  if (!Number.isFinite(expiresAtMs)) {
+    return false;
+  }
+
+  return expiresAtMs - Date.now() <= ACCESS_TOKEN_REFRESH_SKEW_MS;
+}
+
+function buildSessionFromAuthPayload(payload, previousSession = {}) {
+  const nowMs = Date.now();
+  const sessionStartedAt = resolveSessionStartedAt(previousSession?.sessionStartedAt, nowMs);
+  const lastActivityAt = resolveSessionLastActivityAt(previousSession?.lastActivityAt, nowMs);
+
+  return {
+    accessToken: payload.accessToken,
+    refreshToken: payload.refreshToken,
+    user: payload.user || previousSession?.user || null,
+    usage: previousSession?.usage || null,
+    persistenceMode: resolveSessionPersistenceMode(previousSession?.persistenceMode, SESSION_PERSISTENCE_LOCAL),
+    accessTokenExpiresAt: resolveAccessTokenExpiresAt(payload?.expiresInSeconds),
+    sessionStartedAt,
+    lastActivityAt
+  };
+}
 
 function getBrowserStorage(mode) {
   if (typeof window === "undefined") {
@@ -113,17 +272,105 @@ function clearPersistedSession() {
   getBrowserStorage(SESSION_PERSISTENCE_SESSION)?.removeItem(SESSION_STORAGE_KEY);
 }
 
+function normalizeDashboardSnapshot(payload = {}) {
+  return {
+    jobs: Array.isArray(payload.jobs) ? payload.jobs : [],
+    reports: Array.isArray(payload.reports) ? payload.reports : [],
+    notifications: Array.isArray(payload.notifications) ? payload.notifications : [],
+    apiKeys: Array.isArray(payload.apiKeys) ? payload.apiKeys : [],
+    analytics: payload.analytics && typeof payload.analytics === "object" ? payload.analytics : buildAnalyticsData(),
+    activeReport: payload.activeReport && typeof payload.activeReport === "object" ? payload.activeReport : null
+  };
+}
+
+function readDashboardCache(sessionLike) {
+  const mode = resolveSessionPersistenceMode(sessionLike?.persistenceMode, SESSION_PERSISTENCE_LOCAL);
+  const userId = String(sessionLike?.user?.id || "").trim();
+  if (!userId) {
+    return null;
+  }
+
+  const storage = getBrowserStorage(mode);
+  const raw = storage?.getItem(DASHBOARD_CACHE_KEY);
+  if (!raw) {
+    return null;
+  }
+
+  try {
+    const parsed = JSON.parse(raw);
+    if (Number(parsed?.version) !== DASHBOARD_CACHE_VERSION) {
+      return null;
+    }
+
+    if (String(parsed?.userId || "") !== userId) {
+      return null;
+    }
+
+    const cachedAtMs = Number(parsed?.cachedAtMs);
+    if (!Number.isFinite(cachedAtMs) || Date.now() - cachedAtMs > DASHBOARD_CACHE_TTL_MS) {
+      return null;
+    }
+
+    return normalizeDashboardSnapshot(parsed);
+  } catch {
+    return null;
+  }
+}
+
+function writeDashboardCache(sessionLike, snapshot = {}) {
+  const mode = resolveSessionPersistenceMode(sessionLike?.persistenceMode, SESSION_PERSISTENCE_LOCAL);
+  const userId = String(sessionLike?.user?.id || "").trim();
+  if (!userId) {
+    return;
+  }
+
+  const storage = getBrowserStorage(mode);
+  if (!storage) {
+    return;
+  }
+
+  const normalized = normalizeDashboardSnapshot(snapshot);
+  storage.setItem(
+    DASHBOARD_CACHE_KEY,
+    JSON.stringify({
+      version: DASHBOARD_CACHE_VERSION,
+      userId,
+      cachedAtMs: Date.now(),
+      ...normalized
+    })
+  );
+}
+
+function clearDashboardCache() {
+  getBrowserStorage(SESSION_PERSISTENCE_LOCAL)?.removeItem(DASHBOARD_CACHE_KEY);
+  getBrowserStorage(SESSION_PERSISTENCE_SESSION)?.removeItem(DASHBOARD_CACHE_KEY);
+}
+
 function SessionLoading({ message = "Loading secure session..." }) {
   const prefersReducedMotion = useReducedMotion();
 
   return (
     <motion.main className="app-shell centered" {...motionPreset(prefersReducedMotion)}>
-      <motion.section className="card loading-card" {...motionPreset(prefersReducedMotion, 0.03)}>
-        <div className="brand-lockup">
-          <img src={BRAND_MARKS.lightSurface} alt={LOGO_ALT_TEXT} className="brand-mark brand-mark-small" />
+      <motion.section className="card grid w-full max-w-[560px] gap-3 p-4 sm:p-5" {...motionPreset(prefersReducedMotion, 0.03)}>
+        <div className="inline-flex items-center gap-2.5">
+          <img src={BRAND_MARKS.lightSurface} alt={LOGO_ALT_TEXT} className="h-11 w-11 object-contain" />
           <h1>{APP_NAME}</h1>
         </div>
-        <p>{message}</p>
+        <div
+          className="flex items-center gap-3 rounded-xl border border-[var(--line)] bg-[var(--surface-soft)] px-3 py-3"
+          role="status"
+          aria-live="polite"
+          aria-busy="true"
+        >
+          <span className="relative mt-0.5 inline-flex h-5 w-5 shrink-0 items-center justify-center" aria-hidden="true">
+            <span className="absolute h-5 w-5 rounded-full bg-emerald-400/75 motion-safe:animate-ping motion-reduce:animate-none" />
+            <span className="relative h-3.5 w-3.5 rounded-full bg-emerald-600 motion-safe:animate-pulse motion-reduce:animate-none" />
+          </span>
+          <div className="grid flex-1 gap-0.5">
+            <p className="text-[0.92rem] font-semibold text-[var(--text)]">Securing your workspace</p>
+            <p className="text-sm leading-6 text-[var(--text-soft)]">{message}</p>
+          </div>
+        </div>
       </motion.section>
     </motion.main>
   );
@@ -185,7 +432,12 @@ function AppContent() {
   const [shareCopied, setShareCopied] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   const [dashboardTheme, setDashboardTheme] = useState(resolveTheme);
+  const [dashboardSyncing, setDashboardSyncing] = useState(false);
   const redirectTimerRef = useRef(null);
+  const refreshInFlightRef = useRef(null);
+  const invalidationInFlightRef = useRef(false);
+  const lastActivityTouchRef = useRef(0);
+  const dashboardCacheRef = useRef(null);
   const activeReportId = activeReport?.id || null;
 
   const heroBackground = useMemo(() => {
@@ -216,6 +468,111 @@ function AppContent() {
     []
   );
   const themePalette = useMemo(() => getThemePalette(dashboardTheme), [dashboardTheme]);
+
+  function clearClientSessionState() {
+    lastActivityTouchRef.current = 0;
+    dashboardCacheRef.current = null;
+    setDashboardSyncing(false);
+    setSession(null);
+    setScanLimits(DEFAULT_SCAN_LIMITS);
+    setActiveReport(null);
+    setReports([]);
+    setNotifications([]);
+    setJobs([]);
+    setAnalytics(buildAnalyticsData());
+    setActiveJob(null);
+    setApiKeys([]);
+    setNewApiKey("");
+    setNewApiKeyScopes(DEFAULT_API_KEY_SCOPES);
+    setSearchQuery("");
+    clearSelectedFiles();
+    setShareState({ url: "", expiresAt: "" });
+    setShareError("");
+    setShareCopied(false);
+    clearDashboardCache();
+  }
+
+  function invalidateSessionAndRedirect({ showToast = true, message = "Session expired. Please sign in again." } = {}) {
+    if (invalidationInFlightRef.current) {
+      return;
+    }
+
+    invalidationInFlightRef.current = true;
+    refreshInFlightRef.current = null;
+    clearClientSessionState();
+    clearPersistedSession();
+    if (showToast) {
+      toast.error(message);
+    }
+    navigate("/signin", { replace: true });
+  }
+
+  function touchSessionActivity({ force = false } = {}) {
+    if (!session?.accessToken) {
+      return;
+    }
+
+    const nowMs = Date.now();
+    if (!force && nowMs - lastActivityTouchRef.current < ACTIVITY_TOUCH_THROTTLE_MS) {
+      return;
+    }
+
+    lastActivityTouchRef.current = nowMs;
+
+    setSession((current) => {
+      if (!current?.accessToken) {
+        return current;
+      }
+
+      const currentLastActivityMs = getSessionLastActivityAtMs(current);
+      if (!force && Number.isFinite(currentLastActivityMs) && nowMs - currentLastActivityMs < ACTIVITY_TOUCH_THROTTLE_MS) {
+        return current;
+      }
+
+      const nextSession = {
+        ...current,
+        lastActivityAt: new Date(nowMs).toISOString()
+      };
+      persistSessionSnapshot(nextSession);
+      return nextSession;
+    });
+  }
+
+  function applyDashboardSnapshot(snapshot) {
+    const normalized = normalizeDashboardSnapshot(snapshot);
+    setJobs(normalized.jobs);
+    setReports(normalized.reports);
+    setNotifications(normalized.notifications);
+    setApiKeys(normalized.apiKeys);
+    setAnalytics(normalized.analytics);
+    setActiveReport(normalized.activeReport);
+    setActiveJob((current) => selectHighlightedJob(normalized.jobs, current?.id || ""));
+  }
+
+  function updateDashboardCache(activeSession, patch = {}) {
+    if (!activeSession?.user?.id) {
+      return;
+    }
+
+    const baseline =
+      dashboardCacheRef.current && dashboardCacheRef.current.userId === activeSession.user.id
+        ? dashboardCacheRef.current
+        : {
+            userId: activeSession.user.id,
+            ...normalizeDashboardSnapshot()
+          };
+
+    const nextSnapshot = {
+      userId: activeSession.user.id,
+      ...normalizeDashboardSnapshot({
+        ...baseline,
+        ...patch
+      })
+    };
+
+    dashboardCacheRef.current = nextSnapshot;
+    writeDashboardCache(activeSession, nextSnapshot);
+  }
 
   useEffect(() => {
     const syncResetFlow = () => {
@@ -280,6 +637,14 @@ function AppContent() {
     document.documentElement.classList.toggle("dark", dashboardTheme === "dark");
     window.localStorage.setItem("virovanta-dashboard-theme", dashboardTheme);
   }, [dashboardTheme]);
+
+  useEffect(() => {
+    if (session?.accessToken) {
+      invalidationInFlightRef.current = false;
+      const activityMs = getSessionLastActivityAtMs(session);
+      lastActivityTouchRef.current = Number.isFinite(activityMs) ? activityMs : Date.now();
+    }
+  }, [session?.accessToken, session?.lastActivityAt]);
 
   useEffect(() => {
     if (typeof document === "undefined") {
@@ -389,19 +754,36 @@ function AppContent() {
           throw new Error("Invalid session format");
         }
 
-        const hydratedSession = {
+        let hydratedSession = {
           ...parsed,
-          persistenceMode: parsed.persistenceMode || stored.mode
+          persistenceMode: resolveSessionPersistenceMode(parsed.persistenceMode, stored.mode),
+          sessionStartedAt: resolveSessionStartedAt(parsed.sessionStartedAt),
+          lastActivityAt: resolveSessionLastActivityAt(parsed.lastActivityAt, Date.parse(parsed.sessionStartedAt || "") || Date.now())
         };
+
+        if (isSessionHardExpired(hydratedSession)) {
+          throw createSessionExpiredError();
+        }
+
+        if (isSessionIdleExpired(hydratedSession)) {
+          throw createSessionIdleExpiredError();
+        }
+
+        if (shouldRefreshAccessToken(hydratedSession)) {
+          hydratedSession = await refreshAuthSession(hydratedSession.refreshToken, hydratedSession);
+        }
 
         if (!cancelled) {
           setSession(hydratedSession);
-          await loadDashboard(hydratedSession);
         }
+
+        await loadDashboard(hydratedSession);
       } catch (_error) {
-        clearPersistedSession();
-        if (!cancelled) {
-          setSession(null);
+        if (isAuthInvalidError(_error) || String(_error?.message || "").toLowerCase().includes("invalid session format")) {
+          clearPersistedSession();
+          if (!cancelled) {
+            clearClientSessionState();
+          }
         }
       } finally {
         if (!cancelled) {
@@ -416,6 +798,110 @@ function AppContent() {
       cancelled = true;
     };
   }, []);
+
+  useEffect(() => {
+    if (!session?.accessToken || !session?.refreshToken) {
+      return undefined;
+    }
+
+    let cancelled = false;
+    let timerId;
+
+    const scheduleRefresh = () => {
+      const delay = getTokenRefreshDelay(session.accessTokenExpiresAt);
+      timerId = setTimeout(async () => {
+        if (cancelled) {
+          return;
+        }
+
+        if (isSessionHardExpired(session)) {
+          invalidateSessionAndRedirect();
+          return;
+        }
+
+        if (isSessionIdleExpired(session)) {
+          invalidateSessionAndRedirect({
+            message: "Session timed out due to inactivity. Please sign in again."
+          });
+          return;
+        }
+
+        try {
+          await refreshAuthSession(session.refreshToken, session);
+        } catch (error) {
+          if (isAuthInvalidError(error)) {
+            invalidateSessionAndRedirect();
+          }
+        }
+      }, delay);
+    };
+
+    scheduleRefresh();
+
+    return () => {
+      cancelled = true;
+      clearTimeout(timerId);
+    };
+  }, [session?.accessToken, session?.refreshToken, session?.accessTokenExpiresAt]);
+
+  useEffect(() => {
+    if (!session?.accessToken) {
+      return undefined;
+    }
+
+    const delay = getSessionHardExpiryDelay(session);
+    const timerId = setTimeout(() => {
+      invalidateSessionAndRedirect();
+    }, delay);
+
+    return () => clearTimeout(timerId);
+  }, [session?.accessToken, session?.sessionStartedAt]);
+
+  useEffect(() => {
+    if (!session?.accessToken) {
+      return undefined;
+    }
+
+    const delay = getSessionIdleExpiryDelay(session);
+    const timerId = setTimeout(() => {
+      invalidateSessionAndRedirect({
+        message: "Session timed out due to inactivity. Please sign in again."
+      });
+    }, delay);
+
+    return () => clearTimeout(timerId);
+  }, [session?.accessToken, session?.lastActivityAt]);
+
+  useEffect(() => {
+    if (!session?.accessToken || typeof window === "undefined" || typeof document === "undefined") {
+      return undefined;
+    }
+
+    const handleActivity = () => {
+      touchSessionActivity();
+    };
+
+    const handleVisibility = () => {
+      if (document.visibilityState === "visible") {
+        touchSessionActivity({ force: true });
+      }
+    };
+
+    const activityEvents = ["pointerdown", "keydown", "touchstart", "scroll", "focus"];
+    activityEvents.forEach((eventName) => {
+      window.addEventListener(eventName, handleActivity, { passive: true });
+    });
+    document.addEventListener("visibilitychange", handleVisibility);
+
+    touchSessionActivity({ force: true });
+
+    return () => {
+      activityEvents.forEach((eventName) => {
+        window.removeEventListener(eventName, handleActivity);
+      });
+      document.removeEventListener("visibilitychange", handleVisibility);
+    };
+  }, [session?.accessToken]);
 
   useEffect(() => {
     let mounted = true;
@@ -550,6 +1036,18 @@ function AppContent() {
   }, []);
 
   async function apiRequest(path, { method = "GET", body, formData, authSession = null, retry = true } = {}) {
+    if (authSession?.accessToken && isSessionHardExpired(authSession)) {
+      invalidateSessionAndRedirect();
+      throw createSessionExpiredError();
+    }
+
+    if (authSession?.accessToken && isSessionIdleExpired(authSession)) {
+      invalidateSessionAndRedirect({
+        message: "Session timed out due to inactivity. Please sign in again."
+      });
+      throw createSessionIdleExpiredError();
+    }
+
     const normalizedMethod = String(method || "GET").toUpperCase();
     const headers = {};
 
@@ -571,14 +1069,25 @@ function AppContent() {
     const payload = isJson ? await response.json() : null;
 
     if (response.status === 401 && authSession?.refreshToken && retry) {
-      const refreshedSession = await refreshAuthSession(authSession.refreshToken, authSession);
-      return apiRequest(path, {
-        method: normalizedMethod,
-        body,
-        formData,
-        authSession: refreshedSession,
-        retry: false
-      });
+      try {
+        const refreshedSession = await refreshAuthSession(authSession.refreshToken, authSession);
+        return apiRequest(path, {
+          method: normalizedMethod,
+          body,
+          formData,
+          authSession: refreshedSession,
+          retry: false
+        });
+      } catch (refreshError) {
+        if (isAuthInvalidError(refreshError)) {
+          invalidateSessionAndRedirect();
+        }
+        throw refreshError;
+      }
+    }
+
+    if (response.status === 401 && authSession?.accessToken && (!authSession?.refreshToken || !retry)) {
+      invalidateSessionAndRedirect();
     }
 
     if (!response.ok) {
@@ -593,34 +1102,86 @@ function AppContent() {
   }
 
   async function refreshAuthSession(refreshToken, currentSession = session) {
-    const payload = await apiRequest("/api/auth/refresh", {
-      method: "POST",
-      body: { refreshToken },
-      authSession: null,
-      retry: false
+    if (isSessionHardExpired(currentSession)) {
+      throw createSessionExpiredError();
+    }
+
+    if (isSessionIdleExpired(currentSession)) {
+      throw createSessionIdleExpiredError();
+    }
+
+    const normalizedRefreshToken = String(refreshToken || "").trim();
+    if (!normalizedRefreshToken) {
+      const error = new Error("Refresh token missing.");
+      error.code = "AUTH_REFRESH_INVALID";
+      error.status = 401;
+      throw error;
+    }
+
+    if (refreshInFlightRef.current) {
+      return refreshInFlightRef.current;
+    }
+
+    const refreshPromise = (async () => {
+      const payload = await apiRequest("/api/auth/refresh", {
+        method: "POST",
+        body: { refreshToken: normalizedRefreshToken },
+        authSession: null,
+        retry: false
+      });
+
+      const nextSession = buildSessionFromAuthPayload(payload, {
+        ...currentSession,
+        user: payload.user || currentSession?.user || null,
+        persistenceMode: resolveSessionPersistenceMode(currentSession?.persistenceMode, SESSION_PERSISTENCE_LOCAL)
+      });
+
+      setSession(nextSession);
+      persistSessionSnapshot(nextSession);
+      return nextSession;
+    })().finally(() => {
+      if (refreshInFlightRef.current === refreshPromise) {
+        refreshInFlightRef.current = null;
+      }
     });
 
-    const nextSession = {
-      accessToken: payload.accessToken,
-      refreshToken: payload.refreshToken,
-      user: payload.user,
-      usage: null,
-      persistenceMode: currentSession?.persistenceMode || SESSION_PERSISTENCE_LOCAL
-    };
-
-    setSession(nextSession);
-    persistSessionSnapshot(nextSession);
-    return nextSession;
+    refreshInFlightRef.current = refreshPromise;
+    return refreshPromise;
   }
 
-  async function loadDashboard(activeSession) {
+  async function refreshDashboardData(activeSession, { showSyncIndicator = false } = {}) {
+    if (!activeSession?.accessToken) {
+      return;
+    }
+
+    if (showSyncIndicator) {
+      setDashboardSyncing(true);
+    }
+
+    try {
+      await Promise.allSettled([
+        refreshJobs(activeSession),
+        refreshReports(activeSession),
+        refreshApiKeys(activeSession),
+        refreshNotifications(activeSession),
+        refreshAnalytics(activeSession)
+      ]);
+    } finally {
+      if (showSyncIndicator) {
+        setDashboardSyncing(false);
+      }
+    }
+  }
+
+  async function loadDashboard(activeSession, { background = true } = {}) {
     const mePayload = await apiRequest("/api/auth/me", { authSession: activeSession });
 
     const nextSession = {
       ...activeSession,
       user: mePayload.user,
       usage: mePayload.usage,
-      persistenceMode: activeSession?.persistenceMode || SESSION_PERSISTENCE_LOCAL
+      persistenceMode: resolveSessionPersistenceMode(activeSession?.persistenceMode, SESSION_PERSISTENCE_LOCAL),
+      accessTokenExpiresAt: activeSession?.accessTokenExpiresAt || resolveAccessTokenExpiresAt(ACCESS_TOKEN_FALLBACK_TTL_SECONDS)
     };
 
     setScanLimits({
@@ -629,14 +1190,24 @@ function AppContent() {
     });
     setSession(nextSession);
     persistSessionSnapshot(nextSession);
+    touchSessionActivity({ force: true });
 
-    await Promise.all([
-      refreshJobs(nextSession),
-      refreshReports(nextSession),
-      refreshApiKeys(nextSession),
-      refreshNotifications(nextSession),
-      refreshAnalytics(nextSession)
-    ]);
+    const cachedSnapshot = readDashboardCache(nextSession);
+    if (cachedSnapshot) {
+      dashboardCacheRef.current = {
+        userId: nextSession.user.id,
+        ...cachedSnapshot
+      };
+      applyDashboardSnapshot(cachedSnapshot);
+    }
+
+    if (background) {
+      void refreshDashboardData(nextSession, { showSyncIndicator: true });
+      return nextSession;
+    }
+
+    await refreshDashboardData(nextSession, { showSyncIndicator: false });
+    return nextSession;
   }
 
   async function refreshJobs(activeSession = session) {
@@ -648,6 +1219,7 @@ function AppContent() {
     const nextJobs = Array.isArray(payload?.jobs) ? payload.jobs : [];
     setJobs(nextJobs);
     setActiveJob((current) => selectHighlightedJob(nextJobs, current?.id || ""));
+    updateDashboardCache(activeSession, { jobs: nextJobs });
   }
 
   async function refreshReports(activeSession = session) {
@@ -658,9 +1230,11 @@ function AppContent() {
     const payload = await apiRequest("/api/scans/reports?limit=20", { authSession: activeSession });
     const nextReports = Array.isArray(payload?.reports) ? payload.reports : [];
     setReports(nextReports);
+    updateDashboardCache(activeSession, { reports: nextReports });
 
     if (nextReports.length === 0) {
       setActiveReport(null);
+      updateDashboardCache(activeSession, { activeReport: null });
       return;
     }
 
@@ -676,7 +1250,9 @@ function AppContent() {
     }
 
     const payload = await apiRequest("/api/scans/analytics", { authSession: activeSession });
-    setAnalytics(buildAnalyticsData(payload?.analytics));
+    const nextAnalytics = buildAnalyticsData(payload?.analytics);
+    setAnalytics(nextAnalytics);
+    updateDashboardCache(activeSession, { analytics: nextAnalytics });
   }
 
   async function refreshApiKeys(activeSession = session) {
@@ -685,7 +1261,9 @@ function AppContent() {
     }
 
     const payload = await apiRequest("/api/auth/api-keys", { authSession: activeSession });
-    setApiKeys(payload.keys || []);
+    const nextKeys = Array.isArray(payload?.keys) ? payload.keys : [];
+    setApiKeys(nextKeys);
+    updateDashboardCache(activeSession, { apiKeys: nextKeys });
   }
 
   async function refreshNotifications(activeSession = session) {
@@ -694,7 +1272,9 @@ function AppContent() {
     }
 
     const payload = await apiRequest("/api/auth/notifications?limit=20", { authSession: activeSession });
-    setNotifications(Array.isArray(payload?.notifications) ? payload.notifications : []);
+    const nextNotifications = Array.isArray(payload?.notifications) ? payload.notifications : [];
+    setNotifications(nextNotifications);
+    updateDashboardCache(activeSession, { notifications: nextNotifications });
   }
 
   async function openReport(reportId, activeSession = session) {
@@ -703,7 +1283,9 @@ function AppContent() {
     }
 
     const payload = await apiRequest(`/api/scans/reports/${reportId}`, { authSession: activeSession });
-    setActiveReport(payload.report || null);
+    const nextReport = payload.report || null;
+    setActiveReport(nextReport);
+    updateDashboardCache(activeSession, { activeReport: nextReport });
   }
 
   async function loginUser({ email, password, rememberMe = true }) {
@@ -718,13 +1300,11 @@ function AppContent() {
       retry: false
     });
 
-    const nextSession = {
-      accessToken: payload.accessToken,
-      refreshToken: payload.refreshToken,
+    const nextSession = buildSessionFromAuthPayload(payload, {
       user: payload.user,
       usage: null,
       persistenceMode: rememberMe ? SESSION_PERSISTENCE_LOCAL : SESSION_PERSISTENCE_SESSION
-    };
+    });
 
     setSession(nextSession);
     persistSessionSnapshot(nextSession);
@@ -749,13 +1329,11 @@ function AppContent() {
       return payload;
     }
 
-    const nextSession = {
-      accessToken: payload.accessToken,
-      refreshToken: payload.refreshToken,
+    const nextSession = buildSessionFromAuthPayload(payload, {
       user: payload.user,
       usage: null,
       persistenceMode: SESSION_PERSISTENCE_LOCAL
-    };
+    });
 
     setSession(nextSession);
     persistSessionSnapshot(nextSession);
@@ -890,22 +1468,8 @@ function AppContent() {
       }
     }
 
-    setSession(null);
-    setScanLimits(DEFAULT_SCAN_LIMITS);
-    setActiveReport(null);
-    setReports([]);
-    setNotifications([]);
-    setJobs([]);
-    setAnalytics(buildAnalyticsData());
-    setActiveJob(null);
-    setApiKeys([]);
-    setNewApiKey("");
-    setNewApiKeyScopes(DEFAULT_API_KEY_SCOPES);
-    setSearchQuery("");
-    clearSelectedFiles();
-    setShareState({ url: "", expiresAt: "" });
-    setShareError("");
-    setShareCopied(false);
+    refreshInFlightRef.current = null;
+    clearClientSessionState();
     clearPersistedSession();
     navigate("/signin", { replace: true });
   }
@@ -1120,11 +1684,10 @@ function AppContent() {
         authSession: session
       });
 
-      const retentionText = payload?.retentionExpiresAt ? ` Retained until ${formatDateTime(payload.retentionExpiresAt)}.` : "";
-      toast.success(`Report hidden from history.${retentionText}`);
+      toast.success("Report deleted.");
       await Promise.all([refreshReports(session), refreshAnalytics(session), refreshNotifications(session)]);
     } catch (error) {
-      toast.error(error.message || "Could not hide report.");
+      toast.error(error.message || "Could not delete report.");
     } finally {
       setIsDeletingReport(false);
     }
@@ -1172,18 +1735,16 @@ function AppContent() {
           <Route
             path="/"
             element={
-              <PublicOnlyRoute session={session}>
-                <LandingPage
-                  appName={APP_NAME}
-                  appTagline={APP_TAGLINE}
-                  logoAltText={LOGO_ALT_TEXT}
-                  brandMarks={BRAND_MARKS}
-                  heroBackground={heroBackground}
-                  typedHeroHeadline={typedHeroHeadline}
-                  guestStatus={guestStatus}
-                  runGuestQuickScan={runGuestQuickScan}
-                />
-              </PublicOnlyRoute>
+              <LandingPage
+                appName={APP_NAME}
+                appTagline={APP_TAGLINE}
+                logoAltText={LOGO_ALT_TEXT}
+                brandMarks={BRAND_MARKS}
+                heroBackground={heroBackground}
+                typedHeroHeadline={typedHeroHeadline}
+                guestStatus={guestStatus}
+                runGuestQuickScan={runGuestQuickScan}
+              />
             }
           />
           {MARKETING_PAGES.map((page) => (
@@ -1234,15 +1795,13 @@ function AppContent() {
           <Route
             path="/forgot-password"
             element={
-              <PublicOnlyRoute session={session}>
-                <ForgotPasswordPage
-                  appName={APP_NAME}
-                  appTagline={APP_TAGLINE}
-                  logoAltText={LOGO_ALT_TEXT}
-                  brandMarks={BRAND_MARKS}
-                  onRequestForgotPassword={requestForgotPassword}
-                />
-              </PublicOnlyRoute>
+              <ForgotPasswordPage
+                appName={APP_NAME}
+                appTagline={APP_TAGLINE}
+                logoAltText={LOGO_ALT_TEXT}
+                brandMarks={BRAND_MARKS}
+                onRequestForgotPassword={requestForgotPassword}
+              />
             }
           />
           <Route
@@ -1334,6 +1893,7 @@ function AppContent() {
                   prefersReducedMotion={prefersReducedMotion}
                   currentDateLabel={currentDateLabel}
                   quotaText={quotaText}
+                  isSyncingData={dashboardSyncing}
                   analytics={analytics}
                   themePalette={themePalette}
                 />

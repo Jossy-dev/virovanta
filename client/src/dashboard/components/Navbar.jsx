@@ -183,8 +183,8 @@ export function Navbar({
                 <button
                   type="button"
                   className={cn(
-                    "dashboard-brand-control flex w-full items-center rounded-2xl px-3 py-2 text-sm text-slate-600",
-                    "dark:text-slate-300"
+                    "dashboard-brand-control flex w-full items-center rounded-2xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm font-medium text-slate-700 hover:text-slate-900",
+                    "dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100 dark:hover:bg-slate-800 dark:hover:text-white"
                   )}
                   onClick={onLogout}
                 >

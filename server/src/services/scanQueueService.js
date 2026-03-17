@@ -768,8 +768,8 @@ export class ScanQueueService {
       userId: user.id,
       type: "report_deleted",
       tone: "warning",
-      title: "Report hidden",
-      detail: "The report has been removed from workspace history and will age out at retention expiry.",
+      title: "Report deleted",
+      detail: "The report has been removed from workspace history.",
       entityType: "report",
       entityId: reportId,
       dedupeKey: `report-deleted:${reportId}`
