@@ -14,7 +14,7 @@ function sanitizeExtension(fileName) {
 }
 
 function toPublicReport(report, findingsLimit = 8) {
-  const sourceType = report?.sourceType === "url" ? "url" : "file";
+  const sourceType = report?.sourceType === "url" ? "url" : report?.sourceType === "website" ? "website" : "file";
 
   return {
     id: report.id,
@@ -36,6 +36,7 @@ function toPublicReport(report, findingsLimit = 8) {
     findings: report.findings.slice(0, findingsLimit),
     plainLanguageReasons: Array.isArray(report.plainLanguageReasons) ? report.plainLanguageReasons.slice(0, findingsLimit) : [],
     technicalIndicators: report.technicalIndicators || null,
+    websiteSafety: report.websiteSafety || null,
     url: report.url || null,
     engines: report.engines,
     recommendations: report.recommendations,
@@ -103,7 +104,9 @@ export function createPublicRouter({ scanner, config, scanQueueService, createRa
           maxFilesPerBatch: Number(config.maxBatchUploadFiles) || 0,
           dailyScanLimit: Number(config.freeTierDailyScanLimit) || 0,
           linkScanRequestsPerWindow: Number(config.urlScanRateLimitRequestsPerWindow) || 0,
-          linkScanWindowMinutes: Number(config.urlScanRateLimitWindowMinutes) || 0
+          linkScanWindowMinutes: Number(config.urlScanRateLimitWindowMinutes) || 0,
+          websiteSafetyRequestsPerWindow: Number(config.urlScanRateLimitRequestsPerWindow) || 0,
+          websiteSafetyWindowMinutes: Number(config.urlScanRateLimitWindowMinutes) || 0
         }
       },
       compliance: {

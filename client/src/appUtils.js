@@ -26,9 +26,9 @@ export function motionPreset(reducedMotion, delay = 0) {
   }
 
   return {
-    initial: { opacity: 0, y: 14 },
+    initial: { opacity: 0, y: 10 },
     animate: { opacity: 1, y: 0 },
-    transition: { duration: 0.35, ease: SPRING_EASE, delay }
+    transition: { duration: 0.28, ease: SPRING_EASE, delay }
   };
 }
 

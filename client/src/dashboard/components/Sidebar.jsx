@@ -1,7 +1,9 @@
+import { memo } from "react";
 import { PanelLeftClose, PanelLeftOpen, X } from "lucide-react";
 import { cn } from "../dashboardUtils";
+import { prefetchRouteModule } from "../../routeModules";
 
-export function Sidebar({
+export const Sidebar = memo(function Sidebar({
   items,
   activePath,
   onSelect,
@@ -89,6 +91,8 @@ export function Sidebar({
                   onSelect(item.path);
                   onCloseMobile();
                 }}
+                onMouseEnter={() => prefetchRouteModule(item.path)}
+                onFocus={() => prefetchRouteModule(item.path)}
                 aria-label={item.label}
                 title={collapsed ? item.label : undefined}
                 className={cn(
@@ -142,4 +146,6 @@ export function Sidebar({
       </aside>
     </>
   );
-}
+});
+
+Sidebar.displayName = "Sidebar";

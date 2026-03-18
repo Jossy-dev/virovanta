@@ -1,6 +1,9 @@
-export function WidgetCard({ title, subtitle, children, action }) {
+import { memo } from "react";
+import Card from "../../ui/Card";
+
+export const WidgetCard = memo(function WidgetCard({ title, subtitle, children, action }) {
   return (
-    <section className="dashboard-subtle-panel p-4 sm:p-5">
+    <Card className="dashboard-subtle-panel p-4 sm:p-5" hoverable>
       <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
         <div className="space-y-1">
           <p className="dashboard-label">{title}</p>
@@ -9,6 +12,8 @@ export function WidgetCard({ title, subtitle, children, action }) {
         {action}
       </div>
       {children}
-    </section>
+    </Card>
   );
-}
+});
+
+WidgetCard.displayName = "WidgetCard";

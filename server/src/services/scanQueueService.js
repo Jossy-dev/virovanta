@@ -6,7 +6,7 @@ import { createRedisClient } from "../infrastructure/redis/createRedisClient.js"
 import { HttpError } from "../utils/httpError.js";
 import { signReport, verifySignedReport } from "../utils/reportIntegrity.js";
 import { enrichReportThreatIntel } from "../utils/threatIntel.js";
-import { linkReportSchema } from "../validation/scanSchemas.js";
+import { linkReportSchema, websiteSafetyReportSchema } from "../validation/scanSchemas.js";
 
 const VERDICT_RANK = {
   clean: 1,
@@ -63,7 +63,7 @@ function buildReportIntel(report, historicalReports) {
 }
 
 function toJobSummary(job) {
-  const sourceType = job.sourceType === "url" ? "url" : "file";
+  const sourceType = job.sourceType === "url" ? "url" : job.sourceType === "website" ? "website" : "file";
 
   return {
     id: job.id,
@@ -74,14 +74,14 @@ function toJobSummary(job) {
     completedAt: job.completedAt || null,
     originalName: job.originalName,
     fileSize: job.fileSize,
-    targetUrl: sourceType === "url" ? job.targetUrl || null : null,
+    targetUrl: sourceType === "url" || sourceType === "website" ? job.targetUrl || null : null,
     reportId: job.reportId || null,
     errorMessage: job.errorMessage || null
   };
 }
 
 function toReportSummary(report) {
-  const sourceType = report?.sourceType === "url" ? "url" : "file";
+  const sourceType = report?.sourceType === "url" ? "url" : report?.sourceType === "website" ? "website" : "file";
   const fileName = report?.file?.originalName || report?.url?.final || report?.url?.input || "Unknown target";
   const fileSize = Number(report?.file?.size) || 0;
 
@@ -106,11 +106,23 @@ function isReportVisible(report) {
 }
 
 function describeQueueItem(item) {
-  if (item?.sourceType === "url") {
+  if (item?.sourceType === "url" || item?.sourceType === "website") {
     return item?.targetUrl || item?.originalName || "URL target";
   }
 
   return item?.originalName || "uploaded file";
+}
+
+function normalizeSourceType(value) {
+  if (value === "url") {
+    return "url";
+  }
+
+  if (value === "website") {
+    return "website";
+  }
+
+  return "file";
 }
 
 const ANALYTICS_WINDOW_DAYS = 30;
@@ -363,10 +375,20 @@ function buildAnalyticsSnapshot({ jobs, reports }) {
 }
 
 export class ScanQueueService {
-  constructor({ store, scanner, urlScanner, logger, config, objectStorageService = null, notificationService = null }) {
+  constructor({
+    store,
+    scanner,
+    urlScanner,
+    websiteSafetyScanner,
+    logger,
+    config,
+    objectStorageService = null,
+    notificationService = null
+  }) {
     this.store = store;
     this.scanner = scanner;
     this.urlScanner = urlScanner;
+    this.websiteSafetyScanner = websiteSafetyScanner;
     this.logger = logger;
     this.config = config;
     this.objectStorageService = objectStorageService;
@@ -459,7 +481,7 @@ export class ScanQueueService {
         id: `job_${crypto.randomUUID()}`,
         userId,
         sourceType,
-        targetUrl: sourceType === "url" ? targetUrl : null,
+        targetUrl: sourceType === "url" || sourceType === "website" ? targetUrl : null,
         status: "queued",
         originalName,
         mimeType,
@@ -635,6 +657,56 @@ export class ScanQueueService {
     return toJobSummary(job);
   }
 
+  async enqueueWebsiteSafetyScan({ userId, url }) {
+    if (typeof this.websiteSafetyScanner !== "function") {
+      throw new HttpError(503, "Website safety scanner is unavailable.", {
+        code: "WEBSITE_SAFETY_SCANNER_UNAVAILABLE"
+      });
+    }
+
+    const targetUrl = String(url || "").trim();
+    const job = await this.#createQueuedJob({
+      userId,
+      sourceType: "website",
+      originalName: targetUrl,
+      mimeType: "text/url",
+      fileSize: 0,
+      targetUrl
+    });
+
+    const queueItem = {
+      jobId: job.id,
+      userId,
+      sourceType: "website",
+      targetUrl,
+      filePath: null,
+      originalName: targetUrl,
+      mimeType: "text/url",
+      fileSize: 0,
+      stagedUpload: null
+    };
+
+    try {
+      if (this.config.queueProvider === "bullmq") {
+        await this.#enqueueBullItem(queueItem);
+      } else {
+        this.queue.push(queueItem);
+        this.#drainQueue();
+      }
+    } catch (error) {
+      await this.#markEnqueueFailed(job.id);
+
+      throw new HttpError(503, "Could not enqueue website safety scan job.", {
+        code: "SCAN_QUEUE_UNAVAILABLE",
+        details: {
+          reason: error?.message || "Queue provider unavailable."
+        }
+      });
+    }
+
+    return toJobSummary(job);
+  }
+
   async getJobForUser(jobId, user) {
     const job = await this.store.read((state) => state.jobs.find((candidate) => candidate.id === jobId) || null);
 
@@ -649,12 +721,23 @@ export class ScanQueueService {
     return toJobSummary(job);
   }
 
-  async listJobsForUser(user, limit = 20) {
+  async listJobsForUser(user, limit = 20, sourceType = undefined) {
     return this.store.read((state) => {
       const safeLimit = Math.max(1, Math.min(100, Number(limit) || 20));
+      const normalizedSourceType = sourceType ? normalizeSourceType(sourceType) : null;
 
       return state.jobs
-        .filter((job) => user.role === "admin" || job.userId === user.id)
+        .filter((job) => {
+          if (user.role !== "admin" && job.userId !== user.id) {
+            return false;
+          }
+
+          if (!normalizedSourceType) {
+            return true;
+          }
+
+          return normalizeSourceType(job.sourceType) === normalizedSourceType;
+        })
         .slice(0, safeLimit)
         .map(toJobSummary);
     });
@@ -674,12 +757,27 @@ export class ScanQueueService {
     return report;
   }
 
-  async listReportsForUser(user, limit = 20) {
+  async listReportsForUser(user, limit = 20, sourceType = undefined) {
     return this.store.read((state) => {
       const safeLimit = Math.max(1, Math.min(100, Number(limit) || 20));
+      const normalizedSourceType = sourceType ? normalizeSourceType(sourceType) : null;
 
       return state.reports
-        .filter((report) => isReportVisible(report) && (user.role === "admin" || report.ownerUserId === user.id))
+        .filter((report) => {
+          if (!isReportVisible(report)) {
+            return false;
+          }
+
+          if (user.role !== "admin" && report.ownerUserId !== user.id) {
+            return false;
+          }
+
+          if (!normalizedSourceType) {
+            return true;
+          }
+
+          return normalizeSourceType(report?.sourceType) === normalizedSourceType;
+        })
         .slice(0, safeLimit)
         .map(toReportSummary);
     });
@@ -887,13 +985,13 @@ export class ScanQueueService {
   }
 
   async #enqueueBullItem(item) {
-    const sourceType = item?.sourceType === "url" ? "url" : "file";
-    const queue = sourceType === "url" ? this.bullLinkQueue : this.bullFileQueue;
+    const sourceType = normalizeSourceType(item?.sourceType);
+    const queue = sourceType === "file" ? this.bullFileQueue : this.bullLinkQueue;
     if (!queue) {
       throw new Error(`BullMQ ${sourceType} queue is not initialized.`);
     }
 
-    const jobName = sourceType === "url" ? "link_scan" : "file_scan";
+    const jobName = sourceType === "url" ? "link_scan" : sourceType === "website" ? "website_safety_scan" : "file_scan";
 
     await queue.add(jobName, item, {
       jobId: item.jobId,
@@ -933,7 +1031,7 @@ export class ScanQueueService {
     }
 
     let uploadArtifact = null;
-    if (item.sourceType !== "url") {
+    if (normalizeSourceType(item?.sourceType) === "file") {
       if (!scanFilePath && !item.stagedUpload) {
         throw new Error("File scan artifacts are unavailable.");
       }
@@ -989,33 +1087,50 @@ export class ScanQueueService {
       job.updatedAt = startedAt;
     });
 
-    const sourceType = item?.sourceType === "url" ? "url" : "file";
+    const sourceType = normalizeSourceType(item?.sourceType);
     let scanFilePath = sourceType === "file" ? item.filePath : null;
     let shouldDeleteScanFile = Boolean(scanFilePath);
 
     try {
       let report = null;
 
-      if (sourceType === "url") {
-        if (typeof this.urlScanner !== "function") {
-          throw new Error("URL scanner is unavailable.");
-        }
-
+      if (sourceType === "url" || sourceType === "website") {
         const targetUrl = String(item.targetUrl || item.originalName || "").trim();
         if (!targetUrl) {
           throw new Error("URL scan target is missing.");
         }
 
-        report = await this.urlScanner({
-          url: targetUrl
-        });
+        if (sourceType === "website") {
+          if (typeof this.websiteSafetyScanner !== "function") {
+            throw new Error("Website safety scanner is unavailable.");
+          }
 
-        const validatedLinkReport = linkReportSchema.safeParse(report);
-        if (!validatedLinkReport.success) {
-          throw new Error("URL report schema validation failed.");
+          report = await this.websiteSafetyScanner({
+            url: targetUrl
+          });
+
+          const validatedWebsiteReport = websiteSafetyReportSchema.safeParse(report);
+          if (!validatedWebsiteReport.success) {
+            throw new Error("Website safety report schema validation failed.");
+          }
+
+          report = validatedWebsiteReport.data;
+        } else {
+          if (typeof this.urlScanner !== "function") {
+            throw new Error("URL scanner is unavailable.");
+          }
+
+          report = await this.urlScanner({
+            url: targetUrl
+          });
+
+          const validatedLinkReport = linkReportSchema.safeParse(report);
+          if (!validatedLinkReport.success) {
+            throw new Error("URL report schema validation failed.");
+          }
+
+          report = validatedLinkReport.data;
         }
-
-        report = validatedLinkReport.data;
       } else {
         if (!scanFilePath) {
           const stagedKey = item.stagedUpload?.key;
@@ -1079,7 +1194,7 @@ export class ScanQueueService {
         job.updatedAt = completedAt;
         job.errorMessage = null;
         job.sourceType = sourceType;
-        job.targetUrl = sourceType === "url" ? item.targetUrl || null : null;
+        job.targetUrl = sourceType === "url" || sourceType === "website" ? item.targetUrl || null : null;
 
         state.auditEvents.unshift({
           id: `audit_${crypto.randomUUID()}`,
@@ -1091,7 +1206,7 @@ export class ScanQueueService {
             jobId: job.id,
             reportId: signedReport.id,
             sourceType,
-            targetUrl: sourceType === "url" ? item.targetUrl || null : null,
+            targetUrl: sourceType === "url" || sourceType === "website" ? item.targetUrl || null : null,
             verdict: signedReport.verdict,
             riskScore: signedReport.riskScore
           },
@@ -1157,7 +1272,7 @@ export class ScanQueueService {
           metadata: {
             jobId: job.id,
             sourceType,
-            targetUrl: sourceType === "url" ? item.targetUrl || null : null,
+            targetUrl: sourceType === "url" || sourceType === "website" ? item.targetUrl || null : null,
             errorMessage: job.errorMessage
           },
           createdAt: failedAt

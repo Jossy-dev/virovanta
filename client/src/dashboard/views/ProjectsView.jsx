@@ -1,8 +1,12 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { motion, useReducedMotion } from "framer-motion";
 import { ArrowRight, FolderOpen, UploadCloud } from "lucide-react";
 import { DataTable } from "../components/DataTable";
 import { WidgetCard } from "../components/WidgetCard";
 import { filterCollection } from "../dashboardUtils";
+import Button from "../../ui/Button";
+import InputField from "../../ui/InputField";
+import { createStaggerContainerVariants, createStaggerItemVariants } from "../../ui/motionSystem";
 
 const JOBS_PER_PAGE = 10;
 
@@ -26,6 +30,7 @@ export function ProjectsView({
   showHeader = true,
   showQuotaBadge = true
 }) {
+  const prefersReducedMotion = useReducedMotion();
   const fileInputRef = useRef(null);
   const [urlTarget, setUrlTarget] = useState("");
   const [urlSubmissionError, setUrlSubmissionError] = useState("");
@@ -65,6 +70,14 @@ export function ProjectsView({
   const pendingJobs = jobs.filter((job) => job.status === "queued" || job.status === "processing").length;
   const completedJobs = jobs.filter((job) => job.status === "completed").length;
   const selectedFileNames = selectedFiles.map((file) => file?.name).filter(Boolean);
+  const selectedFileListVariants = createStaggerContainerVariants(prefersReducedMotion, {
+    staggerChildren: 0.03,
+    delayChildren: 0.02
+  });
+  const selectedFileItemVariants = createStaggerItemVariants(prefersReducedMotion, {
+    y: 4,
+    duration: 0.16
+  });
 
   async function handleSubmitUrlScan(event) {
     event.preventDefault();
@@ -95,7 +108,7 @@ export function ProjectsView({
           <div className="mt-1 flex items-center gap-2 text-xs text-slate-500 dark:text-slate-400">
             <span>{row.id}</span>
             <span className="rounded-full border border-slate-200 px-2 py-0.5 dark:border-slate-700">
-              {row.sourceType === "url" ? "URL scan" : "File scan"}
+              {row.sourceType === "url" ? "URL scan" : row.sourceType === "website" ? "Website safety" : "File scan"}
             </span>
           </div>
         </div>
@@ -193,7 +206,7 @@ export function ProjectsView({
               <label htmlFor="authenticated-url-scan-input" className="sr-only">
                 Suspicious link URL
               </label>
-              <input
+              <InputField
                 id="authenticated-url-scan-input"
                 type="url"
                 inputMode="url"
@@ -201,15 +214,17 @@ export function ProjectsView({
                 placeholder="https://example.com/login"
                 value={urlTarget}
                 onChange={(event) => setUrlTarget(event.target.value)}
-                className="w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-900 outline-none transition focus:border-viro-500 focus:ring-2 focus:ring-viro-200 dark:border-slate-800 dark:bg-slate-950 dark:text-slate-100 dark:focus:border-viro-400 dark:focus:ring-viro-900"
+                invalid={Boolean(urlSubmissionError)}
               />
-              <button
+              <Button
                 type="submit"
-                className="dashboard-brand-button w-full justify-center sm:w-auto"
+                variant="primary"
+                size="md"
+                className="w-full sm:w-auto"
                 disabled={isSubmittingScan}
               >
                 {isSubmittingScan ? "Queueing..." : "Queue URL Scan"}
-              </button>
+              </Button>
             </div>
             {urlSubmissionError ? (
               <p className="mt-3 text-sm text-red-600 dark:text-red-400">{urlSubmissionError}</p>
@@ -223,37 +238,47 @@ export function ProjectsView({
                   <p className="text-sm font-semibold text-slate-950 dark:text-white">{pluralize("file", selectedFiles.length)} ready</p>
                   <p className="text-sm text-slate-500 dark:text-slate-400">{formatBytes(selectedUploadBytes)} total selected</p>
                 </div>
-                <button
+                <Button
                   type="button"
-                  className="dashboard-brand-outline w-full px-3 py-2 sm:w-auto"
+                  variant="secondary"
+                  size="sm"
+                  className="w-full sm:w-auto"
                   onClick={onClearSelectedFiles}
                 >
                   Clear
-                </button>
+                </Button>
               </div>
-              <div className="mt-3 flex flex-wrap gap-2">
+              <motion.div
+                className="mt-3 flex flex-wrap gap-2"
+                variants={selectedFileListVariants}
+                initial="hidden"
+                animate="show"
+              >
                 {selectedFileNames.map((name, index) => (
-                  <span
+                  <motion.span
                     key={`${name}-${index}`}
+                    variants={selectedFileItemVariants}
                     className="rounded-full border border-slate-200 bg-white px-3 py-1.5 text-xs text-slate-600 dark:border-slate-800 dark:bg-slate-950 dark:text-slate-300"
                   >
                     {name}
-                  </span>
+                  </motion.span>
                 ))}
-              </div>
+              </motion.div>
             </div>
           ) : null}
 
           <div className="mt-5 flex flex-wrap gap-3">
-            <button
+            <Button
               type="button"
-              className="dashboard-brand-button w-full justify-center sm:w-auto"
+              variant="primary"
+              size="lg"
+              className="w-full sm:w-auto"
               onClick={onSubmitScan}
               disabled={selectedFiles.length === 0 || isSubmittingScan}
             >
               <FolderOpen size={16} />
               {isSubmittingScan ? "Queueing..." : selectedFiles.length > 1 ? `Queue ${pluralize("job", selectedFiles.length)}` : "Queue Scan Job"}
-            </button>
+            </Button>
           </div>
         </section>
 
@@ -294,7 +319,9 @@ export function ProjectsView({
           {activeJob ? (
             <div className="rounded-2xl border border-slate-200/80 px-4 py-4 dark:border-slate-800/80">
               <p className="text-sm font-semibold text-slate-950 dark:text-white">{activeJob.originalName}</p>
-              <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">{activeJob.sourceType === "url" ? "URL scan job" : "File scan job"}</p>
+              <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
+                {activeJob.sourceType === "url" ? "URL scan job" : activeJob.sourceType === "website" ? "Website safety job" : "File scan job"}
+              </p>
               <p className="mt-2 inline-flex rounded-full bg-slate-100 px-2.5 py-1 text-xs font-medium text-slate-600 dark:bg-slate-900 dark:text-slate-300">
                 {activeJob.status}
               </p>

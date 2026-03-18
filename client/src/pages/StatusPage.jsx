@@ -5,6 +5,9 @@ import { buildApiUrl } from "../appConfig";
 import { motionPreset } from "../appUtils";
 import PublicSiteFooter from "./public/PublicSiteFooter";
 import PublicSiteHeader from "./public/PublicSiteHeader";
+import { prefetchRouteModule } from "../routeModules";
+import { createInteractiveMotion } from "../ui/motionSystem";
+import { SkeletonBlock, SkeletonText } from "../ui/Skeleton";
 
 const DEFAULT_STATUS = Object.freeze({
   status: "unknown",
@@ -53,6 +56,16 @@ function formatTimestamp(value) {
 
 export default function StatusPage({ appName, appTagline, logoAltText, brandMarks }) {
   const prefersReducedMotion = useReducedMotion();
+  const MotionLink = motion(Link);
+  const interactiveMotion = createInteractiveMotion(prefersReducedMotion, {
+    hoverScale: 1.012,
+    tapScale: 0.985
+  });
+  const buildPrefetchIntentProps = (path) => ({
+    onMouseEnter: () => prefetchRouteModule(path),
+    onFocus: () => prefetchRouteModule(path),
+    onTouchStart: () => prefetchRouteModule(path)
+  });
   const [statusPayload, setStatusPayload] = useState(DEFAULT_STATUS);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -136,12 +149,12 @@ export default function StatusPage({ appName, appTagline, logoAltText, brandMark
             <p className="text-xs text-slate-500 dark:text-slate-400">Last updated {formatTimestamp(statusPayload.timestamp)}</p>
           </div>
           <div className="marketing-hero-actions">
-            <Link to="/signup" className="primary">
+            <MotionLink to="/signup" className="primary" {...buildPrefetchIntentProps("/signup")} {...interactiveMotion}>
               Create account
-            </Link>
-            <Link to="/" className="ghost">
+            </MotionLink>
+            <MotionLink to="/" className="ghost" {...buildPrefetchIntentProps("/")} {...interactiveMotion}>
               Try guest scan
-            </Link>
+            </MotionLink>
           </div>
         </div>
       </motion.section>
@@ -222,8 +235,14 @@ export default function StatusPage({ appName, appTagline, logoAltText, brandMark
       </motion.section>
 
       {loading ? (
-        <motion.section className="card marketing-section" {...motionPreset(prefersReducedMotion, 0.14)}>
-          <p className="subtext">Loading status details...</p>
+        <motion.section className="card marketing-section" {...motionPreset(prefersReducedMotion, 0.14)} role="status" aria-live="polite" aria-busy="true">
+          <div className="grid gap-3">
+            <SkeletonBlock className="h-3 w-32" />
+            <SkeletonBlock className="h-6 w-52" />
+            <div className="rounded-2xl border border-slate-200/80 p-4 dark:border-slate-800/80">
+              <SkeletonText lines={3} />
+            </div>
+          </div>
         </motion.section>
       ) : null}
       {error ? (

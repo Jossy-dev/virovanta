@@ -4,6 +4,8 @@ import { getMarketingPageByPath } from "../marketing/marketingContent";
 import { motionPreset } from "../appUtils";
 import PublicSiteFooter from "./public/PublicSiteFooter";
 import PublicSiteHeader from "./public/PublicSiteHeader";
+import { prefetchRouteModule } from "../routeModules";
+import { createInteractiveMotion } from "../ui/motionSystem";
 
 function renderSection(section) {
   if (section.layout === "steps") {
@@ -51,6 +53,17 @@ function renderSection(section) {
 export default function MarketingPage({ appName, appTagline, logoAltText, brandMarks, routePath }) {
   const prefersReducedMotion = useReducedMotion();
   const page = getMarketingPageByPath(routePath);
+  const MotionLink = motion(Link);
+  const interactiveMotion = createInteractiveMotion(prefersReducedMotion, {
+    hoverScale: 1.012,
+    tapScale: 0.985
+  });
+
+  const buildPrefetchIntentProps = (path) => ({
+    onMouseEnter: () => prefetchRouteModule(path),
+    onFocus: () => prefetchRouteModule(path),
+    onTouchStart: () => prefetchRouteModule(path)
+  });
 
   if (!page) {
     return <Navigate to="/" replace />;
@@ -75,12 +88,22 @@ export default function MarketingPage({ appName, appTagline, logoAltText, brandM
           </div>
 
           <div className="marketing-hero-actions">
-            <Link to={page.cta.primary.path} className="primary">
+            <MotionLink
+              to={page.cta.primary.path}
+              className="primary"
+              {...buildPrefetchIntentProps(page.cta.primary.path)}
+              {...interactiveMotion}
+            >
               {page.cta.primary.label}
-            </Link>
-            <Link to={page.cta.secondary.path} className="ghost">
+            </MotionLink>
+            <MotionLink
+              to={page.cta.secondary.path}
+              className="ghost"
+              {...buildPrefetchIntentProps(page.cta.secondary.path)}
+              {...interactiveMotion}
+            >
               {page.cta.secondary.label}
-            </Link>
+            </MotionLink>
           </div>
 
           <div className="marketing-hero-points">
@@ -114,12 +137,22 @@ export default function MarketingPage({ appName, appTagline, logoAltText, brandM
           <p className="subtext">{page.cta.description}</p>
         </div>
         <div className="marketing-cta-actions">
-          <Link to={page.cta.primary.path} className="primary">
+          <MotionLink
+            to={page.cta.primary.path}
+            className="primary"
+            {...buildPrefetchIntentProps(page.cta.primary.path)}
+            {...interactiveMotion}
+          >
             {page.cta.primary.label}
-          </Link>
-          <Link to={page.cta.secondary.path} className="ghost">
+          </MotionLink>
+          <MotionLink
+            to={page.cta.secondary.path}
+            className="ghost"
+            {...buildPrefetchIntentProps(page.cta.secondary.path)}
+            {...interactiveMotion}
+          >
             {page.cta.secondary.label}
-          </Link>
+          </MotionLink>
         </div>
       </motion.section>
 

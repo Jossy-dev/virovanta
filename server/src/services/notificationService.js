@@ -75,16 +75,24 @@ export class NotificationService {
     });
   }
 
-  async listForUser(userId, limit = 20) {
+  async listForUser(userId, limit = 20, offset = 0) {
     return this.store.read((state) => {
       const safeLimit = Math.max(1, Math.min(100, Number(limit) || 20));
+      const safeOffset = Math.max(0, Number(offset) || 0);
       const ownedNotifications = sortNotifications(
         (state.notifications || []).filter((notification) => notification.userId === userId)
       );
+      const pagedNotifications = ownedNotifications.slice(safeOffset, safeOffset + safeLimit);
+      const unreadCount = ownedNotifications.filter((notification) => !notification.readAt).length;
+      const totalCount = ownedNotifications.length;
 
       return {
-        notifications: ownedNotifications.slice(0, safeLimit).map(publicNotification),
-        unreadCount: ownedNotifications.filter((notification) => !notification.readAt).length
+        notifications: pagedNotifications.map(publicNotification),
+        unreadCount,
+        totalCount,
+        limit: safeLimit,
+        offset: safeOffset,
+        hasMore: safeOffset + safeLimit < totalCount
       };
     });
   }

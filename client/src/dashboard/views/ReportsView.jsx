@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { motion, useReducedMotion } from "framer-motion";
 import { ArrowUpRight, Share2, Trash2 } from "lucide-react";
 import { WidgetCard } from "../components/WidgetCard";
 import { filterCollection } from "../dashboardUtils";
+import { createStaggerContainerVariants, createStaggerItemVariants } from "../../ui/motionSystem";
 
 const REPORTS_PAGE_SIZE = 12;
 const VERDICT_FILTER_VALUES = Object.freeze(["clean", "suspicious", "malicious"]);
@@ -43,6 +45,7 @@ export function ReportsView({
   getDisplayFileType,
   formatVerdictLabel
 }) {
+  const prefersReducedMotion = useReducedMotion();
   const normalizedVerdictFilter = normalizeVerdictValue(verdictFilter);
   const verdictFilteredReports = useMemo(() => {
     if (!normalizedVerdictFilter) {
@@ -74,12 +77,20 @@ export function ReportsView({
   const isReportDetailsLoading = Boolean(pendingSelectedReportId) && pendingSelectedReportId !== selectedReport?.id;
   const hasSelectedOrPendingReport = Boolean(selectedReport || pendingReportSummary);
   const selectedSourceType = pendingReportSummary?.sourceType || selectedReport?.sourceType || "file";
-  const isLinkReport = selectedSourceType === "url";
+  const isWebTargetReport = selectedSourceType === "url" || selectedSourceType === "website";
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [visibleReportCount, setVisibleReportCount] = useState(REPORTS_PAGE_SIZE);
   const visibleReports = useMemo(
     () => filteredReports.slice(0, visibleReportCount),
     [filteredReports, visibleReportCount]
+  );
+  const reportListVariants = useMemo(
+    () => createStaggerContainerVariants(prefersReducedMotion, { staggerChildren: 0.028, delayChildren: 0.01 }),
+    [prefersReducedMotion]
+  );
+  const reportItemVariants = useMemo(
+    () => createStaggerItemVariants(prefersReducedMotion, { y: 5, duration: 0.16 }),
+    [prefersReducedMotion]
   );
   const canLoadMoreReports = filteredReports.length > visibleReportCount;
   const handleOpenReport = useCallback((reportId) => {
@@ -166,53 +177,57 @@ export function ReportsView({
                 : "No reports available."}
             </p>
           ) : (
-            visibleReports.map((report, index) => {
-              const isActive = report.id === selectedListReportId;
-              const isPendingActive = report.id === pendingSelectedReportId && pendingSelectedReportId !== selectedReport?.id;
-              const isAlternateRow = index % 2 === 1;
+            <motion.div variants={reportListVariants} initial="hidden" animate="show">
+              {visibleReports.map((report, index) => {
+                const isActive = report.id === selectedListReportId;
+                const isPendingActive = report.id === pendingSelectedReportId && pendingSelectedReportId !== selectedReport?.id;
+                const isAlternateRow = index % 2 === 1;
 
-              return (
-                <button
-                  key={report.id}
-                  type="button"
-                  onClick={() => handleOpenReport(report.id)}
-                  className={`w-full cursor-pointer rounded-none border-b border-slate-200/80 px-4 py-4 text-left transition-colors duration-150 last:border-b-0 dark:border-slate-800/80 ${
-                    isActive
-                      ? "bg-viro-600 text-white dark:bg-viro-500 dark:text-white"
-                      : isAlternateRow
-                        ? "bg-slate-50/70 hover:bg-viro-50/70 dark:bg-slate-900/65 dark:hover:bg-viro-900/25"
-                        : "bg-white hover:bg-slate-50 dark:bg-slate-950 dark:hover:bg-viro-900/20"
-                  }`}
-                >
-                  <div className="flex items-center justify-between gap-3">
-                    <p className={`truncate text-sm font-semibold ${isActive ? "text-white dark:text-white" : "text-slate-900 dark:text-slate-100"}`}>
-                      {report.fileName}
-                    </p>
-                    {isPendingActive ? (
-                      <span className="inline-flex items-center gap-1 text-[10px] font-medium uppercase tracking-[0.12em] text-white/80 dark:text-white/80">
-                        <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-white/90" />
-                        Loading
-                      </span>
-                    ) : null}
-                  </div>
-                  <p className={`mt-1 text-xs ${isActive ? "text-white/80 dark:text-white/80" : "text-slate-500 dark:text-slate-300"}`}>
-                    {formatDateTime(report.completedAt)}
-                  </p>
-                  <p className={`mt-1 text-xs ${isActive ? "text-white/80 dark:text-white/80" : "text-slate-500 dark:text-slate-300"}`}>
-                    {report.sourceType === "url" ? "URL scan" : "File scan"}
-                  </p>
-                  <span
-                    className={`mt-3 inline-flex rounded-full px-2.5 py-1 text-[11px] font-medium ${
+                return (
+                  <motion.button
+                    key={report.id}
+                    type="button"
+                    variants={reportItemVariants}
+                    layout="position"
+                    onClick={() => handleOpenReport(report.id)}
+                    className={`w-full cursor-pointer rounded-none border-b border-slate-200/80 px-4 py-4 text-left transition-colors duration-150 last:border-b-0 dark:border-slate-800/80 ${
                       isActive
-                        ? "bg-white/20 text-white dark:bg-white/20 dark:text-white"
-                        : "bg-slate-100 text-slate-600 dark:bg-slate-900 dark:text-slate-300"
+                        ? "bg-viro-600 text-white dark:bg-viro-500 dark:text-white"
+                        : isAlternateRow
+                          ? "bg-slate-50/70 hover:bg-viro-50/70 dark:bg-slate-900/65 dark:hover:bg-viro-900/25"
+                          : "bg-white hover:bg-slate-50 dark:bg-slate-950 dark:hover:bg-viro-900/20"
                     }`}
                   >
-                    {report.verdict}
-                  </span>
-                </button>
-              );
-            })
+                    <div className="flex items-center justify-between gap-3">
+                      <p className={`truncate text-sm font-semibold ${isActive ? "text-white dark:text-white" : "text-slate-900 dark:text-slate-100"}`}>
+                        {report.fileName}
+                      </p>
+                      {isPendingActive ? (
+                        <span className="inline-flex items-center gap-1 text-[10px] font-medium uppercase tracking-[0.12em] text-white/80 dark:text-white/80">
+                          <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-white/90" />
+                          Loading
+                        </span>
+                      ) : null}
+                    </div>
+                    <p className={`mt-1 text-xs ${isActive ? "text-white/80 dark:text-white/80" : "text-slate-500 dark:text-slate-300"}`}>
+                      {formatDateTime(report.completedAt)}
+                    </p>
+                    <p className={`mt-1 text-xs ${isActive ? "text-white/80 dark:text-white/80" : "text-slate-500 dark:text-slate-300"}`}>
+                      {report.sourceType === "url" ? "URL scan" : report.sourceType === "website" ? "Website safety" : "File scan"}
+                    </p>
+                    <span
+                      className={`mt-3 inline-flex rounded-full px-2.5 py-1 text-[11px] font-medium ${
+                        isActive
+                          ? "bg-white/20 text-white dark:bg-white/20 dark:text-white"
+                          : "bg-slate-100 text-slate-600 dark:bg-slate-900 dark:text-slate-300"
+                      }`}
+                    >
+                      {report.verdict}
+                    </span>
+                  </motion.button>
+                );
+              })}
+            </motion.div>
           )}
         </div>
         {canLoadMoreReports ? (
@@ -261,11 +276,11 @@ export function ReportsView({
 
               <div className="mt-6 grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
                 <div className="rounded-3xl border border-slate-200/80 px-4 py-4 dark:border-slate-800/80">
-                  <p className="dashboard-label">{isLinkReport ? "URL host" : "Detected type"}</p>
+                  <p className="dashboard-label">{isWebTargetReport ? "URL host" : "Detected type"}</p>
                   <SkeletonBar className="mt-2 h-4 w-3/4" />
                 </div>
                 <div className="rounded-3xl border border-slate-200/80 px-4 py-4 dark:border-slate-800/80">
-                  <p className="dashboard-label">{isLinkReport ? "Fetched bytes" : "File size"}</p>
+                  <p className="dashboard-label">{isWebTargetReport ? "Fetched bytes" : "File size"}</p>
                   <SkeletonBar className="mt-2 h-4 w-2/3" />
                 </div>
                 <div className="rounded-3xl border border-slate-200/80 px-4 py-4 dark:border-slate-800/80">
@@ -273,12 +288,12 @@ export function ReportsView({
                   <SkeletonBar className="mt-2 h-4 w-1/2" />
                 </div>
                 <div className="rounded-3xl border border-slate-200/80 px-4 py-4 dark:border-slate-800/80">
-                  <p className="dashboard-label">{isLinkReport ? "URL hash (SHA256)" : "SHA256"}</p>
+                  <p className="dashboard-label">{isWebTargetReport ? "URL hash (SHA256)" : "SHA256"}</p>
                   <SkeletonBar className="mt-2 h-3 w-full" />
                 </div>
               </div>
 
-              {isLinkReport ? (
+              {isWebTargetReport ? (
                 <div className="mt-4 grid gap-4 sm:grid-cols-2">
                   <div className="rounded-3xl border border-slate-200/80 px-4 py-4 dark:border-slate-800/80">
                     <p className="dashboard-label">Final URL</p>
@@ -380,13 +395,13 @@ export function ReportsView({
 
               <div className="mt-6 grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
                 <div className="rounded-3xl border border-slate-200/80 px-4 py-4 dark:border-slate-800/80">
-                  <p className="dashboard-label">{isLinkReport ? "URL host" : "Detected type"}</p>
+                  <p className="dashboard-label">{isWebTargetReport ? "URL host" : "Detected type"}</p>
                   <p className="mt-2 text-sm font-semibold text-slate-950 dark:text-white">
-                    {isLinkReport ? selectedReport?.url?.hostname || "Unknown host" : getDisplayFileType(selectedReport.file)}
+                    {isWebTargetReport ? selectedReport?.url?.hostname || "Unknown host" : getDisplayFileType(selectedReport.file)}
                   </p>
                 </div>
                 <div className="rounded-3xl border border-slate-200/80 px-4 py-4 dark:border-slate-800/80">
-                  <p className="dashboard-label">{isLinkReport ? "Fetched bytes" : "File size"}</p>
+                  <p className="dashboard-label">{isWebTargetReport ? "Fetched bytes" : "File size"}</p>
                   <p className="mt-2 text-sm font-semibold text-slate-950 dark:text-white">{formatBytes(selectedReport.file.size)}</p>
                 </div>
                 <div className="rounded-3xl border border-slate-200/80 px-4 py-4 dark:border-slate-800/80">
@@ -394,12 +409,12 @@ export function ReportsView({
                   <p className="mt-2 text-sm font-semibold text-slate-950 dark:text-white">{formatVerdictLabel(selectedReport.verdict)}</p>
                 </div>
                 <div className="rounded-3xl border border-slate-200/80 px-4 py-4 dark:border-slate-800/80">
-                  <p className="dashboard-label">{isLinkReport ? "URL hash (SHA256)" : "SHA256"}</p>
+                  <p className="dashboard-label">{isWebTargetReport ? "URL hash (SHA256)" : "SHA256"}</p>
                   <p className="mt-2 break-all font-mono text-xs text-slate-600 dark:text-slate-300">{selectedReport.file.hashes.sha256}</p>
                 </div>
               </div>
 
-              {isLinkReport ? (
+              {isWebTargetReport ? (
                 <div className="mt-4 grid gap-4 sm:grid-cols-2">
                   <div className="rounded-3xl border border-slate-200/80 px-4 py-4 dark:border-slate-800/80">
                     <p className="dashboard-label">Final URL</p>
@@ -450,7 +465,7 @@ export function ReportsView({
               <WidgetCard title="Findings" subtitle="What the scanner detected">
                 {selectedReport.findings.length === 0 ? (
                   <p className="text-sm leading-7 text-slate-500 dark:text-slate-400">
-                    No notable indicators were detected in this {isLinkReport ? "URL target" : "file"}.
+                    No notable indicators were detected in this {isWebTargetReport ? "URL target" : "file"}.
                   </p>
                 ) : (
                   <div className="space-y-3">
@@ -481,7 +496,7 @@ export function ReportsView({
               </WidgetCard>
             </div>
 
-            {isLinkReport && selectedReport?.technicalIndicators ? (
+            {isWebTargetReport && selectedReport?.technicalIndicators ? (
               <WidgetCard title="Technical Indicators" subtitle="Link analysis signals">
                 <pre className="dashboard-scrollbar overflow-x-auto rounded-2xl border border-slate-200/80 bg-slate-50 p-3 text-xs text-slate-700 dark:border-slate-800/80 dark:bg-slate-900 dark:text-slate-300">
                   {JSON.stringify(selectedReport.technicalIndicators, null, 2)}

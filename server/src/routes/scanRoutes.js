@@ -8,9 +8,10 @@ import { config as defaultConfig } from "../config.js";
 import { asyncHandler } from "../utils/asyncHandler.js";
 import { HttpError } from "../utils/httpError.js";
 import { createReportShareToken } from "../utils/reportShareToken.js";
+import { buildScanReportPdf } from "../utils/reportPdf.js";
 import { API_KEY_SCOPES } from "../utils/apiKeyScopes.js";
 import { validateSchema } from "../utils/validation.js";
-import { linkScanJobSchema, paginationSchema } from "../validation/scanSchemas.js";
+import { linkScanJobSchema, paginationSchema, websiteSafetyScanJobSchema } from "../validation/scanSchemas.js";
 
 function sanitizeExtension(fileName) {
   const extension = path.extname(fileName || "").toLowerCase();
@@ -41,6 +42,13 @@ export function createScanRouter({
     standardHeaders: true,
     legacyHeaders: false
   });
+  const websiteSafetyRateLimiter = rateLimit({
+    windowMs: config.urlScanRateLimitWindowMinutes * 60 * 1000,
+    limit: config.urlScanRateLimitRequestsPerWindow,
+    keyGenerator: (req) => req.auth?.user?.id || ipKeyGenerator(req.ip || ""),
+    standardHeaders: true,
+    legacyHeaders: false
+  });
   const storage = multer.diskStorage({
     destination: (_req, _file, callback) => {
       callback(null, config.uploadDir);
@@ -65,8 +73,8 @@ export function createScanRouter({
     "/jobs",
     requireApiKeyScopes(API_KEY_SCOPES.JOBS_READ),
     asyncHandler(async (req, res) => {
-      const { limit } = validateSchema(paginationSchema, req.query);
-      const jobs = await scanQueueService.listJobsForUser(req.auth.user, limit);
+      const { limit, sourceType } = validateSchema(paginationSchema, req.query);
+      const jobs = await scanQueueService.listJobsForUser(req.auth.user, limit, sourceType);
       res.json({ jobs });
     })
   );
@@ -99,6 +107,36 @@ export function createScanRouter({
       }
 
       const job = await scanQueueService.enqueueUrlScan({
+        userId: req.auth.user.id,
+        url
+      });
+
+      res.status(202).json({
+        job,
+        quota
+      });
+    })
+  );
+
+  scanRouter.post(
+    "/website/jobs",
+    requireApiKeyScopes(API_KEY_SCOPES.JOBS_WRITE),
+    websiteSafetyRateLimiter,
+    asyncHandler(async (req, res) => {
+      const { url } = validateSchema(websiteSafetyScanJobSchema, req.body || {});
+      const quota = await authService.consumeDailyQuota(req.auth.user.id);
+
+      if (!quota.allowed) {
+        throw new HttpError(429, "Daily scan quota exceeded for website safety scans.", {
+          code: "SCAN_QUOTA_EXCEEDED",
+          details: {
+            ...quota,
+            requested: 1
+          }
+        });
+      }
+
+      const job = await scanQueueService.enqueueWebsiteSafetyScan({
         userId: req.auth.user.id,
         url
       });
@@ -177,8 +215,8 @@ export function createScanRouter({
     "/reports",
     requireApiKeyScopes(API_KEY_SCOPES.REPORTS_READ),
     asyncHandler(async (req, res) => {
-      const { limit } = validateSchema(paginationSchema, req.query);
-      const reports = await scanQueueService.listReportsForUser(req.auth.user, limit);
+      const { limit, sourceType } = validateSchema(paginationSchema, req.query);
+      const reports = await scanQueueService.listReportsForUser(req.auth.user, limit, sourceType);
       res.json({ reports });
     })
   );
@@ -189,6 +227,21 @@ export function createScanRouter({
     asyncHandler(async (req, res) => {
       const report = await scanQueueService.getReportForUser(req.params.reportId, req.auth.user);
       res.json({ report });
+    })
+  );
+
+  scanRouter.get(
+    "/reports/:reportId/pdf",
+    requireApiKeyScopes(API_KEY_SCOPES.REPORTS_READ),
+    asyncHandler(async (req, res) => {
+      const report = await scanQueueService.getReportForUser(req.params.reportId, req.auth.user);
+      const pdfBuffer = await buildScanReportPdf(report);
+      const safeReportId = String(report.id || "report").replace(/[^a-zA-Z0-9._-]+/g, "_");
+
+      res.setHeader("Content-Type", "application/pdf");
+      res.setHeader("Content-Disposition", `attachment; filename="${safeReportId}.pdf"`);
+      res.setHeader("Cache-Control", "private, no-store, max-age=0");
+      res.status(200).send(pdfBuffer);
     })
   );
 

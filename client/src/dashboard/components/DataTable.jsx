@@ -1,6 +1,10 @@
+import { memo } from "react";
+import { motion, useReducedMotion } from "framer-motion";
 import { ChevronLeft, ChevronRight } from "lucide-react";
+import Button from "../../ui/Button";
+import { createStaggerContainerVariants, createStaggerItemVariants } from "../../ui/motionSystem";
 
-export function DataTable({
+export const DataTable = memo(function DataTable({
   columns,
   rows,
   page,
@@ -8,16 +12,30 @@ export function DataTable({
   onPageChange,
   emptyMessage = "No records available."
 }) {
+  const prefersReducedMotion = useReducedMotion();
+  const listVariants = createStaggerContainerVariants(prefersReducedMotion, {
+    staggerChildren: 0.03,
+    delayChildren: 0.02
+  });
+  const rowVariants = createStaggerItemVariants(prefersReducedMotion, {
+    y: 6,
+    duration: 0.18
+  });
+
   return (
     <div className="dashboard-subtle-panel overflow-hidden">
-      <div className="space-y-3 p-3 md:hidden">
+      <motion.div className="space-y-3 p-3 md:hidden" variants={listVariants} initial="hidden" animate="show">
         {rows.length === 0 ? (
           <div className="rounded-3xl border border-slate-200/70 px-4 py-8 text-center text-sm text-slate-500 dark:border-slate-800/70 dark:text-slate-400">
             {emptyMessage}
           </div>
         ) : (
           rows.map((row) => (
-            <article key={row.id} className="rounded-3xl border border-slate-200/80 bg-white px-4 py-4 dark:border-slate-800/80 dark:bg-slate-950">
+            <motion.article
+              key={row.id}
+              variants={rowVariants}
+              className="rounded-3xl border border-slate-200/80 bg-white px-4 py-4 dark:border-slate-800/80 dark:bg-slate-950"
+            >
               <div className="space-y-3">
                 {columns.map((column) => (
                   <div key={column.key} className="flex items-start justify-between gap-4">
@@ -28,10 +46,10 @@ export function DataTable({
                   </div>
                 ))}
               </div>
-            </article>
+            </motion.article>
           ))
         )}
-      </div>
+      </motion.div>
 
       <div className="dashboard-scrollbar hidden overflow-x-auto md:block">
         <table className="w-full min-w-[680px] border-collapse">
@@ -49,7 +67,7 @@ export function DataTable({
               ))}
             </tr>
           </thead>
-          <tbody>
+          <motion.tbody variants={listVariants} initial="hidden" animate="show">
             {rows.length === 0 ? (
               <tr>
                 <td
@@ -61,8 +79,9 @@ export function DataTable({
               </tr>
             ) : (
               rows.map((row) => (
-                <tr
+                <motion.tr
                   key={row.id}
+                  variants={rowVariants}
                   className="border-b border-slate-200/70 transition-colors hover:bg-slate-50 dark:border-slate-800/70 dark:hover:bg-slate-900/50"
                 >
                   {columns.map((column) => (
@@ -73,10 +92,10 @@ export function DataTable({
                       {column.render ? column.render(row) : row[column.key]}
                     </td>
                   ))}
-                </tr>
+                </motion.tr>
               ))
             )}
-          </tbody>
+          </motion.tbody>
         </table>
       </div>
 
@@ -86,27 +105,33 @@ export function DataTable({
             Page {page} of {totalPages}
           </p>
           <div className="flex items-center gap-2">
-            <button
+            <Button
               type="button"
-              className="dashboard-brand-outline inline-flex items-center gap-1 px-3 py-2 text-slate-600 disabled:cursor-not-allowed disabled:opacity-45 dark:text-slate-300"
+              variant="secondary"
+              size="sm"
+              className="px-3"
               onClick={() => onPageChange(page - 1)}
               disabled={page <= 1}
             >
               <ChevronLeft size={16} />
               Prev
-            </button>
-            <button
+            </Button>
+            <Button
               type="button"
-              className="dashboard-brand-outline inline-flex items-center gap-1 px-3 py-2 text-slate-600 disabled:cursor-not-allowed disabled:opacity-45 dark:text-slate-300"
+              variant="secondary"
+              size="sm"
+              className="px-3"
               onClick={() => onPageChange(page + 1)}
               disabled={page >= totalPages}
             >
               Next
               <ChevronRight size={16} />
-            </button>
+            </Button>
           </div>
         </div>
       ) : null}
     </div>
   );
-}
+});
+
+DataTable.displayName = "DataTable";

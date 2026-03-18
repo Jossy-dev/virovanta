@@ -53,7 +53,8 @@ export const createApiKeySchema = z.object({
 });
 
 export const notificationsQuerySchema = z.object({
-  limit: z.coerce.number().int().min(1).max(100).optional().default(20)
+  limit: z.coerce.number().int().min(1).max(100).optional().default(20),
+  offset: z.coerce.number().int().min(0).max(10000).optional().default(0)
 });
 
 export const markNotificationsReadSchema = z.object({

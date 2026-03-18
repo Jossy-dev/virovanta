@@ -154,7 +154,7 @@ export function createAuthRouter({ authService, requireAuth, requireAuthMethod, 
     ...requireInteractiveAuth,
     asyncHandler(async (req, res) => {
       const payload = validateSchema(notificationsQuerySchema, req.query || {});
-      const result = await authService.listNotifications(req.auth.user.id, payload.limit);
+      const result = await authService.listNotifications(req.auth.user.id, payload.limit, payload.offset);
       res.json(result);
     })
   );

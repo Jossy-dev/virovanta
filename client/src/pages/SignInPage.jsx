@@ -3,6 +3,7 @@ import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { toast } from "sonner";
 import AuthShell from "./auth/AuthShell";
 import PasswordField from "./auth/PasswordField";
+import { prefetchRouteModule } from "../routeModules";
 
 function isValidEmail(value) {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(value || "").trim());
@@ -18,6 +19,11 @@ export default function SignInPage({ appName, appTagline, logoAltText, brandMark
   });
   const [errors, setErrors] = useState({});
   const [submitting, setSubmitting] = useState(false);
+  const buildPrefetchIntentProps = (path) => ({
+    onMouseEnter: () => prefetchRouteModule(path),
+    onFocus: () => prefetchRouteModule(path),
+    onTouchStart: () => prefetchRouteModule(path)
+  });
 
   useEffect(() => {
     const email = String(searchParams.get("email") || "").trim();
@@ -111,7 +117,7 @@ export default function SignInPage({ appName, appTagline, logoAltText, brandMark
       footer={
         <p className="auth-footer-copy">
           Don&apos;t have an account?{" "}
-          <Link to="/signup" className="auth-inline-link">
+          <Link to="/signup" className="auth-inline-link" {...buildPrefetchIntentProps("/signup")}>
             Create one
           </Link>
         </p>
@@ -166,7 +172,11 @@ export default function SignInPage({ appName, appTagline, logoAltText, brandMark
             />
             <span>Remember me</span>
           </label>
-          <Link className="auth-inline-link" to={`/forgot-password${form.email ? `?email=${encodeURIComponent(form.email)}` : ""}`}>
+          <Link
+            className="auth-inline-link"
+            to={`/forgot-password${form.email ? `?email=${encodeURIComponent(form.email)}` : ""}`}
+            {...buildPrefetchIntentProps("/forgot-password")}
+          >
             Forgot password?
           </Link>
         </div>

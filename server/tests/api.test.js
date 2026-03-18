@@ -10,7 +10,12 @@ import { hashSecret } from "../src/utils/security.js";
 
 const tempRoots = [];
 
-async function setupTestApp({ freeTierDailyScanLimit = 40, scanner = null, urlScanner = null } = {}) {
+async function setupTestApp({
+  freeTierDailyScanLimit = 40,
+  scanner = null,
+  urlScanner = null,
+  websiteSafetyScanner = null
+} = {}) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "virovanta-test-"));
   const uploadDir = path.join(root, "uploads");
   const dataFilePath = path.join(root, "store.json");
@@ -124,9 +129,123 @@ async function setupTestApp({ freeTierDailyScanLimit = 40, scanner = null, urlSc
     };
   };
 
+  const mockWebsiteSafetyScanner = async ({ url }) => {
+    const parsed = new URL(String(url || "https://example.com"));
+
+    return {
+      id: `scan_${Math.random().toString(36).slice(2, 10)}`,
+      createdAt: new Date().toISOString(),
+      completedAt: new Date().toISOString(),
+      sourceType: "website",
+      verdict: "suspicious",
+      riskScore: 32,
+      file: {
+        originalName: parsed.toString(),
+        extension: "(website)",
+        size: 2048,
+        sizeDisplay: "2 KB",
+        declaredMimeType: "text/url",
+        detectedMimeType: "text/html",
+        detectedFileType: "website",
+        magicType: "Website target",
+        entropy: 0,
+        printableRatio: 1,
+        hashes: {
+          md5: crypto.createHash("md5").update(parsed.toString()).digest("hex"),
+          sha1: crypto.createHash("sha1").update(parsed.toString()).digest("hex"),
+          sha256: crypto.createHash("sha256").update(parsed.toString()).digest("hex")
+        }
+      },
+      findings: [
+        {
+          id: "website_headers_missing",
+          severity: "medium",
+          category: "Headers",
+          weight: 8,
+          title: "Missing security headers",
+          description: "The target is missing one or more recommended headers.",
+          evidence: "content-security-policy"
+        }
+      ],
+      recommendations: ["Harden missing headers and validate ownership before trust decisions."],
+      plainLanguageReasons: ["The target is missing one or more recommended headers."],
+      technicalIndicators: {
+        missingSecurityHeaders: ["content-security-policy"]
+      },
+      websiteSafety: {
+        score: 68,
+        verdict: "suspicious",
+        checkedAt: new Date().toISOString(),
+        url: {
+          input: parsed.toString(),
+          normalized: parsed.toString(),
+          final: parsed.toString(),
+          hostname: parsed.hostname,
+          protocol: parsed.protocol.replace(/:$/, "")
+        },
+        modules: {
+          normalization: {
+            input: parsed.toString(),
+            normalized: parsed.toString()
+          },
+          dnsDomain: {
+            status: "completed",
+            ageDays: 150
+          },
+          ssl: {
+            status: "completed",
+            certIssuer: "Example CA"
+          },
+          headers: {
+            status: "completed",
+            missing: ["content-security-policy"]
+          },
+          content: {
+            status: "completed",
+            suspiciousKeywords: []
+          },
+          redirects: {
+            status: "completed",
+            count: 0,
+            crossDomainCount: 0
+          },
+          reputation: {
+            flagged: false,
+            flaggedProviders: [],
+            flaggedThreats: []
+          },
+          vulnerabilityChecks: {
+            status: "completed",
+            exposures: [],
+            adminEndpoints: []
+          }
+        }
+      },
+      engines: {
+        normalization: { status: "completed" },
+        fetch: { status: "ok", statusCode: 200 },
+        dnsDomain: { status: "completed" },
+        ssl: { status: "completed" },
+        headers: { status: "completed" },
+        content: { status: "completed" },
+        redirects: { status: "completed" },
+        reputation: { status: "clean" },
+        vulnerabilityChecks: { status: "completed" }
+      },
+      url: {
+        input: parsed.toString(),
+        normalized: parsed.toString(),
+        final: parsed.toString(),
+        protocol: parsed.protocol.replace(/:$/, ""),
+        hostname: parsed.hostname
+      }
+    };
+  };
+
   const { app } = await createApp({
     scanner: scanner || mockScanner,
     urlScanner: urlScanner || mockUrlScanner,
+    websiteSafetyScanner: websiteSafetyScanner || mockWebsiteSafetyScanner,
     dataFilePath,
     configOverrides: {
       uploadDir,
@@ -406,6 +525,68 @@ describe("ViroVanta API", () => {
     expect(reportResponse.body.report.url?.final).toContain("example.com");
   });
 
+  it("queues website safety jobs and returns website reports", async () => {
+    const app = await setupTestApp();
+    const session = await registerAndGetToken(app, "website-safety@example.com");
+
+    const submit = await request(app)
+      .post("/api/scans/website/jobs")
+      .set("Authorization", `Bearer ${session.accessToken}`)
+      .send({
+        url: "https://example.com"
+      });
+
+    expect(submit.status).toBe(202);
+    expect(submit.body.job.sourceType).toBe("website");
+
+    const finished = await waitForJobCompletion(app, session.accessToken, submit.body.job.id);
+    expect(finished.status).toBe("completed");
+
+    const reportResponse = await request(app)
+      .get(`/api/scans/reports/${finished.reportId}`)
+      .set("Authorization", `Bearer ${session.accessToken}`);
+
+    expect(reportResponse.status).toBe(200);
+    expect(reportResponse.body.report.sourceType).toBe("website");
+    expect(reportResponse.body.report.websiteSafety?.score).toBeGreaterThanOrEqual(0);
+  });
+
+  it("downloads report PDFs and filters reports by source type", async () => {
+    const app = await setupTestApp();
+    const session = await registerAndGetToken(app, "pdf@example.com");
+
+    const submit = await request(app)
+      .post("/api/scans/website/jobs")
+      .set("Authorization", `Bearer ${session.accessToken}`)
+      .send({
+        url: "https://example.com"
+      });
+
+    expect(submit.status).toBe(202);
+
+    const finished = await waitForJobCompletion(app, session.accessToken, submit.body.job.id);
+    expect(finished.reportId).toBeTruthy();
+
+    const filteredReports = await request(app)
+      .get("/api/scans/reports")
+      .query({ sourceType: "website", limit: 20 })
+      .set("Authorization", `Bearer ${session.accessToken}`);
+
+    expect(filteredReports.status).toBe(200);
+    expect(filteredReports.body.reports.length).toBeGreaterThan(0);
+    expect(filteredReports.body.reports.every((report) => report.sourceType === "website")).toBe(true);
+
+    const pdfResponse = await request(app)
+      .get(`/api/scans/reports/${finished.reportId}/pdf`)
+      .set("Authorization", `Bearer ${session.accessToken}`);
+
+    expect(pdfResponse.status).toBe(200);
+    expect(pdfResponse.headers["content-type"]).toContain("application/pdf");
+    expect(pdfResponse.headers["content-disposition"]).toContain(`${finished.reportId}.pdf`);
+    expect(Buffer.isBuffer(pdfResponse.body)).toBe(true);
+    expect(pdfResponse.body.length).toBeGreaterThan(64);
+  });
+
   it("blocks SSRF targets during URL scanning with a safe report output", async () => {
     const app = await setupTestApp({
       urlScanner: scanTargetUrl
@@ -562,6 +743,51 @@ describe("ViroVanta API", () => {
     expect(afterRead.body.unreadCount).toBe(0);
     const storedNotification = afterRead.body.notifications.find((candidate) => candidate.id === notification.id);
     expect(storedNotification?.readAt).toBeTruthy();
+  });
+
+  it("paginates notifications with limit and offset", async () => {
+    const app = await setupTestApp();
+    const session = await registerAndGetToken(app, "notify-paging@example.com");
+
+    const submit = await request(app)
+      .post("/api/scans/jobs")
+      .set("Authorization", `Bearer ${session.accessToken}`)
+      .attach("file", Buffer.from("harmless"), "sample-paging.txt");
+
+    expect(submit.status).toBe(202);
+    await waitForJobCompletion(app, session.accessToken, submit.body.job.id);
+
+    await waitForNotification(app, session.accessToken, (candidate) => candidate.type === "report_ready");
+
+    const createKey = await request(app)
+      .post("/api/auth/api-keys")
+      .set("Authorization", `Bearer ${session.accessToken}`)
+      .send({
+        name: "Automation Bot",
+        scopes: ["jobs:read"]
+      });
+
+    expect(createKey.status).toBe(201);
+    expect(createKey.body.metadata?.id).toBeTruthy();
+
+    const revokeKey = await request(app)
+      .delete(`/api/auth/api-keys/${createKey.body.metadata?.id}`)
+      .set("Authorization", `Bearer ${session.accessToken}`);
+
+    expect(revokeKey.status).toBe(204);
+
+    const paged = await request(app)
+      .get("/api/auth/notifications?limit=2&offset=1")
+      .set("Authorization", `Bearer ${session.accessToken}`);
+
+    expect(paged.status).toBe(200);
+    expect(Array.isArray(paged.body.notifications)).toBe(true);
+    expect(paged.body.notifications).toHaveLength(2);
+    expect(paged.body.limit).toBe(2);
+    expect(paged.body.offset).toBe(1);
+    expect(paged.body.totalCount).toBeGreaterThanOrEqual(3);
+    expect(typeof paged.body.hasMore).toBe("boolean");
+    expect(paged.body.notifications[0].type).toBe("api_key_created");
   });
 
   it("queues multiple scan jobs in a single authenticated upload", async () => {

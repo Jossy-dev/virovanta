@@ -9,8 +9,10 @@ import {
   getRiskMeta,
   motionPreset
 } from "../appUtils";
+import { createInteractiveMotion } from "../ui/motionSystem";
 import PublicSiteFooter from "./public/PublicSiteFooter";
 import PublicSiteHeader from "./public/PublicSiteHeader";
+import { prefetchRouteModule } from "../routeModules";
 
 export default function LandingPage({
   appName,
@@ -29,6 +31,17 @@ export default function LandingPage({
   const [guestReport, setGuestReport] = useState(null);
   const [guestError, setGuestError] = useState("");
   const [isGuestDragActive, setIsGuestDragActive] = useState(false);
+  const interactiveMotion = createInteractiveMotion(prefersReducedMotion, {
+    hoverScale: 1.012,
+    tapScale: 0.985
+  });
+  const MotionLink = motion(Link);
+
+  const buildPrefetchIntentProps = (path) => ({
+    onMouseEnter: () => prefetchRouteModule(path),
+    onFocus: () => prefetchRouteModule(path),
+    onTouchStart: () => prefetchRouteModule(path)
+  });
 
   const guestVerdictMeta = VERDICT_META[guestReport?.verdict] || VERDICT_META.clean;
   const guestRiskMeta = getRiskMeta(guestReport?.riskScore);
@@ -171,15 +184,16 @@ export default function LandingPage({
         </label>
 
         <div className="upload-actions">
-          <button
+          <motion.button
             type="button"
             className="primary"
             disabled={!guestFile || isGuestScanning || !guestStatus.enabled}
             onClick={handleRunGuestScan}
+            {...interactiveMotion}
           >
             {isGuestScanning ? "Scanning..." : "Run Guest Scan"}
-          </button>
-          <button
+          </motion.button>
+          <motion.button
             type="button"
             className="ghost"
             disabled={!guestFile || !guestStatus.enabled}
@@ -190,9 +204,10 @@ export default function LandingPage({
                 guestFileInputRef.current.value = "";
               }
             }}
+            {...interactiveMotion}
           >
             Clear
-          </button>
+          </motion.button>
         </div>
 
         {guestError ? <p className="error">{guestError}</p> : null}
@@ -238,12 +253,12 @@ export default function LandingPage({
         <p className="subtext">Save reports, queue jobs, and generate API keys for automation.</p>
 
         <div className="auth-switch">
-          <Link className="ghost" to="/signin">
+          <MotionLink className="ghost" to="/signin" {...buildPrefetchIntentProps("/signin")} {...interactiveMotion}>
             Sign in
-          </Link>
-          <Link className="primary" to="/signup">
+          </MotionLink>
+          <MotionLink className="primary" to="/signup" {...buildPrefetchIntentProps("/signup")} {...interactiveMotion}>
             Create account
-          </Link>
+          </MotionLink>
         </div>
 
         <ul className="hero-points">

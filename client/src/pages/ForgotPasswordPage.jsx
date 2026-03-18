@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { toast } from "sonner";
 import AuthShell from "./auth/AuthShell";
+import { prefetchRouteModule } from "../routeModules";
 
 function isValidEmail(value) {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(value || "").trim());
@@ -13,6 +14,11 @@ export default function ForgotPasswordPage({ appName, appTagline, logoAltText, b
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
+  const buildPrefetchIntentProps = (path) => ({
+    onMouseEnter: () => prefetchRouteModule(path),
+    onFocus: () => prefetchRouteModule(path),
+    onTouchStart: () => prefetchRouteModule(path)
+  });
 
   useEffect(() => {
     const nextEmail = String(searchParams.get("email") || "").trim();
@@ -70,7 +76,11 @@ export default function ForgotPasswordPage({ appName, appTagline, logoAltText, b
       footer={
         <p className="auth-footer-copy">
           Back to{" "}
-          <Link className="auth-inline-link" to={`/signin${email ? `?email=${encodeURIComponent(email)}` : ""}`}>
+          <Link
+            className="auth-inline-link"
+            to={`/signin${email ? `?email=${encodeURIComponent(email)}` : ""}`}
+            {...buildPrefetchIntentProps("/signin")}
+          >
             Sign in
           </Link>
         </p>

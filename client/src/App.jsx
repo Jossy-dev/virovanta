@@ -28,7 +28,6 @@ import {
   getDisplayFileType,
   getRiskMeta,
   getThemePalette,
-  motionPreset,
   parseErrorMessage,
   pluralize,
   readResetFlowState,
@@ -36,16 +35,30 @@ import {
   resolveTheme,
   selectHighlightedJob
 } from "./appUtils";
+import {
+  loadDashboardShell,
+  loadForgotPasswordPage,
+  loadLandingPage,
+  loadMarketingPage,
+  loadResetPasswordPage,
+  loadSharedReportPage,
+  loadSignInPage,
+  loadSignUpPage,
+  loadStatusPage,
+  ROUTE_PREFETCHERS
+} from "./routeModules";
+import { createEnterMotion, createPageTransitionMotion } from "./ui/motionSystem";
+import { SkeletonBlock, SkeletonText } from "./ui/Skeleton";
 
-const LandingPage = lazy(() => import("./pages/LandingPage"));
-const MarketingPage = lazy(() => import("./pages/MarketingPage"));
-const SignInPage = lazy(() => import("./pages/SignInPage"));
-const SignUpPage = lazy(() => import("./pages/SignUpPage"));
-const ForgotPasswordPage = lazy(() => import("./pages/ForgotPasswordPage"));
-const ResetPasswordPage = lazy(() => import("./pages/ResetPasswordPage"));
-const SharedReportPage = lazy(() => import("./pages/SharedReportPage"));
-const DashboardShell = lazy(() => import("./dashboard/DashboardShell"));
-const StatusPage = lazy(() => import("./pages/StatusPage"));
+const LandingPage = lazy(loadLandingPage);
+const MarketingPage = lazy(loadMarketingPage);
+const SignInPage = lazy(loadSignInPage);
+const SignUpPage = lazy(loadSignUpPage);
+const ForgotPasswordPage = lazy(loadForgotPasswordPage);
+const ResetPasswordPage = lazy(loadResetPasswordPage);
+const SharedReportPage = lazy(loadSharedReportPage);
+const DashboardShell = lazy(loadDashboardShell);
+const StatusPage = lazy(loadStatusPage);
 
 const DEFAULT_SCAN_LIMITS = Object.freeze({
   maxFilesPerBatch: 10,
@@ -350,8 +363,11 @@ function SessionLoading({ message = "Loading secure session..." }) {
   const prefersReducedMotion = useReducedMotion();
 
   return (
-    <motion.main className="app-shell centered" {...motionPreset(prefersReducedMotion)}>
-      <motion.section className="card grid w-full max-w-[560px] gap-3 p-4 sm:p-5" {...motionPreset(prefersReducedMotion, 0.03)}>
+    <motion.main className="app-shell centered" {...createEnterMotion(prefersReducedMotion)}>
+      <motion.section
+        className="card grid w-full max-w-[560px] gap-3 p-4 sm:p-5"
+        {...createEnterMotion(prefersReducedMotion, { delay: 0.03 })}
+      >
         <div className="inline-flex items-center gap-2.5">
           <img src={BRAND_MARKS.lightSurface} alt={LOGO_ALT_TEXT} className="h-11 w-11 object-contain" />
           <h1>{APP_NAME}</h1>
@@ -362,17 +378,127 @@ function SessionLoading({ message = "Loading secure session..." }) {
           aria-live="polite"
           aria-busy="true"
         >
-          <span className="relative mt-0.5 inline-flex h-5 w-5 shrink-0 items-center justify-center" aria-hidden="true">
-            <span className="absolute h-5 w-5 rounded-full bg-emerald-400/75 motion-safe:animate-ping motion-reduce:animate-none" />
-            <span className="relative h-3.5 w-3.5 rounded-full bg-emerald-600 motion-safe:animate-pulse motion-reduce:animate-none" />
-          </span>
           <div className="grid flex-1 gap-0.5">
             <p className="text-[0.92rem] font-semibold text-[var(--text)]">Securing your workspace</p>
             <p className="text-sm leading-6 text-[var(--text-soft)]">{message}</p>
+            <div className="mt-2 grid gap-2">
+              <SkeletonBlock className="h-2.5 w-full" />
+              <SkeletonBlock className="h-2.5 w-3/4" />
+            </div>
           </div>
+        </div>
+        <div className="rounded-xl border border-[var(--line)] bg-[var(--surface-soft)] px-3 py-3">
+          <SkeletonText lines={3} />
         </div>
       </motion.section>
     </motion.main>
+  );
+}
+
+function DashboardRouteSkeleton() {
+  return (
+    <main className="dashboard-page min-h-screen overflow-x-clip">
+      <div className="mx-auto flex w-full max-w-[1760px] min-w-0 flex-col gap-4 overflow-x-clip px-3 py-3 sm:px-4 sm:py-4 lg:flex-row lg:gap-6 lg:px-8">
+        <aside className="dashboard-shell-surface hidden h-[calc(100vh-2rem)] w-[280px] shrink-0 p-4 lg:flex lg:flex-col">
+          <div className="mb-6 flex items-center gap-3">
+            <SkeletonBlock className="h-11 w-11 rounded-2xl" />
+            <div className="grid flex-1 gap-2">
+              <SkeletonBlock className="h-3.5 w-2/3" />
+              <SkeletonBlock className="h-2.5 w-1/2" />
+            </div>
+          </div>
+          <div className="grid gap-2">
+            {Array.from({ length: 6 }, (_value, index) => (
+              <SkeletonBlock key={`nav-skeleton-${index}`} className="h-14 w-full rounded-2xl" />
+            ))}
+          </div>
+        </aside>
+        <section className="min-w-0 flex-1 space-y-4">
+          <div className="dashboard-shell-surface p-3 sm:p-4">
+            <div className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_auto_auto]">
+              <SkeletonBlock className="h-11 w-full rounded-2xl" />
+              <SkeletonBlock className="h-11 w-11 rounded-2xl" />
+              <SkeletonBlock className="h-11 w-40 rounded-2xl" />
+            </div>
+          </div>
+          <div className="dashboard-shell-surface p-4 sm:p-6" role="status" aria-live="polite" aria-busy="true">
+            <SkeletonBlock className="h-3 w-24" />
+            <SkeletonBlock className="mt-3 h-8 w-64" />
+            <SkeletonBlock className="mt-3 h-3 w-5/6" />
+            <div className="mt-6 grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+              {Array.from({ length: 3 }, (_value, index) => (
+                <SkeletonBlock key={`metric-skeleton-${index}`} className="h-24 w-full rounded-3xl" />
+              ))}
+            </div>
+          </div>
+        </section>
+      </div>
+    </main>
+  );
+}
+
+function AuthRouteSkeleton() {
+  return (
+    <main className="auth-page">
+      <div className="auth-page-grid" aria-hidden="true" />
+      <div className="auth-page-inner">
+        <section className="auth-panel auth-panel-main" role="status" aria-live="polite" aria-busy="true">
+          <SkeletonBlock className="h-3 w-28" />
+          <SkeletonBlock className="mt-4 h-8 w-48" />
+          <SkeletonBlock className="mt-3 h-3 w-11/12" />
+          <div className="mt-6 grid gap-4">
+            <SkeletonBlock className="h-[62px] w-full rounded-2xl" />
+            <SkeletonBlock className="h-[62px] w-full rounded-2xl" />
+            <SkeletonBlock className="h-11 w-full rounded-2xl" />
+          </div>
+        </section>
+      </div>
+    </main>
+  );
+}
+
+function PublicRouteSkeleton() {
+  return (
+    <main className="app-shell landing-shell">
+      <section className="card landing-hero p-4 sm:p-5" role="status" aria-live="polite" aria-busy="true">
+        <div className="grid gap-4">
+          <div className="flex items-center justify-between gap-3">
+            <SkeletonBlock className="h-11 w-44 rounded-2xl" />
+            <SkeletonBlock className="h-9 w-32 rounded-full" />
+          </div>
+          <SkeletonBlock className="h-4 w-40" />
+          <SkeletonBlock className="h-10 w-[70%]" />
+          <SkeletonBlock className="h-4 w-[80%]" />
+          <SkeletonBlock className="h-4 w-[65%]" />
+        </div>
+      </section>
+      <section className="card guest-card p-4 sm:p-5">
+        <SkeletonText lines={6} />
+      </section>
+    </main>
+  );
+}
+
+function RouteSkeleton({ pathname = "/" }) {
+  const prefersReducedMotion = useReducedMotion();
+  const fallbackMotion = createEnterMotion(prefersReducedMotion, { duration: 0.2, y: 6 });
+
+  let Content = PublicRouteSkeleton;
+  if (pathname.startsWith("/app")) {
+    Content = DashboardRouteSkeleton;
+  } else if (
+    pathname === "/signin" ||
+    pathname === "/signup" ||
+    pathname === "/forgot-password" ||
+    pathname === "/reset-password"
+  ) {
+    Content = AuthRouteSkeleton;
+  }
+
+  return (
+    <motion.div {...fallbackMotion}>
+      <Content />
+    </motion.div>
   );
 }
 
@@ -390,6 +516,49 @@ function RequireAuth({ session, children }) {
   }
 
   return children;
+}
+
+function RouteTransitionIndicator({ routeKey }) {
+  const prefersReducedMotion = useReducedMotion();
+  const [visible, setVisible] = useState(false);
+  const [progress, setProgress] = useState(0);
+
+  useEffect(() => {
+    if (prefersReducedMotion) {
+      return undefined;
+    }
+
+    setVisible(true);
+    setProgress(16);
+
+    const timers = [
+      setTimeout(() => setProgress(48), 45),
+      setTimeout(() => setProgress(76), 150),
+      setTimeout(() => setProgress(100), 260),
+      setTimeout(() => {
+        setVisible(false);
+        setProgress(0);
+      }, 420)
+    ];
+
+    return () => {
+      timers.forEach((timer) => clearTimeout(timer));
+    };
+  }, [prefersReducedMotion, routeKey]);
+
+  return (
+    <AnimatePresence>
+      {visible ? (
+        <motion.div
+          className="pointer-events-none fixed left-0 right-0 top-0 z-[120] h-0.5 origin-left bg-viro-500 shadow-[0_0_16px_rgba(31,143,92,0.65)]"
+          initial={{ scaleX: 0, opacity: 0.9 }}
+          animate={{ scaleX: progress / 100, opacity: progress >= 100 ? 0 : 1 }}
+          exit={{ opacity: 0 }}
+          transition={{ duration: 0.2, ease: "easeOut" }}
+        />
+      ) : null}
+    </AnimatePresence>
+  );
 }
 
 function AppContent() {
@@ -468,6 +637,48 @@ function AppContent() {
     []
   );
   const themePalette = useMemo(() => getThemePalette(dashboardTheme), [dashboardTheme]);
+  const routeTransitionKey = `${location.pathname}${location.search}`;
+
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return undefined;
+    }
+
+    let cancelled = false;
+    let fallbackTimer = null;
+    let idleHandle = null;
+    const importTimers = [];
+
+    const schedulePrefetch = () => {
+      ROUTE_PREFETCHERS.forEach((loader, index) => {
+        const timer = window.setTimeout(() => {
+          if (cancelled) {
+            return;
+          }
+
+          void loader().catch(() => {});
+        }, 120 * index);
+        importTimers.push(timer);
+      });
+    };
+
+    if (typeof window.requestIdleCallback === "function") {
+      idleHandle = window.requestIdleCallback(schedulePrefetch, { timeout: 1200 });
+    } else {
+      fallbackTimer = window.setTimeout(schedulePrefetch, 650);
+    }
+
+    return () => {
+      cancelled = true;
+      if (fallbackTimer != null) {
+        window.clearTimeout(fallbackTimer);
+      }
+      if (idleHandle != null && typeof window.cancelIdleCallback === "function") {
+        window.cancelIdleCallback(idleHandle);
+      }
+      importTimers.forEach((timer) => window.clearTimeout(timer));
+    };
+  }, []);
 
   function clearClientSessionState() {
     lastActivityTouchRef.current = 0;
@@ -1277,15 +1488,48 @@ function AppContent() {
     updateDashboardCache(activeSession, { notifications: nextNotifications });
   }
 
+  async function fetchNotificationsPage({ limit = 10, offset = 0 } = {}, activeSession = session) {
+    if (!activeSession) {
+      return {
+        notifications: [],
+        unreadCount: 0,
+        totalCount: 0,
+        limit: Math.max(1, Math.min(100, Number(limit) || 10)),
+        offset: Math.max(0, Number(offset) || 0),
+        hasMore: false
+      };
+    }
+
+    const safeLimit = Math.max(1, Math.min(100, Number(limit) || 10));
+    const safeOffset = Math.max(0, Number(offset) || 0);
+    const payload = await apiRequest(`/api/auth/notifications?limit=${safeLimit}&offset=${safeOffset}`, {
+      authSession: activeSession
+    });
+
+    return {
+      notifications: Array.isArray(payload?.notifications) ? payload.notifications : [],
+      unreadCount: Number.isFinite(Number(payload?.unreadCount)) ? Number(payload.unreadCount) : 0,
+      totalCount: Number.isFinite(Number(payload?.totalCount))
+        ? Number(payload.totalCount)
+        : Array.isArray(payload?.notifications)
+          ? payload.notifications.length
+          : 0,
+      limit: Number.isFinite(Number(payload?.limit)) ? Number(payload.limit) : safeLimit,
+      offset: Number.isFinite(Number(payload?.offset)) ? Number(payload.offset) : safeOffset,
+      hasMore: Boolean(payload?.hasMore)
+    };
+  }
+
   async function openReport(reportId, activeSession = session) {
     if (!activeSession) {
-      return;
+      return null;
     }
 
     const payload = await apiRequest(`/api/scans/reports/${reportId}`, { authSession: activeSession });
     const nextReport = payload.report || null;
     setActiveReport(nextReport);
     updateDashboardCache(activeSession, { activeReport: nextReport });
+    return nextReport;
   }
 
   async function loginUser({ email, password, rememberMe = true }) {
@@ -1550,6 +1794,44 @@ function AppContent() {
     }
   }
 
+  async function submitWebsiteSafetyScan(url) {
+    if (!session || isSubmittingScan) {
+      return;
+    }
+
+    const trimmedUrl = String(url || "").trim();
+    if (!trimmedUrl) {
+      throw new Error("Paste a URL to scan.");
+    }
+
+    setIsSubmittingScan(true);
+
+    try {
+      const payload = await apiRequest("/api/scans/website/jobs", {
+        method: "POST",
+        body: { url: trimmedUrl },
+        authSession: session
+      });
+
+      const queuedJob = payload?.job || null;
+      setActiveJob(queuedJob);
+      applyQuotaFromResponse(payload?.quota);
+
+      toast.success("Website safety scan queued.");
+      await Promise.all([refreshJobs(session), refreshNotifications(session), refreshAnalytics(session), refreshReports(session)]);
+      navigate("/app/website-safety", { replace: false });
+      return queuedJob;
+    } catch (error) {
+      if (session && error?.code === "SCAN_QUOTA_EXCEEDED") {
+        await refreshNotifications(session);
+      }
+      toast.error(error.message || "Could not queue website safety scan.");
+      throw error;
+    } finally {
+      setIsSubmittingScan(false);
+    }
+  }
+
   async function createApiKey(requestInput = null) {
     if (!session || isCreatingKey) {
       return;
@@ -1617,6 +1899,72 @@ function AppContent() {
       });
     } catch (_error) {
       await refreshNotifications(session);
+    }
+  }
+
+  async function handleNotificationSelect(notification) {
+    if (!session) {
+      return;
+    }
+
+    const entityType = String(notification?.entityType || "")
+      .trim()
+      .toLowerCase();
+    const entityId = String(notification?.entityId || "").trim();
+
+    if (!entityType || !entityId) {
+      return;
+    }
+
+    if (entityType === "report") {
+      try {
+        const report = await openReport(entityId, session);
+        if (!report?.id) {
+          throw new Error("Report is not available anymore.");
+        }
+
+        if (report.sourceType === "website") {
+          navigate("/app/website-safety", { replace: false });
+        } else {
+          navigate("/app/history", { replace: false });
+        }
+      } catch (error) {
+        toast.error(error?.message || "Could not open notification report.");
+      }
+      return;
+    }
+
+    if (entityType === "job") {
+      try {
+        const payload = await apiRequest(`/api/scans/jobs/${entityId}`, {
+          authSession: session
+        });
+        const job = payload?.job || null;
+        if (!job) {
+          throw new Error("Scan job is no longer available.");
+        }
+
+        setActiveJob(job);
+        await refreshJobs(session);
+
+        if (job.reportId) {
+          const report = await openReport(job.reportId, session);
+          if (report?.sourceType === "website") {
+            navigate("/app/website-safety", { replace: false });
+          } else {
+            navigate("/app/history", { replace: false });
+          }
+          return;
+        }
+
+        if (job.sourceType === "website") {
+          navigate("/app/website-safety", { replace: false });
+        } else {
+          navigate("/app/projects", { replace: false });
+        }
+      } catch (error) {
+        toast.error(error?.message || "Could not open notification job.");
+      }
     }
   }
 
@@ -1711,6 +2059,56 @@ function AppContent() {
     }
   }
 
+  async function downloadReportPdf(reportId) {
+    if (!session?.accessToken || !reportId) {
+      throw new Error("A signed-in session is required to download this PDF.");
+    }
+
+    let activeSession = session;
+    if (shouldRefreshAccessToken(activeSession)) {
+      activeSession = await refreshAuthSession(activeSession.refreshToken, activeSession);
+    }
+
+    const fetchPdf = async (accessToken) =>
+      fetch(buildApiUrl(`/api/scans/reports/${encodeURIComponent(reportId)}/pdf`), {
+        method: "GET",
+        headers: {
+          Authorization: `Bearer ${accessToken}`
+        }
+      });
+
+    let response = await fetchPdf(activeSession.accessToken);
+    if (response.status === 401 && activeSession.refreshToken) {
+      const refreshedSession = await refreshAuthSession(activeSession.refreshToken, activeSession);
+      response = await fetchPdf(refreshedSession.accessToken);
+      activeSession = refreshedSession;
+    }
+
+    if (!response.ok) {
+      let errorMessage = "Could not download report PDF.";
+      try {
+        const payload = await response.json();
+        if (payload?.error?.message) {
+          errorMessage = payload.error.message;
+        }
+      } catch {
+        // no-op
+      }
+
+      throw new Error(errorMessage);
+    }
+
+    const blob = await response.blob();
+    const objectUrl = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = objectUrl;
+    anchor.download = `${String(reportId || "report").replace(/[^a-zA-Z0-9._-]+/g, "_")}.pdf`;
+    document.body.appendChild(anchor);
+    anchor.click();
+    anchor.remove();
+    URL.revokeObjectURL(objectUrl);
+  }
+
   async function loadSharedReport(token) {
     return apiRequest(`/api/public/shared-reports/${token}`, {
       authSession: null,
@@ -1730,178 +2128,187 @@ function AppContent() {
   return (
     <>
       <Toaster position="top-right" richColors closeButton expand />
-      <Suspense fallback={<SessionLoading message="Loading page..." />}>
-        <Routes>
-          <Route
-            path="/"
-            element={
-              <LandingPage
-                appName={APP_NAME}
-                appTagline={APP_TAGLINE}
-                logoAltText={LOGO_ALT_TEXT}
-                brandMarks={BRAND_MARKS}
-                heroBackground={heroBackground}
-                typedHeroHeadline={typedHeroHeadline}
-                guestStatus={guestStatus}
-                runGuestQuickScan={runGuestQuickScan}
+      <RouteTransitionIndicator routeKey={routeTransitionKey} />
+      <Suspense fallback={<RouteSkeleton pathname={location.pathname} />}>
+        <AnimatePresence mode="wait" initial={false}>
+          <motion.div key={routeTransitionKey} className="min-h-screen" {...createPageTransitionMotion(prefersReducedMotion)}>
+            <Routes location={location}>
+              <Route
+                path="/"
+                element={
+                  <LandingPage
+                    appName={APP_NAME}
+                    appTagline={APP_TAGLINE}
+                    logoAltText={LOGO_ALT_TEXT}
+                    brandMarks={BRAND_MARKS}
+                    heroBackground={heroBackground}
+                    typedHeroHeadline={typedHeroHeadline}
+                    guestStatus={guestStatus}
+                    runGuestQuickScan={runGuestQuickScan}
+                  />
+                }
               />
-            }
-          />
-          {MARKETING_PAGES.map((page) => (
-            <Route
-              key={page.path}
-              path={page.path}
-              element={
-                <MarketingPage
-                  appName={APP_NAME}
-                  appTagline={APP_TAGLINE}
-                  logoAltText={LOGO_ALT_TEXT}
-                  brandMarks={BRAND_MARKS}
-                  routePath={page.path}
+              {MARKETING_PAGES.map((page) => (
+                <Route
+                  key={page.path}
+                  path={page.path}
+                  element={
+                    <MarketingPage
+                      appName={APP_NAME}
+                      appTagline={APP_TAGLINE}
+                      logoAltText={LOGO_ALT_TEXT}
+                      brandMarks={BRAND_MARKS}
+                      routePath={page.path}
+                    />
+                  }
                 />
-              }
-            />
-          ))}
-          <Route
-            path="/signin"
-            element={
-              <PublicOnlyRoute session={session}>
-                <SignInPage
-                  appName={APP_NAME}
-                  appTagline={APP_TAGLINE}
-                  logoAltText={LOGO_ALT_TEXT}
-                  brandMarks={BRAND_MARKS}
-                  onLogin={loginUser}
-                />
-              </PublicOnlyRoute>
-            }
-          />
-          <Route
-            path="/signup"
-            element={
-              <PublicOnlyRoute session={session}>
-                <SignUpPage
-                  appName={APP_NAME}
-                  appTagline={APP_TAGLINE}
-                  logoAltText={LOGO_ALT_TEXT}
-                  brandMarks={BRAND_MARKS}
-                  onRegister={registerUser}
-                  onCheckUsernameAvailability={checkUsernameAvailability}
-                  onRequestForgotPassword={requestForgotPassword}
-                />
-              </PublicOnlyRoute>
-            }
-          />
-          <Route
-            path="/forgot-password"
-            element={
-              <ForgotPasswordPage
-                appName={APP_NAME}
-                appTagline={APP_TAGLINE}
-                logoAltText={LOGO_ALT_TEXT}
-                brandMarks={BRAND_MARKS}
-                onRequestForgotPassword={requestForgotPassword}
+              ))}
+              <Route
+                path="/signin"
+                element={
+                  <PublicOnlyRoute session={session}>
+                    <SignInPage
+                      appName={APP_NAME}
+                      appTagline={APP_TAGLINE}
+                      logoAltText={LOGO_ALT_TEXT}
+                      brandMarks={BRAND_MARKS}
+                      onLogin={loginUser}
+                    />
+                  </PublicOnlyRoute>
+                }
               />
-            }
-          />
-          <Route
-            path="/reset-password"
-            element={
-              <ResetPasswordPage
-                appName={APP_NAME}
-                appTagline={APP_TAGLINE}
-                logoAltText={LOGO_ALT_TEXT}
-                brandMarks={BRAND_MARKS}
-                resetAccessToken={resetAccessToken}
-                resetEmail={resetEmail}
-                onResetPassword={submitPasswordReset}
+              <Route
+                path="/signup"
+                element={
+                  <PublicOnlyRoute session={session}>
+                    <SignUpPage
+                      appName={APP_NAME}
+                      appTagline={APP_TAGLINE}
+                      logoAltText={LOGO_ALT_TEXT}
+                      brandMarks={BRAND_MARKS}
+                      onRegister={registerUser}
+                      onCheckUsernameAvailability={checkUsernameAvailability}
+                      onRequestForgotPassword={requestForgotPassword}
+                    />
+                  </PublicOnlyRoute>
+                }
               />
-            }
-          />
-          <Route
-            path="/report/:token"
-            element={
-              <SharedReportPage
-                appName={APP_NAME}
-                logoAltText={LOGO_ALT_TEXT}
-                brandMarks={BRAND_MARKS}
-                onLoadSharedReport={loadSharedReport}
+              <Route
+                path="/forgot-password"
+                element={
+                  <ForgotPasswordPage
+                    appName={APP_NAME}
+                    appTagline={APP_TAGLINE}
+                    logoAltText={LOGO_ALT_TEXT}
+                    brandMarks={BRAND_MARKS}
+                    onRequestForgotPassword={requestForgotPassword}
+                  />
+                }
               />
-            }
-          />
-          <Route
-            path="/status"
-            element={
-              <StatusPage
-                appName={APP_NAME}
-                appTagline={APP_TAGLINE}
-                logoAltText={LOGO_ALT_TEXT}
-                brandMarks={BRAND_MARKS}
+              <Route
+                path="/reset-password"
+                element={
+                  <ResetPasswordPage
+                    appName={APP_NAME}
+                    appTagline={APP_TAGLINE}
+                    logoAltText={LOGO_ALT_TEXT}
+                    brandMarks={BRAND_MARKS}
+                    resetAccessToken={resetAccessToken}
+                    resetEmail={resetEmail}
+                    onResetPassword={submitPasswordReset}
+                  />
+                }
               />
-            }
-          />
-          <Route
-            path="/app/*"
-            element={
-              <RequireAuth session={session}>
-                <DashboardShell
-                  appName={APP_NAME}
-                  logoSrc={BRAND_MARKS.lightSurface}
-                  session={session}
-                  searchQuery={searchQuery}
-                  onSearchChange={setSearchQuery}
-                  theme={dashboardTheme}
-                  onToggleTheme={() => setDashboardTheme((current) => (current === "dark" ? "light" : "dark"))}
-                  selectedFiles={selectedFiles}
-                  scanLimits={scanLimits}
-                  isSubmittingScan={isSubmittingScan}
-                  jobs={jobs}
-                  reports={reports}
-                  activeJob={activeJob}
-                  activeReport={activeReport}
-                  activeRiskMeta={activeRiskMeta}
-                  shareState={shareState}
-                  shareError={shareError}
-                  isCreatingShare={isCreatingShare}
-                  isDeletingReport={isDeletingReport}
-                  shareCopied={shareCopied}
-                  apiKeys={apiKeys}
-                  newApiKey={newApiKey}
-                  newApiKeyName={newApiKeyName}
-                  newApiKeyScopes={newApiKeyScopes}
-                  isCreatingKey={isCreatingKey}
-                  setNewApiKeyName={setNewApiKeyName}
-                  setNewApiKeyScopes={setNewApiKeyScopes}
-                  notifications={notifications}
-                  onLogout={logout}
-                  onNotificationsViewed={markNotificationsViewed}
-                  onSelectFiles={handleSelectedFiles}
-                  onSubmitScan={submitScan}
-                  onSubmitUrlScan={submitUrlScan}
-                  onClearSelectedFiles={clearSelectedFiles}
-                  onOpenReport={openReport}
-                  onCreateShare={createReportShareLink}
-                  onDeleteReport={deleteReport}
-                  onCopyShare={copyShareLink}
-                  onCreateApiKey={createApiKey}
-                  onRevokeApiKey={revokeApiKey}
-                  formatDateTime={formatDateTime}
-                  formatBytes={formatBytes}
-                  pluralize={pluralize}
-                  getDisplayFileType={getDisplayFileType}
-                  formatVerdictLabel={formatVerdictLabel}
-                  prefersReducedMotion={prefersReducedMotion}
-                  currentDateLabel={currentDateLabel}
-                  quotaText={quotaText}
-                  isSyncingData={dashboardSyncing}
-                  analytics={analytics}
-                  themePalette={themePalette}
-                />
-              </RequireAuth>
-            }
-          />
-          <Route path="*" element={<Navigate to={session?.accessToken ? "/app/dashboard" : "/"} replace />} />
-        </Routes>
+              <Route
+                path="/report/:token"
+                element={
+                  <SharedReportPage
+                    appName={APP_NAME}
+                    logoAltText={LOGO_ALT_TEXT}
+                    brandMarks={BRAND_MARKS}
+                    onLoadSharedReport={loadSharedReport}
+                  />
+                }
+              />
+              <Route
+                path="/status"
+                element={
+                  <StatusPage
+                    appName={APP_NAME}
+                    appTagline={APP_TAGLINE}
+                    logoAltText={LOGO_ALT_TEXT}
+                    brandMarks={BRAND_MARKS}
+                  />
+                }
+              />
+              <Route
+                path="/app/*"
+                element={
+                  <RequireAuth session={session}>
+                    <DashboardShell
+                      appName={APP_NAME}
+                      logoSrc={BRAND_MARKS.lightSurface}
+                      session={session}
+                      searchQuery={searchQuery}
+                      onSearchChange={setSearchQuery}
+                      theme={dashboardTheme}
+                      onToggleTheme={() => setDashboardTheme((current) => (current === "dark" ? "light" : "dark"))}
+                      selectedFiles={selectedFiles}
+                      scanLimits={scanLimits}
+                      isSubmittingScan={isSubmittingScan}
+                      jobs={jobs}
+                      reports={reports}
+                      activeJob={activeJob}
+                      activeReport={activeReport}
+                      activeRiskMeta={activeRiskMeta}
+                      shareState={shareState}
+                      shareError={shareError}
+                      isCreatingShare={isCreatingShare}
+                      isDeletingReport={isDeletingReport}
+                      shareCopied={shareCopied}
+                      apiKeys={apiKeys}
+                      newApiKey={newApiKey}
+                      newApiKeyName={newApiKeyName}
+                      newApiKeyScopes={newApiKeyScopes}
+                      isCreatingKey={isCreatingKey}
+                      setNewApiKeyName={setNewApiKeyName}
+                      setNewApiKeyScopes={setNewApiKeyScopes}
+                      notifications={notifications}
+                      onLogout={logout}
+                      onNotificationsViewed={markNotificationsViewed}
+                      onFetchNotificationsPage={fetchNotificationsPage}
+                      onSelectNotification={handleNotificationSelect}
+                      onSelectFiles={handleSelectedFiles}
+                      onSubmitScan={submitScan}
+                      onSubmitUrlScan={submitUrlScan}
+                      onSubmitWebsiteSafetyScan={submitWebsiteSafetyScan}
+                      onClearSelectedFiles={clearSelectedFiles}
+                      onOpenReport={openReport}
+                      onDownloadReportPdf={downloadReportPdf}
+                      onCreateShare={createReportShareLink}
+                      onDeleteReport={deleteReport}
+                      onCopyShare={copyShareLink}
+                      onCreateApiKey={createApiKey}
+                      onRevokeApiKey={revokeApiKey}
+                      formatDateTime={formatDateTime}
+                      formatBytes={formatBytes}
+                      pluralize={pluralize}
+                      getDisplayFileType={getDisplayFileType}
+                      formatVerdictLabel={formatVerdictLabel}
+                      prefersReducedMotion={prefersReducedMotion}
+                      currentDateLabel={currentDateLabel}
+                      quotaText={quotaText}
+                      isSyncingData={dashboardSyncing}
+                      analytics={analytics}
+                      themePalette={themePalette}
+                    />
+                  </RequireAuth>
+                }
+              />
+              <Route path="*" element={<Navigate to={session?.accessToken ? "/app/dashboard" : "/"} replace />} />
+            </Routes>
+          </motion.div>
+        </AnimatePresence>
       </Suspense>
     </>
   );

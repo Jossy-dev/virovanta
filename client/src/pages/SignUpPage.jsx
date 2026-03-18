@@ -10,6 +10,7 @@ import {
 } from "../appUtils";
 import AuthShell from "./auth/AuthShell";
 import PasswordField from "./auth/PasswordField";
+import { prefetchRouteModule } from "../routeModules";
 
 function isValidEmail(value) {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(value || "").trim());
@@ -38,7 +39,7 @@ function getPasswordStrength(password, email) {
   return { label: "Very strong", tone: "strong", score: 4 };
 }
 
-function AuthModal({ modal, onClose, onForgotPassword, forgotPasswordSubmitting }) {
+function AuthModal({ modal, onClose, onForgotPassword, forgotPasswordSubmitting, buildPrefetchIntentProps }) {
   const prefersReducedMotion = useReducedMotion();
 
   return (
@@ -71,7 +72,13 @@ function AuthModal({ modal, onClose, onForgotPassword, forgotPasswordSubmitting 
               <strong>{modal.email}</strong>
             </p>
             <div className="auth-modal-actions">
-              <Link type="button" className="primary" to={`/signin${modal.email ? `?email=${encodeURIComponent(modal.email)}` : ""}`} onClick={onClose}>
+              <Link
+                type="button"
+                className="primary"
+                to={`/signin${modal.email ? `?email=${encodeURIComponent(modal.email)}` : ""}`}
+                onClick={onClose}
+                {...buildPrefetchIntentProps("/signin")}
+              >
                 Sign in
               </Link>
               {modal.variant === "conflict" ? (
@@ -135,6 +142,14 @@ export default function SignUpPage({
     username: "",
     promise: null
   });
+  const buildPrefetchIntentProps = useCallback(
+    (path) => ({
+      onMouseEnter: () => prefetchRouteModule(path),
+      onFocus: () => prefetchRouteModule(path),
+      onTouchStart: () => prefetchRouteModule(path)
+    }),
+    []
+  );
 
   const applyUsernameAvailability = useCallback((username, nextState) => {
     if (latestUsernameRef.current !== username) {
@@ -517,7 +532,7 @@ export default function SignUpPage({
         footer={
           <p className="auth-footer-copy">
             Already have an account?{" "}
-            <Link to="/signin" className="auth-inline-link">
+            <Link to="/signin" className="auth-inline-link" {...buildPrefetchIntentProps("/signin")}>
               Sign in
             </Link>
           </p>
@@ -684,6 +699,7 @@ export default function SignUpPage({
         onClose={() => setModal((current) => ({ ...current, open: false }))}
         onForgotPassword={sendForgotPassword}
         forgotPasswordSubmitting={forgotPasswordSubmitting}
+        buildPrefetchIntentProps={buildPrefetchIntentProps}
       />
     </>
   );

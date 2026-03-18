@@ -1,12 +1,14 @@
 import { lazy, Suspense, useEffect, useMemo, useState } from "react";
-import { AnimatePresence, motion } from "framer-motion";
-import { BarChart3, BookOpenText, FileBarChart2, LayoutDashboard, Settings2, ShieldCheck } from "lucide-react";
+import { AnimatePresence, motion, useReducedMotion } from "framer-motion";
+import { BarChart3, BookOpenText, FileBarChart2, Globe2, LayoutDashboard, Settings2, ShieldCheck } from "lucide-react";
 import { Navigate, useLocation, useNavigate } from "react-router-dom";
 import { toast } from "sonner";
 import { getUserName, resolveDesktopViewport } from "../appUtils";
 import { Sidebar } from "./components/Sidebar";
 import { Navbar } from "./components/Navbar";
 import { cn } from "./dashboardUtils";
+import { createEnterMotion, createPageTransitionMotion } from "../ui/motionSystem";
+import { SkeletonBlock, SkeletonText } from "../ui/Skeleton";
 
 function lazyNamed(importer, exportName) {
   return lazy(() => importer().then((module) => ({ default: module[exportName] })));
@@ -15,6 +17,7 @@ function lazyNamed(importer, exportName) {
 const DashboardOverview = lazyNamed(() => import("./views/DashboardOverview"), "DashboardOverview");
 const AnalyticsView = lazyNamed(() => import("./views/AnalyticsView"), "AnalyticsView");
 const ProjectsView = lazyNamed(() => import("./views/ProjectsView"), "ProjectsView");
+const WebsiteSafetyView = lazyNamed(() => import("./views/WebsiteSafetyView"), "WebsiteSafetyView");
 const ReportsView = lazyNamed(() => import("./views/ReportsView"), "ReportsView");
 const SettingsView = lazyNamed(() => import("./views/SettingsView"), "SettingsView");
 const DocsView = lazyNamed(() => import("./views/DocsView"), "DocsView");
@@ -40,6 +43,13 @@ const NAV_ITEMS = [
     label: "Projects",
     description: "Upload and queue",
     icon: ShieldCheck
+  },
+  {
+    id: "websiteSafety",
+    path: "/app/website-safety",
+    label: "Website Safety",
+    description: "Web app trust scan",
+    icon: Globe2
   },
   {
     id: "history",
@@ -79,22 +89,28 @@ function normalizeVerdictFilterValue(value) {
 }
 
 function SectionLoading() {
+  const prefersReducedMotion = useReducedMotion();
+  const loadingMotion = createEnterMotion(prefersReducedMotion, { delay: 0, y: 8, duration: 0.2 });
+
   return (
-    <section className="dashboard-shell-surface p-6 sm:p-8">
+    <motion.section className="dashboard-shell-surface p-6 sm:p-8" {...loadingMotion}>
       <div className="flex min-h-[72px] items-start gap-3" role="status" aria-live="polite" aria-busy="true">
-        <span className="relative mt-2 inline-flex h-5 w-5 shrink-0 items-center justify-center" aria-hidden="true">
-          <span className="absolute h-5 w-5 rounded-full bg-emerald-400/75 motion-safe:animate-ping motion-reduce:animate-none" />
-          <span className="relative h-3.5 w-3.5 rounded-full bg-emerald-600 motion-safe:animate-pulse motion-reduce:animate-none" />
-        </span>
         <div className="flex-1">
           <p className="dashboard-label">Loading view</p>
           <h3 className="mt-2 text-xl font-semibold tracking-[-0.03em] text-slate-950 dark:text-white">
             Preparing workspace section
           </h3>
           <p className="mt-2 text-sm text-slate-500 dark:text-slate-400">Loading the selected dashboard area.</p>
+          <div className="mt-3 grid gap-2">
+            <SkeletonBlock className="h-2.5 w-3/4" />
+            <SkeletonBlock className="h-2.5 w-1/2" />
+          </div>
+          <div className="mt-4 rounded-2xl border border-slate-200/80 p-4 dark:border-slate-800/80">
+            <SkeletonText lines={3} />
+          </div>
         </div>
       </div>
-    </section>
+    </motion.section>
   );
 }
 
@@ -129,11 +145,15 @@ export default function DashboardShell({
   setNewApiKeyScopes,
   onLogout,
   onNotificationsViewed,
+  onFetchNotificationsPage,
+  onSelectNotification,
   onSelectFiles,
   onSubmitScan,
   onSubmitUrlScan,
+  onSubmitWebsiteSafetyScan,
   onClearSelectedFiles,
   onOpenReport,
+  onDownloadReportPdf,
   onCreateShare,
   onDeleteReport,
   onCopyShare,
@@ -218,14 +238,7 @@ export default function DashboardShell({
     return <Navigate to="/app/dashboard" replace />;
   }
 
-  const pageMotion = prefersReducedMotion
-    ? { initial: false, animate: {}, exit: {} }
-    : {
-        initial: { opacity: 0, y: 10 },
-        animate: { opacity: 1, y: 0 },
-        exit: { opacity: 0, y: -10 },
-        transition: { duration: 0.22, ease: [0.22, 1, 0.36, 1] }
-      };
+  const pageMotion = createPageTransitionMotion(prefersReducedMotion, { duration: 0.22, y: 8 });
 
   const openProjects = () => {
     navigate("/app/projects");
@@ -286,6 +299,8 @@ export default function DashboardShell({
               onToggleTheme={onToggleTheme}
               notifications={notifications}
               onNotificationsViewed={onNotificationsViewed}
+              onFetchNotificationsPage={onFetchNotificationsPage}
+              onSelectNotification={onSelectNotification}
               user={session?.user}
               onLogout={onLogout}
             />
@@ -371,6 +386,21 @@ export default function DashboardShell({
                       formatDateTime={formatDateTime}
                       formatBytes={formatBytes}
                       pluralize={pluralize}
+                    />
+                  ) : null}
+
+                  {activeItem.id === "websiteSafety" ? (
+                    <WebsiteSafetyView
+                      searchQuery={searchQuery}
+                      jobs={jobs}
+                      reports={reports}
+                      activeReport={activeReport}
+                      isSubmittingScan={isSubmittingScan}
+                      onSubmitWebsiteSafetyScan={onSubmitWebsiteSafetyScan}
+                      onOpenReport={onOpenReport}
+                      onDownloadReportPdf={onDownloadReportPdf}
+                      formatDateTime={formatDateTime}
+                      formatVerdictLabel={formatVerdictLabel}
                     />
                   ) : null}
 

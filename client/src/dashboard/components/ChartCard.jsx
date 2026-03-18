@@ -1,4 +1,6 @@
-export function ChartCard({ title, subtitle, action, children, className = "" }) {
+import { memo } from "react";
+
+export const ChartCard = memo(function ChartCard({ title, subtitle, action, children, className = "" }) {
   return (
     <section className={`dashboard-subtle-panel p-4 sm:p-5 ${className}`.trim()}>
       <div className="mb-5 flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
@@ -11,4 +13,6 @@ export function ChartCard({ title, subtitle, action, children, className = "" })
       {children}
     </section>
   );
-}
+});
+
+ChartCard.displayName = "ChartCard";

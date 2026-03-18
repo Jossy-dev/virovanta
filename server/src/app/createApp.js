@@ -23,6 +23,7 @@ import { createPublicRouter } from "../routes/publicRoutes.js";
 import { createScanRouter } from "../routes/scanRoutes.js";
 import { scanUploadedFile } from "../scanner/fileScanner.js";
 import { scanTargetUrl } from "../scanner/urlScanner.js";
+import { scanWebsiteSafetyTarget } from "../scanner/websiteSafetyScanner.js";
 import { AuthService } from "../services/authService.js";
 import { NotificationService } from "../services/notificationService.js";
 import { ScanQueueService } from "../services/scanQueueService.js";
@@ -72,6 +73,13 @@ export async function createApp(options = {}) {
         runtimeConfig,
         fileScanner: scanner
       }));
+  const websiteSafetyScanner =
+    options.websiteSafetyScanner ||
+    (async ({ url }) =>
+      scanWebsiteSafetyTarget({
+        url,
+        runtimeConfig
+      }));
 
   const logger = options.logger || pino({ level: runtimeConfig.logLevel });
 
@@ -120,6 +128,7 @@ export async function createApp(options = {}) {
     store,
     scanner,
     urlScanner,
+    websiteSafetyScanner,
     config: runtimeConfig,
     logger,
     objectStorageService,

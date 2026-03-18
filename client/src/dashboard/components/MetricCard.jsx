@@ -1,6 +1,7 @@
+import { memo } from "react";
 import { ArrowDownRight, ArrowUpRight, Minus } from "lucide-react";
 
-export function MetricCard({ icon: Icon, title, value, delta, trend = "up", tone = "positive", description }) {
+export const MetricCard = memo(function MetricCard({ icon: Icon, title, value, delta, trend = "up", tone = "positive", description }) {
   const TrendIcon = trend === "down" ? ArrowDownRight : trend === "flat" ? Minus : ArrowUpRight;
   const badgeClassName =
     tone === "negative"
@@ -30,4 +31,6 @@ export function MetricCard({ icon: Icon, title, value, delta, trend = "up", tone
       </div>
     </article>
   );
-}
+});
+
+MetricCard.displayName = "MetricCard";

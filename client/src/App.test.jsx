@@ -18,10 +18,11 @@ function mockGuestStatus() {
   );
 }
 
-function createDashboardFetchMock({ notifications = [], analytics = null } = {}) {
+function createDashboardFetchMock({ notifications = [], analytics = null, jobs = [], reports = [], reportDetailsById = {} } = {}) {
   return vi.fn(async (input, init = {}) => {
     const url = String(input);
     const method = String(init?.method || "GET").toUpperCase();
+    const relativeUrl = url.startsWith("http") ? new URL(url).pathname + new URL(url).search : url;
 
     if (url.endsWith("/api/auth/me")) {
       return new Response(
@@ -52,14 +53,38 @@ function createDashboardFetchMock({ notifications = [], analytics = null } = {})
     }
 
     if (url.includes("/api/scans/jobs")) {
-      return new Response(JSON.stringify({ jobs: [] }), {
+      return new Response(JSON.stringify({ jobs }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" }
+      });
+    }
+
+    if (url.includes("/api/scans/reports/")) {
+      const reportId = url.split("/api/scans/reports/")[1]?.split("?")[0] || "";
+      const detailedReport = reportDetailsById[reportId] || null;
+      if (!detailedReport) {
+        return new Response(
+          JSON.stringify({
+            error: {
+              code: "SCAN_REPORT_NOT_FOUND",
+              message: "Scan report not found."
+            }
+          }),
+          {
+            status: 404,
+            headers: { "Content-Type": "application/json" }
+          }
+        );
+      }
+
+      return new Response(JSON.stringify({ report: detailedReport }), {
         status: 200,
         headers: { "Content-Type": "application/json" }
       });
     }
 
     if (url.includes("/api/scans/reports")) {
-      return new Response(JSON.stringify({ reports: [] }), {
+      return new Response(JSON.stringify({ reports }), {
         status: 200,
         headers: { "Content-Type": "application/json" }
       });
@@ -151,10 +176,21 @@ function createDashboardFetchMock({ notifications = [], analytics = null } = {})
     }
 
     if (url.includes("/api/auth/notifications")) {
+      const requestUrl = relativeUrl.startsWith("/") ? new URL(`http://localhost${relativeUrl}`) : new URL(relativeUrl);
+      const limit = Number(requestUrl.searchParams.get("limit") || 20);
+      const offset = Number(requestUrl.searchParams.get("offset") || 0);
+      const safeLimit = Math.max(1, Math.min(100, Number.isFinite(limit) ? limit : 20));
+      const safeOffset = Math.max(0, Number.isFinite(offset) ? offset : 0);
+      const pagedNotifications = notifications.slice(safeOffset, safeOffset + safeLimit);
+
       return new Response(
         JSON.stringify({
-          notifications,
-          unreadCount: notifications.filter((item) => !item.readAt).length
+          notifications: pagedNotifications,
+          unreadCount: notifications.filter((item) => !item.readAt).length,
+          totalCount: notifications.length,
+          limit: safeLimit,
+          offset: safeOffset,
+          hasMore: safeOffset + safeLimit < notifications.length
         }),
         {
           status: 200,
@@ -546,6 +582,116 @@ describe("App", () => {
         expect.stringContaining("/api/auth/notifications/read"),
         expect.objectContaining({ method: "POST" })
       );
+    } finally {
+      restoreMatchMedia();
+    }
+  });
+
+  it("limits dropdown notifications to three and paginates older items in the see-all panel", async () => {
+    const restoreMatchMedia = setDesktopMatchMedia(true);
+    window.history.replaceState({}, "", "/app/dashboard");
+
+    localStorage.setItem(
+      SESSION_STORAGE_KEY,
+      JSON.stringify({
+        accessToken: "access-token",
+        refreshToken: "refresh-token",
+        user: {
+          username: "analyst_ops",
+          name: "analyst_ops",
+          email: "analyst@example.com",
+          role: "user"
+        },
+        usage: null
+      })
+    );
+
+    const notifications = Array.from({ length: 10 }, (_value, index) => ({
+      id: `notification_${index + 1}`,
+      type: "report_ready",
+      tone: "success",
+      title: `Report ${index + 1} ready`,
+      detail: `Notification detail ${String(index + 1).padStart(2, "0")}`,
+      createdAt: `2026-03-${String(index + 1).padStart(2, "0")}T10:00:00.000Z`,
+      readAt: null
+    }));
+
+    const fetchMock = createDashboardFetchMock({ notifications });
+    vi.stubGlobal("fetch", fetchMock);
+
+    try {
+      render(<App />);
+
+      expect(await screen.findByRole("heading", { name: /welcome back, analyst_ops/i })).toBeInTheDocument();
+      await userEvent.click(screen.getByRole("button", { name: /notifications/i }));
+
+      expect(await screen.findByText(/notification detail 01/i)).toBeInTheDocument();
+      expect(screen.getByText(/notification detail 02/i)).toBeInTheDocument();
+      expect(screen.getByText(/notification detail 03/i)).toBeInTheDocument();
+      expect(screen.queryByText(/notification detail 04/i)).not.toBeInTheDocument();
+
+      await userEvent.click(screen.getByRole("button", { name: /see all notifications/i }));
+
+      expect(await screen.findByRole("dialog", { name: /all notifications/i })).toBeInTheDocument();
+      expect(await screen.findByText(/notification detail 08/i)).toBeInTheDocument();
+      expect(screen.queryByText(/notification detail 09/i)).not.toBeInTheDocument();
+
+      await userEvent.click(screen.getByRole("button", { name: /next/i }));
+      expect(await screen.findByText(/notification detail 09/i)).toBeInTheDocument();
+      expect(screen.getByText(/notification detail 10/i)).toBeInTheDocument();
+      expect(screen.queryByText(/notification detail 01/i)).not.toBeInTheDocument();
+    } finally {
+      restoreMatchMedia();
+    }
+  });
+
+  it("shows website-safety queued jobs inside the results list and removes the duplicate jobs section", async () => {
+    const restoreMatchMedia = setDesktopMatchMedia(true);
+    window.history.replaceState({}, "", "/app/website-safety");
+
+    localStorage.setItem(
+      SESSION_STORAGE_KEY,
+      JSON.stringify({
+        accessToken: "access-token",
+        refreshToken: "refresh-token",
+        user: {
+          username: "analyst_ops",
+          name: "analyst_ops",
+          email: "analyst@example.com",
+          role: "user"
+        },
+        usage: null
+      })
+    );
+
+    const fetchMock = createDashboardFetchMock({
+      jobs: [
+        {
+          id: "job_web_1",
+          sourceType: "website",
+          status: "processing",
+          createdAt: "2026-03-17T10:10:00.000Z",
+          startedAt: "2026-03-17T10:10:04.000Z",
+          completedAt: null,
+          originalName: "https://pending.virovanta.test",
+          fileSize: 0,
+          targetUrl: "https://pending.virovanta.test",
+          reportId: null,
+          errorMessage: null
+        }
+      ],
+      reports: []
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    try {
+      render(<App />);
+
+      expect(await screen.findByRole("heading", { name: /analyze web application safety posture/i })).toBeInTheDocument();
+      expect(screen.queryByRole("heading", { name: /website safety jobs/i })).not.toBeInTheDocument();
+      expect(screen.getByRole("heading", { name: /website safety reports/i })).toBeInTheDocument();
+      expect(screen.getByText(/https:\/\/pending\.virovanta\.test/i)).toBeInTheDocument();
+      expect(screen.getByText(/^processing$/i)).toBeInTheDocument();
     } finally {
       restoreMatchMedia();
     }

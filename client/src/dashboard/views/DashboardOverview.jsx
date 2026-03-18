@@ -1,5 +1,6 @@
 import { FileBarChart2, FolderPlus, ShieldAlert, UploadCloud } from "lucide-react";
 import { ProjectsView } from "./ProjectsView";
+import Button from "../../ui/Button";
 
 export function DashboardOverview({
   userName,
@@ -55,22 +56,26 @@ export function DashboardOverview({
               </span>
             </div>
             <div className="flex w-full flex-col gap-3 sm:w-auto sm:flex-row sm:flex-wrap">
-              <button
+              <Button
                 type="button"
                 onClick={onCreateProject}
-                className="dashboard-brand-button w-full justify-center sm:w-auto"
+                variant="primary"
+                size="lg"
+                className="w-full sm:w-auto"
               >
                 <FolderPlus size={16} />
                 New scan
-              </button>
-              <button
+              </Button>
+              <Button
                 type="button"
                 onClick={onOpenReports}
-                className="dashboard-brand-outline inline-flex w-full items-center justify-center gap-2 px-5 py-3 font-medium sm:w-auto"
+                variant="secondary"
+                size="lg"
+                className="w-full sm:w-auto"
               >
                 <FileBarChart2 size={16} />
                 View reports
-              </button>
+              </Button>
             </div>
           </div>
         </div>

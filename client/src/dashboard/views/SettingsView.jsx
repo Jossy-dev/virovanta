@@ -12,7 +12,7 @@ const API_SCOPE_OPTIONS = Object.freeze([
   {
     value: "jobs:write",
     label: "Jobs Write",
-    description: "Create new scan jobs by uploading files and submitting URLs."
+    description: "Create new scan jobs by uploading files and submitting URL or website-safety targets."
   },
   {
     value: "reports:read",

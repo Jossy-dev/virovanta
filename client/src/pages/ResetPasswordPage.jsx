@@ -4,6 +4,7 @@ import { toast } from "sonner";
 import { buildPasswordChecklist } from "../appUtils";
 import AuthShell from "./auth/AuthShell";
 import PasswordField from "./auth/PasswordField";
+import { prefetchRouteModule } from "../routeModules";
 
 export default function ResetPasswordPage({ appName, appTagline, logoAltText, brandMarks, resetAccessToken, resetEmail, onResetPassword }) {
   const navigate = useNavigate();
@@ -14,6 +15,11 @@ export default function ResetPasswordPage({ appName, appTagline, logoAltText, br
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
+  const buildPrefetchIntentProps = (path) => ({
+    onMouseEnter: () => prefetchRouteModule(path),
+    onFocus: () => prefetchRouteModule(path),
+    onTouchStart: () => prefetchRouteModule(path)
+  });
 
   const passwordChecklist = buildPasswordChecklist(form.password, resetEmail, form.confirmPassword);
 
@@ -77,7 +83,11 @@ export default function ResetPasswordPage({ appName, appTagline, logoAltText, br
       footer={
         <p className="auth-footer-copy">
           Back to{" "}
-          <Link className="auth-inline-link" to={`/signin${resetEmail ? `?email=${encodeURIComponent(resetEmail)}` : ""}`}>
+          <Link
+            className="auth-inline-link"
+            to={`/signin${resetEmail ? `?email=${encodeURIComponent(resetEmail)}` : ""}`}
+            {...buildPrefetchIntentProps("/signin")}
+          >
             Sign in
           </Link>
         </p>

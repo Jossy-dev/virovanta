@@ -1457,15 +1457,19 @@ export class AuthService {
     return quota;
   }
 
-  async listNotifications(userId, limit = 20) {
+  async listNotifications(userId, limit = 20, offset = 0) {
     if (!this.notificationService) {
       return {
         notifications: [],
-        unreadCount: 0
+        unreadCount: 0,
+        totalCount: 0,
+        limit,
+        offset: Math.max(0, Number(offset) || 0),
+        hasMore: false
       };
     }
 
-    return this.notificationService.listForUser(userId, limit);
+    return this.notificationService.listForUser(userId, limit, offset);
   }
 
   async markNotificationsRead(userId, ids = []) {
