@@ -3,6 +3,7 @@ import { AnimatePresence, motion, useReducedMotion } from "framer-motion";
 import { BrowserRouter, Navigate, Route, Routes, useLocation, useNavigate } from "react-router-dom";
 import { Toaster, toast } from "sonner";
 import {
+  API_BASE_URL,
   APP_NAME,
   APP_TAGLINE,
   BRAND_MARKS,
@@ -88,6 +89,8 @@ const ACCESS_TOKEN_FALLBACK_TTL_SECONDS = 15 * 60;
 const ACCESS_TOKEN_REFRESH_SKEW_MS = 90 * 1000;
 const ACCESS_TOKEN_MIN_REFRESH_DELAY_MS = 15 * 1000;
 const ACCESS_TOKEN_UNKNOWN_REFRESH_DELAY_MS = 5 * 60 * 1000;
+const API_REQUEST_TIMEOUT_DEFAULT_MS = 20 * 1000;
+const API_REQUEST_TIMEOUT_UPLOAD_MS = 45 * 1000;
 const AUTH_INVALID_CODES = new Set([
   "AUTH_REFRESH_INVALID",
   "AUTH_TOKEN_INVALID",
@@ -285,6 +288,22 @@ function clearPersistedSession() {
   getBrowserStorage(SESSION_PERSISTENCE_SESSION)?.removeItem(SESSION_STORAGE_KEY);
 }
 
+function isDetailedReportPayload(report) {
+  if (!report || typeof report !== "object") {
+    return false;
+  }
+
+  if (!report.file || typeof report.file !== "object") {
+    return false;
+  }
+
+  if (!Array.isArray(report.findings) || !Array.isArray(report.recommendations)) {
+    return false;
+  }
+
+  return true;
+}
+
 function normalizeDashboardSnapshot(payload = {}) {
   return {
     jobs: Array.isArray(payload.jobs) ? payload.jobs : [],
@@ -292,7 +311,7 @@ function normalizeDashboardSnapshot(payload = {}) {
     notifications: Array.isArray(payload.notifications) ? payload.notifications : [],
     apiKeys: Array.isArray(payload.apiKeys) ? payload.apiKeys : [],
     analytics: payload.analytics && typeof payload.analytics === "object" ? payload.analytics : buildAnalyticsData(),
-    activeReport: payload.activeReport && typeof payload.activeReport === "object" ? payload.activeReport : null
+    activeReport: isDetailedReportPayload(payload.activeReport) ? payload.activeReport : null
   };
 }
 
@@ -1246,7 +1265,7 @@ function AppContent() {
     };
   }, []);
 
-  async function apiRequest(path, { method = "GET", body, formData, authSession = null, retry = true } = {}) {
+  async function apiRequest(path, { method = "GET", body, formData, authSession = null, retry = true, timeoutMs } = {}) {
     if (authSession?.accessToken && isSessionHardExpired(authSession)) {
       invalidateSessionAndRedirect();
       throw createSessionExpiredError();
@@ -1270,11 +1289,56 @@ function AppContent() {
       headers.Authorization = `Bearer ${authSession.accessToken}`;
     }
 
-    const response = await fetch(buildApiUrl(path), {
-      method: normalizedMethod,
-      headers,
-      body: formData || (body ? JSON.stringify(body) : undefined)
-    });
+    const requestUrl = buildApiUrl(path);
+    let response;
+    const resolvedTimeoutMs = Number.isFinite(Number(timeoutMs))
+      ? Math.max(5_000, Number(timeoutMs))
+      : formData
+        ? API_REQUEST_TIMEOUT_UPLOAD_MS
+        : API_REQUEST_TIMEOUT_DEFAULT_MS;
+    const controller = new AbortController();
+    const requestTimeoutId = setTimeout(() => {
+      controller.abort();
+    }, resolvedTimeoutMs);
+
+    try {
+      response = await fetch(requestUrl, {
+        method: normalizedMethod,
+        headers,
+        body: formData || (body ? JSON.stringify(body) : undefined),
+        signal: controller.signal
+      });
+    } catch (networkError) {
+      if (networkError?.name === "AbortError") {
+        const timeoutError = new Error(
+          `Request timeout after ${Math.round(resolvedTimeoutMs / 1000)}s for ${normalizedMethod} ${path}.`
+        );
+        timeoutError.code = "REQUEST_TIMEOUT";
+        timeoutError.status = 0;
+        timeoutError.details = {
+          requestUrl,
+          method: normalizedMethod,
+          timeoutMs: resolvedTimeoutMs
+        };
+        throw timeoutError;
+      }
+
+      const origin =
+        typeof window !== "undefined" && window.location?.origin ? window.location.origin : "browser_origin_unavailable";
+      const error = new Error(
+        `Network error: unable to reach API (${API_BASE_URL}) from ${origin}. Ensure backend is running and CORS allows this origin.`
+      );
+      error.code = "NETWORK_FETCH_FAILED";
+      error.status = 0;
+      error.details = {
+        requestUrl,
+        method: normalizedMethod,
+        origin
+      };
+      throw error;
+    } finally {
+      clearTimeout(requestTimeoutId);
+    }
 
     const isJson = response.headers.get("content-type")?.includes("application/json");
     const payload = isJson ? await response.json() : null;
@@ -1440,6 +1504,8 @@ function AppContent() {
 
     const payload = await apiRequest("/api/scans/reports?limit=20", { authSession: activeSession });
     const nextReports = Array.isArray(payload?.reports) ? payload.reports : [];
+    const hasActiveReportInHistory = Boolean(activeReportId) && nextReports.some((report) => report.id === activeReportId);
+    const needsActiveReportReload = hasActiveReportInHistory && !isDetailedReportPayload(activeReport);
     setReports(nextReports);
     updateDashboardCache(activeSession, { reports: nextReports });
 
@@ -1449,8 +1515,13 @@ function AppContent() {
       return;
     }
 
-    if (!activeReportId || !nextReports.some((report) => report.id === activeReportId)) {
+    if (!hasActiveReportInHistory) {
       await openReport(nextReports[0].id, activeSession);
+      return;
+    }
+
+    if (needsActiveReportReload) {
+      await openReport(activeReportId, activeSession);
     }
   }
 
@@ -1526,7 +1597,7 @@ function AppContent() {
     }
 
     const payload = await apiRequest(`/api/scans/reports/${reportId}`, { authSession: activeSession });
-    const nextReport = payload.report || null;
+    const nextReport = isDetailedReportPayload(payload?.report) ? payload.report : null;
     setActiveReport(nextReport);
     updateDashboardCache(activeSession, { activeReport: nextReport });
     return nextReport;
@@ -1772,7 +1843,8 @@ function AppContent() {
       const payload = await apiRequest("/api/scans/links/jobs", {
         method: "POST",
         body: { url: trimmedUrl },
-        authSession: session
+        authSession: session,
+        timeoutMs: API_REQUEST_TIMEOUT_UPLOAD_MS
       });
 
       const queuedJob = payload?.job || null;
@@ -1810,7 +1882,8 @@ function AppContent() {
       const payload = await apiRequest("/api/scans/website/jobs", {
         method: "POST",
         body: { url: trimmedUrl },
-        authSession: session
+        authSession: session,
+        timeoutMs: API_REQUEST_TIMEOUT_UPLOAD_MS
       });
 
       const queuedJob = payload?.job || null;

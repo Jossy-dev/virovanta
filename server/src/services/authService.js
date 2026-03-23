@@ -9,6 +9,7 @@ import { generateOpaqueToken, hashSecret, normalizeEmail, safeText } from "../ut
 const TOKEN_ALGORITHM = "HS256";
 const AUTH_SUPABASE_UNAVAILABLE_CODE = "AUTH_SUPABASE_UNAVAILABLE";
 const AUTH_SUPABASE_REQUEST_FAILED_CODE = "AUTH_SUPABASE_REQUEST_FAILED";
+const AUTH_SUPABASE_LEGACY_KEY_DISABLED_CODE = "AUTH_SUPABASE_LEGACY_KEY_DISABLED";
 const AUTH_SUPABASE_CONFIRM_EMAIL_CODE = "AUTH_SUPABASE_EMAIL_CONFIRMATION_REQUIRED";
 const PASSWORD_RESET_TTL_MS = 30 * 60 * 1000;
 const USERNAME_SUGGESTION_COUNT = 3;
@@ -282,6 +283,60 @@ export class AuthService {
     }
   }
 
+  async #buildAvailableUsernameSuggestions(preferredUsername, count = USERNAME_SUGGESTION_COUNT) {
+    const rawBase = normalizeUsername(preferredUsername)
+      .replace(/[^a-z0-9]+/g, "_")
+      .replace(/^_+|_+$/g, "");
+    const base = (rawBase || "virovanta_user").slice(0, 24);
+    const suggestions = [];
+    const keywords = ["secure", "ops", "shield", "intel", "guard", "scan", "core", "alpha", "delta"];
+    const randomKeywordOrder = keywords
+      .map((keyword) => ({ keyword, rank: crypto.randomInt(0, 1_000_000) }))
+      .sort((left, right) => left.rank - right.rank)
+      .map((entry) => entry.keyword);
+
+    const maybeAddSuggestion = async (candidateRaw) => {
+      if (suggestions.length >= count) {
+        return;
+      }
+
+      const candidate = String(candidateRaw || "")
+        .toLowerCase()
+        .replace(/[^a-z0-9._-]+/g, "_")
+        .replace(/^_+|_+$/g, "")
+        .slice(0, 80);
+
+      if (candidate.length < 2 || suggestions.includes(candidate)) {
+        return;
+      }
+
+      const taken = await this.store.isUsernameTaken(candidate);
+      if (!taken) {
+        suggestions.push(candidate);
+      }
+    };
+
+    for (const keyword of randomKeywordOrder) {
+      if (suggestions.length >= count) {
+        break;
+      }
+
+      await maybeAddSuggestion(`${base}_${keyword}`);
+    }
+
+    await maybeAddSuggestion(`${base}_${new Date().getFullYear()}`);
+
+    let suffix = crypto.randomInt(11, 120);
+    let attempts = 0;
+    while (suggestions.length < count && suffix < 1000 && attempts < 40) {
+      await maybeAddSuggestion(`${base}_${suffix}`);
+      suffix += crypto.randomInt(7, 37);
+      attempts += 1;
+    }
+
+    return suggestions;
+  }
+
   #supabaseBaseUrl() {
     return String(this.config.supabaseUrl || "").trim().replace(/\/+$/, "");
   }
@@ -336,6 +391,18 @@ export class AuthService {
     }
 
     if (!response.ok) {
+      const upstreamMessage = parseSupabaseError(payload, "Supabase Auth request failed.");
+      if (upstreamMessage.toLowerCase().includes("legacy api keys are disabled")) {
+        throw new HttpError(
+          401,
+          "Supabase rejected the configured auth key because legacy API keys are disabled. Set SUPABASE_PUBLISHABLE_KEY.",
+          {
+            code: AUTH_SUPABASE_LEGACY_KEY_DISABLED_CODE,
+            details: payload
+          }
+        );
+      }
+
       throw new HttpError(response.status, parseSupabaseError(payload, "Supabase Auth request failed."), {
         code: AUTH_SUPABASE_REQUEST_FAILED_CODE,
         details: payload
@@ -370,78 +437,15 @@ export class AuthService {
       });
     }
 
-    const now = new Date().toISOString();
-
-    const user = await this.store.write((state) => {
-      const existing = state.users.find((candidate) => candidate.id === userId || candidate.email === email);
-
-      if (existing) {
-        existing.id = userId;
-        existing.email = email;
-        existing.name = existing.name || name;
-        existing.status = "active";
-        existing.updatedAt = now;
-        existing.lastLoginAt = now;
-        existing.authSource = "supabase";
-        existing.refreshTokens = Array.isArray(existing.refreshTokens) ? existing.refreshTokens : [];
-        existing.apiKeys = Array.isArray(existing.apiKeys) ? existing.apiKeys : [];
-        existing.usage = existing.usage || {
-          windowStartedAt: now,
-          scans: 0
-        };
-
-        state.auditEvents.unshift({
-          id: `audit_${crypto.randomUUID()}`,
-          userId: existing.id,
-          action: context.action || "auth.supabase_synced",
-          ipAddress: context.ipAddress || null,
-          userAgent: safeText(context.userAgent, { fallback: "" }),
-          metadata: {
-            provider: "supabase"
-          },
-          createdAt: now
-        });
-
-        return existing;
-      }
-
-      const nextUser = {
-        id: userId,
-        email,
-        name,
-        role: "user",
-        status: "active",
-        passwordHash: null,
-        authSource: "supabase",
-        createdAt: now,
-        updatedAt: now,
-        lastLoginAt: now,
-        refreshTokens: [],
-        apiKeys: [],
-        usage: {
-          windowStartedAt: now,
-          scans: 0
-        }
-      };
-
-      state.users.unshift(nextUser);
-
-      state.auditEvents.unshift({
-        id: `audit_${crypto.randomUUID()}`,
-        userId: nextUser.id,
-        action: context.action || "auth.supabase_linked",
-        ipAddress: context.ipAddress || null,
-        userAgent: safeText(context.userAgent, { fallback: "" }),
-        metadata: {
-          provider: "supabase"
-        },
-        createdAt: now
-      });
-
-      return nextUser;
+    return this.store.upsertSupabaseUser({
+      userId,
+      email,
+      name,
+      now: new Date().toISOString(),
+      action: context.action || "auth.supabase_linked",
+      ipAddress: context.ipAddress || null,
+      userAgent: safeText(context.userAgent, { fallback: "" })
     });
-
-    return user;
   }
 
   async #createSupabaseSessionResponse(payload, context = {}) {
@@ -508,7 +512,7 @@ export class AuthService {
       audience: this.config.jwtAudience
     });
 
-    const user = await this.store.read((state) => state.users.find((candidate) => candidate.id === payload.sub) || null);
+    const user = await this.store.findUserById(payload.sub);
     if (!user || user.status !== "active") {
       throw new HttpError(401, "Unauthorized.", { code: "AUTH_UNAUTHORIZED" });
     }
@@ -569,36 +573,14 @@ export class AuthService {
 
   async authenticateApiKey(rawKey) {
     const keyHash = hashSecret(rawKey);
-
-    const match = await this.store.read((state) => {
-      for (const user of state.users) {
-        const key = (user.apiKeys || []).find((candidate) => candidate.keyHash === keyHash && !candidate.revokedAt);
-
-        if (key) {
-          return { user, key };
-        }
-      }
-
-      return null;
-    });
+    const match = await this.store.findUserByApiKeyHash(keyHash);
 
     if (!match || match.user.status !== "active") {
       throw new HttpError(401, "Invalid API key.", { code: "AUTH_API_KEY_INVALID" });
     }
 
     const now = new Date().toISOString();
-
-    await this.store.write((state) => {
-      const user = state.users.find((candidate) => candidate.id === match.user.id);
-      if (!user) {
-        return;
-      }
-
-      const key = (user.apiKeys || []).find((candidate) => candidate.id === match.key.id);
-      if (key) {
-        key.lastUsedAt = now;
-      }
-    });
+    await this.store.touchApiKeyLastUsed(match.key.id, now);
 
     return {
       user: match.user,
@@ -628,10 +610,7 @@ export class AuthService {
         throw new HttpError(400, passwordError, { code: "AUTH_WEAK_PASSWORD" });
       }
 
-      const existingLocalEmail = await this.store.read((state) =>
-        state.users.some((candidate) => normalizeEmail(candidate.email) === normalizedEmail)
-      );
-
+      const existingLocalEmail = await this.store.findUserByEmail(normalizedEmail);
       if (existingLocalEmail) {
         throw new HttpError(409, "Email already registered.", { code: "AUTH_EMAIL_EXISTS" });
       }
@@ -711,57 +690,33 @@ export class AuthService {
     const passwordHash = await bcrypt.hash(password, 12);
     const now = new Date().toISOString();
 
-    const result = await this.store.write((state) => {
-      const existing = state.users.find((candidate) => candidate.email === normalizedEmail);
-      if (existing) {
-        throw new HttpError(409, "Email already registered.", { code: "AUTH_EMAIL_EXISTS" });
-      }
+    const existing = await this.store.findUserByEmail(normalizedEmail);
+    if (existing) {
+      throw new HttpError(409, "Email already registered.", { code: "AUTH_EMAIL_EXISTS" });
+    }
 
-      const requestedUsername = normalizeUsername(username);
-      const existingUsername = state.users.find((candidate) => normalizeUsername(candidate.name) === requestedUsername);
-      if (existingUsername) {
-        throw new HttpError(409, "Username already taken.", {
-          code: "AUTH_USERNAME_EXISTS",
-          details: {
-            suggestions: buildUsernameSuggestions(username, state.users)
-          }
-        });
-      }
-
-      const user = {
-        id: `usr_${crypto.randomUUID()}`,
-        email: normalizedEmail,
-        name: username,
-        role: state.users.length === 0 ? "admin" : "user",
-        status: "active",
-        passwordHash,
-        createdAt: now,
-        updatedAt: now,
-        lastLoginAt: null,
-        refreshTokens: [],
-        apiKeys: [],
-        usage: {
-          windowStartedAt: now,
-          scans: 0
+    const usernameAvailability = await this.checkUsernameAvailability(username);
+    if (!usernameAvailability.available) {
+      throw new HttpError(409, "Username already taken.", {
+        code: "AUTH_USERNAME_EXISTS",
+        details: {
+          suggestions: usernameAvailability.suggestions
         }
-      };
-
-      state.users.unshift(user);
-
-      state.auditEvents.unshift({
-        id: `audit_${crypto.randomUUID()}`,
-        userId: user.id,
-        action: "auth.register",
-        ipAddress: context.ipAddress || null,
-        userAgent: safeText(context.userAgent, { fallback: "" }),
-        metadata: {
-          role: user.role
-        },
-        createdAt: now
       });
+    }
 
-      return user;
+    const result = await this.store.createLocalUser({
+      email: normalizedEmail,
+      name: username,
+      passwordHash,
+      now,
+      ipAddress: context.ipAddress || null,
+      userAgent: safeText(context.userAgent, { fallback: "" })
     });
+
+    if (!result) {
+      throw new HttpError(409, "Email already registered.", { code: "AUTH_EMAIL_EXISTS" });
+    }
 
     const session = await this.createSession(result.id, {
       ipAddress: context.ipAddress,
@@ -781,16 +736,13 @@ export class AuthService {
       throw new HttpError(400, "Username must be at least 2 characters.", { code: "AUTH_USERNAME_INVALID" });
     }
 
-    return this.store.read((state) => {
-      const normalizedRequested = normalizeUsername(requested);
-      const available = !state.users.some((candidate) => normalizeUsername(candidate.name) === normalizedRequested);
+    const available = !(await this.store.isUsernameTaken(requested));
 
-      return {
-        username: requested,
-        available,
-        suggestions: available ? [] : buildUsernameSuggestions(requested, state.users)
-      };
-    });
+    return {
+      username: requested,
+      available,
+      suggestions: available ? [] : await this.#buildAvailableUsernameSuggestions(requested)
+    };
   }
 
   async login({ email, password }, context = {}) {
@@ -812,7 +764,7 @@ export class AuthService {
       });
     }
 
-    const user = await this.store.read((state) => state.users.find((candidate) => candidate.email === normalizedEmail) || null);
+    const user = await this.store.findUserByEmail(normalizedEmail);
 
     if (!user || user.status !== "active") {
       throw new HttpError(401, "Invalid email or password.", { code: "AUTH_INVALID_CREDENTIALS" });
@@ -827,24 +779,11 @@ export class AuthService {
       throw new HttpError(401, "Invalid email or password.", { code: "AUTH_INVALID_CREDENTIALS" });
     }
 
-    await this.store.write((state) => {
-      const editableUser = state.users.find((candidate) => candidate.id === user.id);
-      if (!editableUser) {
-        return;
-      }
-
-      editableUser.lastLoginAt = new Date().toISOString();
-      editableUser.updatedAt = editableUser.lastLoginAt;
-
-      state.auditEvents.unshift({
-        id: `audit_${crypto.randomUUID()}`,
-        userId: editableUser.id,
-        action: "auth.login",
-        ipAddress: context.ipAddress || null,
-        userAgent: safeText(context.userAgent, { fallback: "" }),
-        metadata: {},
-        createdAt: editableUser.lastLoginAt
-      });
+    await this.store.recordLocalLogin({
+      userId: user.id,
+      now: new Date().toISOString(),
+      ipAddress: context.ipAddress || null,
+      userAgent: safeText(context.userAgent, { fallback: "" })
     });
 
     const session = await this.createSession(user.id, {
@@ -872,36 +811,19 @@ export class AuthService {
     const refreshTokenHash = hashSecret(refreshToken);
     const expiresAt = new Date(now.getTime() + this.config.refreshTokenTtlDays * 24 * 60 * 60 * 1000).toISOString();
 
-    const user = await this.store.write((state) => {
-      const editableUser = state.users.find((candidate) => candidate.id === userId);
-      if (!editableUser || editableUser.status !== "active") {
-        throw new HttpError(401, "Unauthorized.", { code: "AUTH_UNAUTHORIZED" });
-      }
-
-      editableUser.refreshTokens = editableUser.refreshTokens || [];
-      editableUser.refreshTokens.unshift({
-        id: `rt_${crypto.randomUUID()}`,
-        tokenHash: refreshTokenHash,
-        expiresAt,
-        revokedAt: null,
-        createdAt: nowIso
-      });
-      editableUser.refreshTokens = editableUser.refreshTokens.slice(0, 20);
-
-      state.auditEvents.unshift({
-        id: `audit_${crypto.randomUUID()}`,
-        userId: editableUser.id,
-        action: context.action || "auth.session.created",
-        ipAddress: context.ipAddress || null,
-        userAgent: safeText(context.userAgent, { fallback: "" }),
-        metadata: {
-          expiresAt
-        },
-        createdAt: nowIso
-      });
-
-      return editableUser;
+    const user = await this.store.createLocalSession({
+      userId,
+      refreshTokenHash,
+      expiresAt,
+      createdAt: nowIso,
+      action: context.action || "auth.session.created",
+      ipAddress: context.ipAddress || null,
+      userAgent: safeText(context.userAgent, { fallback: "" })
     });
+
+    if (!user) {
+      throw new HttpError(401, "Unauthorized.", { code: "AUTH_UNAUTHORIZED" });
+    }
 
     return {
       accessToken: this.issueAccessToken(user),
@@ -929,33 +851,17 @@ export class AuthService {
     const tokenHash = hashSecret(refreshToken);
     const nowIso = new Date().toISOString();
 
-    const userId = await this.store.write((state) => {
-      for (const user of state.users) {
-        const token = (user.refreshTokens || []).find(
-          (candidate) => candidate.tokenHash === tokenHash && !candidate.revokedAt && Date.parse(candidate.expiresAt) > Date.now()
-        );
-
-        if (!token) {
-          continue;
-        }
-
-        token.revokedAt = nowIso;
-
-        state.auditEvents.unshift({
-          id: `audit_${crypto.randomUUID()}`,
-          userId: user.id,
-          action: "auth.refresh",
-          ipAddress: context.ipAddress || null,
-          userAgent: safeText(context.userAgent, { fallback: "" }),
-          metadata: {},
-          createdAt: nowIso
-        });
-
-        return user.id;
-      }
-
-      throw new HttpError(401, "Invalid refresh token.", { code: "AUTH_REFRESH_INVALID" });
+    const userId = await this.store.consumeLocalRefreshToken({
+      tokenHash,
+      now: nowIso,
+      ipAddress: context.ipAddress || null,
+      userAgent: safeText(context.userAgent, { fallback: "" }),
+      action: "auth.refresh"
     });
+
+    if (!userId) {
+      throw new HttpError(401, "Invalid refresh token.", { code: "AUTH_REFRESH_INVALID" });
+    }
 
     const session = await this.createSession(userId, {
       ipAddress: context.ipAddress,
@@ -1014,28 +920,11 @@ export class AuthService {
 
     const tokenHash = hashSecret(refreshToken);
 
-    await this.store.write((state) => {
-      for (const user of state.users) {
-        const token = (user.refreshTokens || []).find((candidate) => candidate.tokenHash === tokenHash && !candidate.revokedAt);
-
-        if (!token) {
-          continue;
-        }
-
-        token.revokedAt = new Date().toISOString();
-
-        state.auditEvents.unshift({
-          id: `audit_${crypto.randomUUID()}`,
-          userId: user.id,
-          action: "auth.logout",
-          ipAddress: context.ipAddress || null,
-          userAgent: safeText(context.userAgent, { fallback: "" }),
-          metadata: {},
-          createdAt: token.revokedAt
-        });
-
-        return;
-      }
+    await this.store.revokeLocalRefreshToken({
+      tokenHash,
+      now: new Date().toISOString(),
+      ipAddress: context.ipAddress || null,
+      userAgent: safeText(context.userAgent, { fallback: "" })
     });
   }
 
@@ -1062,43 +951,23 @@ export class AuthService {
       return;
     }
 
-    const now = Date.now();
-    const nowIso = new Date(now).toISOString();
-
-    await this.store.write((state) => {
-      const user = state.users.find((candidate) => candidate.email === normalizedEmail);
-      if (!user || user.status !== "active") {
-        return;
-      }
-
-      const rawToken = `rst_${generateOpaqueToken(44)}`;
-      const tokenHash = hashSecret(rawToken);
-      const expiresAt = new Date(now + PASSWORD_RESET_TTL_MS).toISOString();
-
-      user.passwordResetRequests = Array.isArray(user.passwordResetRequests) ? user.passwordResetRequests : [];
-      user.passwordResetRequests.unshift({
-        id: `pr_${crypto.randomUUID()}`,
-        tokenHash,
-        expiresAt,
-        usedAt: null,
-        createdAt: nowIso
-      });
-      user.passwordResetRequests = user.passwordResetRequests.slice(0, 5);
-
-      state.auditEvents.unshift({
-        id: `audit_${crypto.randomUUID()}`,
-        userId: user.id,
-        action: "auth.password_reset.requested",
-        ipAddress: context.ipAddress || null,
-        userAgent: safeText(context.userAgent, { fallback: "" }),
-        metadata: {},
-        createdAt: nowIso
-      });
-
-      if (!this.config.isProduction) {
-        this.logger.info({ email: user.email, resetToken: rawToken, expiresAt }, "Local password reset token generated.");
-      }
+    const resetRequest = await this.store.createPasswordResetRequest({
+      email: normalizedEmail,
+      now: new Date().toISOString(),
+      ipAddress: context.ipAddress || null,
+      userAgent: safeText(context.userAgent, { fallback: "" })
     });
+
+    if (!this.config.isProduction && resetRequest) {
+      this.logger.info(
+        {
+          email: resetRequest.email,
+          resetToken: resetRequest.resetToken,
+          expiresAt: resetRequest.expiresAt
+        },
+        "Local password reset token generated."
+      );
+    }
   }
 
   async resetPassword({ password, accessToken, resetToken, email }, context = {}) {
@@ -1154,28 +1023,7 @@ export class AuthService {
     }
 
     const resetTokenHash = hashSecret(localResetToken);
-    const resetRequest = await this.store.read((state) => {
-      for (const user of state.users) {
-        if (user.status !== "active") {
-          continue;
-        }
-
-        const token = (user.passwordResetRequests || []).find(
-          (candidate) => candidate.tokenHash === resetTokenHash && !candidate.usedAt && Date.parse(candidate.expiresAt) > Date.now()
-        );
-
-        if (!token) {
-          continue;
-        }
-
-        return {
-          userId: user.id,
-          email: user.email
-        };
-      }
-
-      return null;
-    });
+    const resetRequest = await this.store.findPasswordResetTarget(resetTokenHash);
 
     if (!resetRequest) {
       throw new HttpError(401, "Reset link is invalid or has expired.", { code: "AUTH_RESET_TOKEN_INVALID" });
@@ -1189,32 +1037,12 @@ export class AuthService {
     const passwordHash = await bcrypt.hash(password, 12);
     const nowIso = new Date().toISOString();
 
-    await this.store.write((state) => {
-      const user = state.users.find((candidate) => candidate.id === resetRequest.userId);
-      if (!user || user.status !== "active") {
-        throw new HttpError(401, "Reset link is invalid or has expired.", { code: "AUTH_RESET_TOKEN_INVALID" });
-      }
-
-      const token = (user.passwordResetRequests || []).find(
-        (candidate) => candidate.tokenHash === resetTokenHash && !candidate.usedAt && Date.parse(candidate.expiresAt) > Date.now()
-      );
-      if (!token) {
-        throw new HttpError(401, "Reset link is invalid or has expired.", { code: "AUTH_RESET_TOKEN_INVALID" });
-      }
-
-      user.passwordHash = passwordHash;
-      user.updatedAt = nowIso;
-      token.usedAt = nowIso;
-
-      state.auditEvents.unshift({
-        id: `audit_${crypto.randomUUID()}`,
-        userId: user.id,
-        action: "auth.password_reset.completed",
-        ipAddress: context.ipAddress || null,
-        userAgent: safeText(context.userAgent, { fallback: "" }),
-        metadata: {},
-        createdAt: nowIso
-      });
+    await this.store.completePasswordReset({
+      tokenHash: resetTokenHash,
+      passwordHash,
+      now: nowIso,
+      ipAddress: context.ipAddress || null,
+      userAgent: safeText(context.userAgent, { fallback: "" })
     });
 
     return {
@@ -1224,7 +1052,7 @@ export class AuthService {
   }
 
   async getUserById(userId) {
-    const user = await this.store.read((state) => state.users.find((candidate) => candidate.id === userId) || null);
+    const user = await this.store.findUserById(userId);
     if (!user) {
       throw new HttpError(404, "User not found.", { code: "AUTH_USER_NOT_FOUND" });
     }
@@ -1235,117 +1063,75 @@ export class AuthService {
   async createApiKey(userId, keyName, requestedScopes) {
     const name = safeText(keyName, { fallback: "Default API Key", maxLength: 40 });
     const scopes = normalizeApiKeyScopes(requestedScopes, { fallbackToAll: true });
+    const user = await this.store.findUserById(userId);
+    if (!user || user.status !== "active") {
+      throw new HttpError(404, "User not found.", { code: "AUTH_USER_NOT_FOUND" });
+    }
 
-    const result = await this.store.write((state) => {
-      const user = state.users.find((candidate) => candidate.id === userId);
+    const activeKeyCount = await this.store.countActiveApiKeys(userId);
+    if (activeKeyCount >= this.config.maxApiKeysPerUser) {
+      throw new HttpError(400, "API key limit reached for this account.", { code: "AUTH_API_KEY_LIMIT" });
+    }
 
-      if (!user || user.status !== "active") {
-        throw new HttpError(404, "User not found.", { code: "AUTH_USER_NOT_FOUND" });
-      }
-
-      const activeKeys = (user.apiKeys || []).filter((key) => !key.revokedAt);
-      if (activeKeys.length >= this.config.maxApiKeysPerUser) {
-        throw new HttpError(400, "API key limit reached for this account.", { code: "AUTH_API_KEY_LIMIT" });
-      }
-
-      const prefix = `svk_${crypto.randomUUID().slice(0, 8)}`;
-      const secret = generateOpaqueToken(30);
-      const rawKey = `${prefix}.${secret}`;
-      const key = {
-        id: `key_${crypto.randomUUID()}`,
-        name,
-        keyPrefix: prefix,
-        keyHash: hashSecret(rawKey),
-        scopes: [...scopes],
-        createdAt: new Date().toISOString(),
-        lastUsedAt: null,
-        revokedAt: null
-      };
-
-      user.apiKeys = user.apiKeys || [];
-      user.apiKeys.unshift(key);
-
-      state.auditEvents.unshift({
-        id: `audit_${crypto.randomUUID()}`,
-        userId,
-        action: "auth.api_key.created",
-        ipAddress: null,
-        userAgent: "",
-        metadata: {
-          keyId: key.id,
-          name: key.name,
-          scopes: key.scopes
-        },
-        createdAt: key.createdAt
-      });
-
-      return {
-        key,
-        rawKey
-      };
+    const prefix = `svk_${crypto.randomUUID().slice(0, 8)}`;
+    const secret = generateOpaqueToken(30);
+    const rawKey = `${prefix}.${secret}`;
+    const createdAt = new Date().toISOString();
+    const key = await this.store.storeApiKey({
+      userId,
+      name,
+      keyPrefix: prefix,
+      keyHash: hashSecret(rawKey),
+      scopes: [...scopes],
+      createdAt
     });
+
+    if (!key) {
+      throw new HttpError(404, "User not found.", { code: "AUTH_USER_NOT_FOUND" });
+    }
 
     await this.notificationService?.create({
       userId,
       type: "api_key_created",
       tone: "info",
       title: "API key created",
-      detail: `${result.key.name} is ready to copy and use.`,
+      detail: `${key.name} is ready to copy and use.`,
       entityType: "api_key",
-      entityId: result.key.id,
-      dedupeKey: `api-key-created:${result.key.id}`
+      entityId: key.id,
+      dedupeKey: `api-key-created:${key.id}`
     });
 
     return {
-      apiKey: result.rawKey,
-      metadata: publicApiKey(result.key)
+      apiKey: rawKey,
+      metadata: publicApiKey(key)
     };
   }
 
   async listApiKeys(userId) {
-    const keys = await this.store.read((state) => {
-      const user = state.users.find((candidate) => candidate.id === userId);
-      if (!user) {
-        throw new HttpError(404, "User not found.", { code: "AUTH_USER_NOT_FOUND" });
-      }
+    const user = await this.store.findUserById(userId);
+    if (!user) {
+      throw new HttpError(404, "User not found.", { code: "AUTH_USER_NOT_FOUND" });
+    }
 
-      return (user.apiKeys || []).map(publicApiKey);
-    });
-
-    return keys;
+    const keys = await this.store.listApiKeys(userId);
+    return (keys || []).map(publicApiKey);
   }
 
   async revokeApiKey(userId, keyId) {
-    const revokedKey = await this.store.write((state) => {
-      const user = state.users.find((candidate) => candidate.id === userId);
-      if (!user) {
-        throw new HttpError(404, "User not found.", { code: "AUTH_USER_NOT_FOUND" });
-      }
+    const user = await this.store.findUserById(userId);
+    if (!user) {
+      throw new HttpError(404, "User not found.", { code: "AUTH_USER_NOT_FOUND" });
+    }
 
-      const key = (user.apiKeys || []).find((candidate) => candidate.id === keyId);
-      if (!key || key.revokedAt) {
-        throw new HttpError(404, "API key not found.", { code: "AUTH_API_KEY_NOT_FOUND" });
-      }
-
-      key.revokedAt = new Date().toISOString();
-
-      state.auditEvents.unshift({
-        id: `audit_${crypto.randomUUID()}`,
-        userId,
-        action: "auth.api_key.revoked",
-        ipAddress: null,
-        userAgent: "",
-        metadata: {
-          keyId
-        },
-        createdAt: key.revokedAt
-      });
-
-      return {
-        id: key.id,
-        name: key.name
-      };
+    const revokedKey = await this.store.revokeApiKey({
+      userId,
+      keyId,
+      revokedAt: new Date().toISOString()
     });
+
+    if (!revokedKey) {
+      throw new HttpError(404, "API key not found.", { code: "AUTH_API_KEY_NOT_FOUND" });
+    }
 
     await this.notificationService?.create({
       userId,
@@ -1360,99 +1146,79 @@ export class AuthService {
   }
 
   async consumeDailyQuota(userId) {
-    const quota = await this.store.write((state) => {
-      const user = state.users.find((candidate) => candidate.id === userId);
-      if (!user) {
-        throw new HttpError(404, "User not found.", { code: "AUTH_USER_NOT_FOUND" });
-      }
-
-      if (user.role === "admin") {
-        return {
-          allowed: true,
-          limit: null,
-          used: 0,
-          remaining: null
-        };
-      }
-
-      const usage = buildUsageSnapshot(state, user, this.config.freeTierDailyScanLimit);
-
-      if (usage.used >= this.config.freeTierDailyScanLimit) {
-        return {
-          allowed: false,
-          limit: this.config.freeTierDailyScanLimit,
-          used: usage.used,
-          remaining: 0
-        };
-      }
-
-      user.usage = {
-        windowStartedAt: usage.windowStartedAt,
-        scans: usage.used + 1
-      };
-      user.updatedAt = new Date().toISOString();
-
-      return {
-        allowed: true,
-        limit: this.config.freeTierDailyScanLimit,
-        used: usage.used + 1,
-        remaining: Math.max(0, this.config.freeTierDailyScanLimit - (usage.used + 1)),
-        windowStartedAt: usage.windowStartedAt
-      };
+    const usage = await this.store.getUsageSnapshot({
+      userId,
+      limit: this.config.freeTierDailyScanLimit
     });
+    if (!usage) {
+      throw new HttpError(404, "User not found.", { code: "AUTH_USER_NOT_FOUND" });
+    }
 
+    const quota =
+      usage.limit == null
+        ? {
+            allowed: true,
+            limit: null,
+            used: usage.used,
+            remaining: null,
+            windowStartedAt: usage.windowStartedAt
+          }
+        : usage.used >= this.config.freeTierDailyScanLimit
+          ? {
+              allowed: false,
+              limit: this.config.freeTierDailyScanLimit,
+              used: usage.used,
+              remaining: 0,
+              windowStartedAt: usage.windowStartedAt
+            }
+          : {
+              allowed: true,
+              limit: this.config.freeTierDailyScanLimit,
+              used: usage.used + 1,
+              remaining: Math.max(0, this.config.freeTierDailyScanLimit - (usage.used + 1)),
+              windowStartedAt: usage.windowStartedAt
+            };
     await this.#notifyUsageThreshold(userId, quota, { requestedScans: 1 });
     return quota;
   }
 
   async consumeDailyQuotaBatch(userId, requestedScans) {
-    const quota = await this.store.write((state) => {
-      const user = state.users.find((candidate) => candidate.id === userId);
-      if (!user) {
-        throw new HttpError(404, "User not found.", { code: "AUTH_USER_NOT_FOUND" });
-      }
-
-      const batchSize = Math.max(1, Math.floor(Number(requestedScans) || 0));
-
-      if (user.role === "admin") {
-        return {
-          allowed: true,
-          accepted: batchSize,
-          limit: null,
-          used: 0,
-          remaining: null
-        };
-      }
-
-      const usage = buildUsageSnapshot(state, user, this.config.freeTierDailyScanLimit);
-      const remaining = Math.max(0, this.config.freeTierDailyScanLimit - usage.used);
-      if (remaining < batchSize) {
-        return {
-          allowed: false,
-          accepted: 0,
-          limit: this.config.freeTierDailyScanLimit,
-          used: usage.used,
-          remaining,
-          windowStartedAt: usage.windowStartedAt
-        };
-      }
-
-      user.usage = {
-        windowStartedAt: usage.windowStartedAt,
-        scans: usage.used + batchSize
-      };
-      user.updatedAt = new Date().toISOString();
-
-      return {
-        allowed: true,
-        accepted: batchSize,
-        limit: this.config.freeTierDailyScanLimit,
-        used: usage.used + batchSize,
-        remaining: Math.max(0, this.config.freeTierDailyScanLimit - (usage.used + batchSize)),
-        windowStartedAt: usage.windowStartedAt
-      };
+    const batchSize = Math.max(1, Math.floor(Number(requestedScans) || 0));
+    const usage = await this.store.getUsageSnapshot({
+      userId,
+      limit: this.config.freeTierDailyScanLimit
     });
+    if (!usage) {
+      throw new HttpError(404, "User not found.", { code: "AUTH_USER_NOT_FOUND" });
+    }
 
+    const quota =
+      usage.limit == null
+        ? {
+            allowed: true,
+            accepted: batchSize,
+            limit: null,
+            used: usage.used,
+            remaining: null,
+            windowStartedAt: usage.windowStartedAt
+          }
+        : Math.max(0, this.config.freeTierDailyScanLimit - usage.used) < batchSize
+          ? {
+              allowed: false,
+              accepted: 0,
+              limit: this.config.freeTierDailyScanLimit,
+              used: usage.used,
+              remaining: Math.max(0, this.config.freeTierDailyScanLimit - usage.used),
+              windowStartedAt: usage.windowStartedAt
+            }
+          : {
+              allowed: true,
+              accepted: batchSize,
+              limit: this.config.freeTierDailyScanLimit,
+              used: usage.used + batchSize,
+              remaining: Math.max(0, this.config.freeTierDailyScanLimit - (usage.used + batchSize)),
+              windowStartedAt: usage.windowStartedAt
+            };
     await this.#notifyUsageThreshold(userId, quota, { requestedScans });
     return quota;
   }
@@ -1483,38 +1249,22 @@ export class AuthService {
   }
 
   async getUsage(userId) {
-    return this.store.read((state) => {
-      const user = state.users.find((candidate) => candidate.id === userId);
-      if (!user) {
-        throw new HttpError(404, "User not found.", { code: "AUTH_USER_NOT_FOUND" });
-      }
-
-      return buildUsageSnapshot(state, user, this.config.freeTierDailyScanLimit);
+    const usage = await this.store.getUsageSnapshot({
+      userId,
+      limit: this.config.freeTierDailyScanLimit
     });
+    if (!usage) {
+      throw new HttpError(404, "User not found.", { code: "AUTH_USER_NOT_FOUND" });
+    }
+    return usage;
   }
 
   async getAdminMetrics() {
-    return this.store.read((state) => {
-      const completedJobs = state.jobs.filter((job) => job.status === "completed").length;
-      const failedJobs = state.jobs.filter((job) => job.status === "failed").length;
-
-      return {
-        users: state.users.length,
-        reports: state.reports.length,
-        jobs: {
-          total: state.jobs.length,
-          completed: completedJobs,
-          failed: failedJobs,
-          queued: state.jobs.filter((job) => job.status === "queued").length,
-          processing: state.jobs.filter((job) => job.status === "processing").length
-        },
-        auditEvents: state.auditEvents.length
-      };
-    });
+    return this.store.getAdminMetrics();
   }
 
   async listAuditEvents(limit = 100) {
-    return this.store.read((state) => state.auditEvents.slice(0, Math.max(1, Math.min(500, Number(limit) || 100))));
+    return this.store.listAuditEvents(limit);
   }
 }
 

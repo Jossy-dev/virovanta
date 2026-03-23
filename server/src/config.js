@@ -103,7 +103,30 @@ const fallbackReportIntegritySecret = envString("REPORT_INTEGRITY_SECRET", fallb
 const databaseUrl = envString("DATABASE_URL", "");
 const redisUrl = envString("REDIS_URL", "");
 const supabaseUrl = envString("SUPABASE_URL", "");
-const supabaseAnonKey = envString("SUPABASE_ANON_KEY", "");
+const supabasePublishableKey = envString("SUPABASE_PUBLISHABLE_KEY", "");
+const supabaseLegacyAnonKey = envString("SUPABASE_ANON_KEY", "");
+const supabasePublicAuthKey = supabasePublishableKey || supabaseLegacyAnonKey;
+
+function resolveSupabaseKeyMode(rawKey) {
+  const key = String(rawKey || "").trim();
+  if (!key) {
+    return "missing";
+  }
+
+  if (key.startsWith("sb_publishable_")) {
+    return "publishable";
+  }
+
+  if (key.startsWith("sb_secret_")) {
+    return "secret";
+  }
+
+  if (key.startsWith("eyJ")) {
+    return "legacy_jwt";
+  }
+
+  return "unknown";
+}
 
 const resolvedConfig = {
   env,
@@ -162,7 +185,8 @@ const resolvedConfig = {
     max: 7 * 24 * 60 * 60
   }),
   supabaseUrl,
-  supabaseAnonKey,
+  supabaseAnonKey: supabasePublicAuthKey,
+  supabaseKeyMode: resolveSupabaseKeyMode(supabasePublicAuthKey),
   supabaseJwtSecret: envString("SUPABASE_JWT_SECRET", ""),
   supabaseJwtIssuer: envString("SUPABASE_JWT_ISSUER", supabaseUrl ? `${supabaseUrl}/auth/v1` : ""),
   supabaseJwtAudience: envString("SUPABASE_JWT_AUDIENCE", "authenticated"),
@@ -272,7 +296,11 @@ function assertProductionSecurity(runtimeConfig) {
     }
 
     if (!runtimeConfig.supabaseAnonKey) {
-      issues.push("SUPABASE_ANON_KEY is required when AUTH_PROVIDER=supabase.");
+      issues.push("SUPABASE_PUBLISHABLE_KEY is required when AUTH_PROVIDER=supabase.");
+    }
+
+    if (runtimeConfig.supabaseKeyMode !== "publishable") {
+      issues.push(`SUPABASE_PUBLISHABLE_KEY must be an sb_publishable_ key (current mode: ${runtimeConfig.supabaseKeyMode}).`);
     }
   }
 
@@ -285,6 +313,33 @@ function assertProductionSecurity(runtimeConfig) {
   }
 }
 
+function assertSupabaseAuthKeyMode(runtimeConfig) {
+  if (runtimeConfig.authProvider !== "supabase") {
+    return;
+  }
+
+  if (!runtimeConfig.supabaseAnonKey) {
+    throw new Error("SUPABASE_PUBLISHABLE_KEY is required when AUTH_PROVIDER=supabase.");
+  }
+
+  if (runtimeConfig.supabaseKeyMode === "publishable") {
+    return;
+  }
+
+  if (runtimeConfig.supabaseKeyMode === "legacy_jwt") {
+    throw new Error(
+      "Legacy Supabase JWT key detected. Set SUPABASE_PUBLISHABLE_KEY=sb_publishable_... and remove SUPABASE_ANON_KEY legacy JWT."
+    );
+  }
+
+  if (runtimeConfig.supabaseKeyMode === "secret") {
+    throw new Error("Supabase secret key detected for auth. Use SUPABASE_PUBLISHABLE_KEY (sb_publishable_...).");
+  }
+
+  throw new Error("Invalid Supabase key format. Set SUPABASE_PUBLISHABLE_KEY to an sb_publishable_ key.");
+}
+
+assertSupabaseAuthKeyMode(resolvedConfig);
 assertProductionSecurity(resolvedConfig);
 
 export const config = Object.freeze(resolvedConfig);

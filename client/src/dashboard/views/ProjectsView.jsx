@@ -196,6 +196,63 @@ export function ProjectsView({
             </label>
           </div>
 
+          <div className="mt-4 rounded-3xl border border-slate-200/80 bg-white/80 p-4 shadow-[0_18px_48px_-34px_rgba(15,23,42,0.38)] backdrop-blur-sm dark:border-slate-800/80 dark:bg-slate-950/70">
+            <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                <div>
+                  <p className="text-sm font-semibold text-slate-950 dark:text-white">
+                    {selectedFiles.length > 0 ? `${pluralize("file", selectedFiles.length)} ready to queue` : "Queue a scan job"}
+                  </p>
+                  <p className="text-sm text-slate-500 dark:text-slate-400">
+                    {selectedFiles.length > 0 ? `${formatBytes(selectedUploadBytes)} total selected` : "Choose one or more files, then queue them for asynchronous analysis."}
+                  </p>
+                </div>
+              </div>
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
+                {selectedFiles.length > 0 ? (
+                  <Button
+                    type="button"
+                    variant="secondary"
+                    size="sm"
+                    className="w-full sm:w-auto"
+                    onClick={onClearSelectedFiles}
+                  >
+                    Clear
+                  </Button>
+                ) : null}
+                <Button
+                  type="button"
+                  variant="primary"
+                  size="lg"
+                  className="w-full sm:w-auto"
+                  onClick={onSubmitScan}
+                  disabled={selectedFiles.length === 0 || isSubmittingScan}
+                >
+                  <FolderOpen size={16} />
+                  {isSubmittingScan ? "Queueing..." : selectedFiles.length > 1 ? `Queue ${pluralize("job", selectedFiles.length)}` : "Queue Scan Job"}
+                </Button>
+              </div>
+            </div>
+            {selectedFiles.length > 0 ? (
+              <motion.div
+                className="mt-4 flex flex-wrap gap-2"
+                variants={selectedFileListVariants}
+                initial="hidden"
+                animate="show"
+              >
+                {selectedFileNames.map((name, index) => (
+                  <motion.span
+                    key={`${name}-${index}`}
+                    variants={selectedFileItemVariants}
+                    className="rounded-full border border-slate-200 bg-white px-3 py-1.5 text-xs text-slate-600 dark:border-slate-800 dark:bg-slate-950 dark:text-slate-300"
+                  >
+                    {name}
+                  </motion.span>
+                ))}
+              </motion.div>
+            ) : null}
+          </div>
+
           <form
             className="mt-5 rounded-3xl border border-slate-200/80 bg-slate-50 p-4 dark:border-slate-800/80 dark:bg-slate-900/50"
             onSubmit={handleSubmitUrlScan}
@@ -230,56 +287,6 @@ export function ProjectsView({
               <p className="mt-3 text-sm text-red-600 dark:text-red-400">{urlSubmissionError}</p>
             ) : null}
           </form>
-
-          {selectedFiles.length > 0 ? (
-            <div className="mt-5 rounded-3xl border border-slate-200/80 bg-slate-50 p-4 dark:border-slate-800/80 dark:bg-slate-900/50">
-              <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-                <div>
-                  <p className="text-sm font-semibold text-slate-950 dark:text-white">{pluralize("file", selectedFiles.length)} ready</p>
-                  <p className="text-sm text-slate-500 dark:text-slate-400">{formatBytes(selectedUploadBytes)} total selected</p>
-                </div>
-                <Button
-                  type="button"
-                  variant="secondary"
-                  size="sm"
-                  className="w-full sm:w-auto"
-                  onClick={onClearSelectedFiles}
-                >
-                  Clear
-                </Button>
-              </div>
-              <motion.div
-                className="mt-3 flex flex-wrap gap-2"
-                variants={selectedFileListVariants}
-                initial="hidden"
-                animate="show"
-              >
-                {selectedFileNames.map((name, index) => (
-                  <motion.span
-                    key={`${name}-${index}`}
-                    variants={selectedFileItemVariants}
-                    className="rounded-full border border-slate-200 bg-white px-3 py-1.5 text-xs text-slate-600 dark:border-slate-800 dark:bg-slate-950 dark:text-slate-300"
-                  >
-                    {name}
-                  </motion.span>
-                ))}
-              </motion.div>
-            </div>
-          ) : null}
-
-          <div className="mt-5 flex flex-wrap gap-3">
-            <Button
-              type="button"
-              variant="primary"
-              size="lg"
-              className="w-full sm:w-auto"
-              onClick={onSubmitScan}
-              disabled={selectedFiles.length === 0 || isSubmittingScan}
-            >
-              <FolderOpen size={16} />
-              {isSubmittingScan ? "Queueing..." : selectedFiles.length > 1 ? `Queue ${pluralize("job", selectedFiles.length)}` : "Queue Scan Job"}
-            </Button>
-          </div>
         </section>
 
         <section className="space-y-4">

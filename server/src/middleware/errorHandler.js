@@ -6,6 +6,17 @@ export function notFoundHandler(_req, _res, next) {
 
 export function errorHandler(logger, config) {
   return function handleError(error, req, res, _next) {
+    const dbCode = String(error?.code || "").toUpperCase();
+    if (dbCode === "55P03" || dbCode === "40P01" || dbCode === "57014") {
+      return res.status(503).json({
+        error: {
+          code: "STORE_BUSY",
+          message: "Service is busy processing scan state updates. Retry in a few seconds."
+        },
+        requestId: req.requestId
+      });
+    }
+
     if (error?.name === "MulterError" && error.code === "LIMIT_FILE_SIZE") {
       return res.status(413).json({
         error: {

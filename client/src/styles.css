@@ -37,6 +37,17 @@ body,
 
 html {
   scroll-behavior: smooth;
+  background: var(--bg);
+}
+
+html.dark {
+  background: #0b1016;
+  color-scheme: dark;
+}
+
+html.dark body,
+html.dark #root {
+  background: #0b1016;
 }
 
 body {

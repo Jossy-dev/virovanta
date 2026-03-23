@@ -188,7 +188,6 @@ export function createScanRouter({
             mimeType: file.mimetype,
             fileSize: file.size
           });
-
           queuedFilePaths.add(file.path);
           queuedJobs.push(job);
         }

@@ -41,7 +41,6 @@ export function createAuthRouter({ authService, requireAuth, requireAuthMethod, 
     rateLimiters.login,
     asyncHandler(async (req, res) => {
       const payload = validateSchema(loginSchema, req.body);
-
       const result = await authService.login(payload, {
         ipAddress: req.ip,
         userAgent: req.headers["user-agent"]

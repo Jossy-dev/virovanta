@@ -18,7 +18,14 @@ function mockGuestStatus() {
   );
 }
 
-function createDashboardFetchMock({ notifications = [], analytics = null, jobs = [], reports = [], reportDetailsById = {} } = {}) {
+function createDashboardFetchMock({
+  notifications = [],
+  analytics = null,
+  jobs = [],
+  reports = [],
+  reportDetailsById = {},
+  userId = "user_1"
+} = {}) {
   return vi.fn(async (input, init = {}) => {
     const url = String(input);
     const method = String(init?.method || "GET").toUpperCase();
@@ -28,6 +35,7 @@ function createDashboardFetchMock({ notifications = [], analytics = null, jobs =
       return new Response(
         JSON.stringify({
           user: {
+            id: userId,
             username: "analyst_ops",
             name: "analyst_ops",
             email: "analyst@example.com",
@@ -582,6 +590,112 @@ describe("App", () => {
         expect.stringContaining("/api/auth/notifications/read"),
         expect.objectContaining({ method: "POST" })
       );
+    } finally {
+      restoreMatchMedia();
+    }
+  });
+
+  it("refetches a detailed report when cached history restores only a summary payload", async () => {
+    const restoreMatchMedia = setDesktopMatchMedia(true);
+    const userId = "user_1";
+    const dashboardCacheKey = `${SESSION_STORAGE_KEY}-dashboard-cache`;
+    const reportSummary = {
+      id: "report_1",
+      sourceType: "file",
+      createdAt: "2026-03-18T09:58:00.000Z",
+      completedAt: "2026-03-18T10:00:00.000Z",
+      verdict: "suspicious",
+      riskScore: 72,
+      fileName: "IMG_6121.heic",
+      fileSize: 1235664,
+      findingCount: 1,
+      topFinding: "Malware family match",
+      intel: null,
+      iocCount: 1
+    };
+    const detailedReport = {
+      id: "report_1",
+      sourceType: "file",
+      createdAt: "2026-03-18T09:58:00.000Z",
+      completedAt: "2026-03-18T10:00:00.000Z",
+      verdict: "suspicious",
+      riskScore: 72,
+      file: {
+        originalName: "IMG_6121.heic",
+        size: 1235664,
+        type: "image/heic",
+        hashes: {
+          sha256: "abcd1234"
+        }
+      },
+      findings: [
+        {
+          id: "finding_1",
+          title: "Malware family match",
+          severity: "high",
+          description: "The uploaded file matches a known suspicious sample.",
+          evidence: "sha256:abcd1234"
+        }
+      ],
+      recommendations: ["Quarantine the file before opening it."],
+      intel: null,
+      iocs: {
+        total: 1
+      }
+    };
+
+    window.history.replaceState({}, "", "/app/history");
+
+    localStorage.setItem(
+      SESSION_STORAGE_KEY,
+      JSON.stringify({
+        accessToken: "access-token",
+        refreshToken: "refresh-token",
+        user: {
+          username: "analyst_ops",
+          name: "analyst_ops",
+          email: "analyst@example.com",
+          role: "user"
+        },
+        usage: null
+      })
+    );
+
+    localStorage.setItem(
+      dashboardCacheKey,
+      JSON.stringify({
+        version: 1,
+        userId,
+        cachedAtMs: Date.now(),
+        jobs: [],
+        reports: [reportSummary],
+        notifications: [],
+        apiKeys: [],
+        analytics: null,
+        activeReport: reportSummary
+      })
+    );
+
+    const fetchMock = createDashboardFetchMock({
+      userId,
+      reports: [reportSummary],
+      reportDetailsById: {
+        report_1: detailedReport
+      }
+    });
+
+    vi.stubGlobal("fetch", fetchMock);
+
+    try {
+      render(<App />);
+
+      expect(await screen.findByRole("heading", { name: /scan history/i })).toBeInTheDocument();
+      expect(await screen.findByRole("heading", { name: /img_6121\.heic/i })).toBeInTheDocument();
+      expect(await screen.findByText(/quarantine the file before opening it\./i)).toBeInTheDocument();
+
+      await waitFor(() => {
+        expect(fetchMock).toHaveBeenCalledWith(expect.stringContaining("/api/scans/reports/report_1"), expect.anything());
+      });
     } finally {
       restoreMatchMedia();
     }

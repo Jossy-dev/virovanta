@@ -36,93 +36,29 @@ export class NotificationService {
     entityId = null,
     dedupeKey = ""
   }) {
-    if (!userId || !title || !detail || !type || !tone) {
-      return null;
-    }
-
-    return this.store.write((state) => {
-      const user = state.users.find((candidate) => candidate.id === userId);
-      if (!user) {
-        return null;
-      }
-
-      if (dedupeKey) {
-        const existing = (state.notifications || []).find(
-          (notification) => notification.userId === userId && notification.dedupeKey === dedupeKey
-        );
-        if (existing) {
-          return existing;
-        }
-      }
-
-      const notification = {
-        id: `notification_${crypto.randomUUID()}`,
-        userId,
-        type,
-        tone,
-        title,
-        detail,
-        entityType,
-        entityId,
-        dedupeKey: dedupeKey || null,
-        createdAt: new Date().toISOString(),
-        readAt: null
-      };
-
-      state.notifications = state.notifications || [];
-      state.notifications.unshift(notification);
-      return notification;
+    return this.store.createNotification({
+      userId,
+      type,
+      tone,
+      title,
+      detail,
+      entityType,
+      entityId,
+      dedupeKey,
+      createdAt: new Date().toISOString()
     });
   }
 
   async listForUser(userId, limit = 20, offset = 0) {
-    return this.store.read((state) => {
-      const safeLimit = Math.max(1, Math.min(100, Number(limit) || 20));
-      const safeOffset = Math.max(0, Number(offset) || 0);
-      const ownedNotifications = sortNotifications(
-        (state.notifications || []).filter((notification) => notification.userId === userId)
-      );
-      const pagedNotifications = ownedNotifications.slice(safeOffset, safeOffset + safeLimit);
-      const unreadCount = ownedNotifications.filter((notification) => !notification.readAt).length;
-      const totalCount = ownedNotifications.length;
-
-      return {
-        notifications: pagedNotifications.map(publicNotification),
-        unreadCount,
-        totalCount,
-        limit: safeLimit,
-        offset: safeOffset,
-        hasMore: safeOffset + safeLimit < totalCount
-      };
-    });
+    const result = await this.store.listNotificationsForUser(userId, limit, offset);
+    return {
+      ...result,
+      notifications: (result.notifications || []).map(publicNotification)
+    };
   }
 
   async markRead(userId, ids = []) {
-    return this.store.write((state) => {
-      const requestedIds = new Set(
-        Array.isArray(ids) ? ids.map((value) => String(value || "").trim()).filter(Boolean) : []
-      );
-      const readAll = requestedIds.size === 0;
-      const readAt = new Date().toISOString();
-      let updated = 0;
-
-      for (const notification of state.notifications || []) {
-        if (notification.userId !== userId || notification.readAt) {
-          continue;
-        }
-
-        if (!readAll && !requestedIds.has(notification.id)) {
-          continue;
-        }
-
-        notification.readAt = readAt;
-        updated += 1;
-      }
-
-      return {
-        updated
-      };
-    });
+    return this.store.markNotificationsRead(userId, ids);
   }
 }
 

@@ -135,7 +135,20 @@ export async function createApp(options = {}) {
     notificationService: authService.notificationService
   });
 
-  await scanQueueService.start();
+  const startQueueService = async () => scanQueueService.start();
+
+  if (runtimeConfig.runApiServer) {
+    startQueueService().catch((error) => {
+      logger.error(
+        {
+          err: error
+        },
+        "Scan queue failed to initialize. API will continue in degraded mode."
+      );
+    });
+  } else {
+    await startQueueService();
+  }
 
   const requireAuth = createAuthMiddleware(authService);
   const buildRateLimiter = ({ prefix, limit, windowMinutes }) =>

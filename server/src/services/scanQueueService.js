@@ -127,6 +127,32 @@ function normalizeSourceType(value) {
 
 const ANALYTICS_WINDOW_DAYS = 30;
 const ANALYTICS_MONTH_BUCKETS = 6;
+const DEFAULT_QUEUE_ENQUEUE_TIMEOUT_MS = 12_000;
+const DEFAULT_OBJECT_STAGE_TIMEOUT_MS = 20_000;
+
+function withTimeout(promise, timeoutMs, label) {
+  const safeTimeoutMs = Math.max(1_000, Number(timeoutMs) || 0);
+  if (!Number.isFinite(safeTimeoutMs) || safeTimeoutMs <= 0) {
+    return promise;
+  }
+
+  let timer = null;
+  const timeoutPromise = new Promise((_, reject) => {
+    timer = setTimeout(() => {
+      const error = new Error(`${label} timed out after ${safeTimeoutMs}ms.`);
+      error.code = "SCAN_QUEUE_TIMEOUT";
+      reject(error);
+    }, safeTimeoutMs);
+
+    timer.unref?.();
+  });
+
+  return Promise.race([promise, timeoutPromise]).finally(() => {
+    if (timer) {
+      clearTimeout(timer);
+    }
+  });
+}
 
 function parseTimestamp(value) {
   const timestamp = Date.parse(value || "");
@@ -420,18 +446,7 @@ export class ScanQueueService {
       throw new Error("RUN_SCAN_WORKER must be true when QUEUE_PROVIDER=local.");
     }
 
-    await this.store.write((state) => {
-      const now = new Date().toISOString();
-
-      for (const job of state.jobs) {
-        if (job.status === "queued" || job.status === "processing") {
-          job.status = "failed";
-          job.completedAt = now;
-          job.updatedAt = now;
-          job.errorMessage = "Scan interrupted by service restart.";
-        }
-      }
-    });
+    await this.store.markActiveJobsFailed("Scan interrupted by service restart.");
 
     this.#drainQueue();
   }
@@ -470,65 +485,28 @@ export class ScanQueueService {
 
   async #createQueuedJob({ userId, sourceType, originalName, mimeType, fileSize, targetUrl = null }) {
     const now = new Date().toISOString();
-
-    return this.store.write((state) => {
-      const user = state.users.find((candidate) => candidate.id === userId);
-      if (!user) {
-        throw new HttpError(404, "User not found.", { code: "SCAN_USER_NOT_FOUND" });
-      }
-
-      const nextJob = {
-        id: `job_${crypto.randomUUID()}`,
-        userId,
-        sourceType,
-        targetUrl: sourceType === "url" || sourceType === "website" ? targetUrl : null,
-        status: "queued",
-        originalName,
-        mimeType,
-        fileSize,
-        createdAt: now,
-        updatedAt: now,
-        startedAt: null,
-        completedAt: null,
-        reportId: null,
-        errorMessage: null
-      };
-
-      state.jobs.unshift(nextJob);
-
-      state.auditEvents.unshift({
-        id: `audit_${crypto.randomUUID()}`,
-        userId,
-        action: "scan.job.queued",
-        ipAddress: null,
-        userAgent: "",
-        metadata: {
-          jobId: nextJob.id,
-          sourceType: nextJob.sourceType,
-          fileSize: nextJob.fileSize,
-          originalName: nextJob.originalName,
-          targetUrl: nextJob.targetUrl
-        },
-        createdAt: now
-      });
-
-      return nextJob;
+    const nextJob = await this.store.createQueuedJob({
+      userId,
+      sourceType,
+      originalName,
+      mimeType,
+      fileSize,
+      targetUrl,
+      createdAt: now
     });
+
+    if (!nextJob) {
+      throw new HttpError(404, "User not found.", { code: "SCAN_USER_NOT_FOUND" });
+    }
+
+    return nextJob;
   }
 
   async #markEnqueueFailed(jobId, reason = "Could not enqueue scan job.") {
-    const failedAt = new Date().toISOString();
-
-    await this.store.write((state) => {
-      const editableJob = state.jobs.find((candidate) => candidate.id === jobId);
-      if (!editableJob) {
-        return;
-      }
-
-      editableJob.status = "failed";
-      editableJob.completedAt = failedAt;
-      editableJob.updatedAt = failedAt;
-      editableJob.errorMessage = reason;
+    await this.store.markJobFailed({
+      jobId,
+      reason,
+      failedAt: new Date().toISOString()
     });
   }
 
@@ -556,39 +534,63 @@ export class ScanQueueService {
 
     try {
       if (this.config.queueProvider === "bullmq") {
-        if (!this.objectStorageService?.enabled) {
-          throw new Error("Object storage must be enabled when QUEUE_PROVIDER=bullmq.");
+        const canUseLocalFilePath =
+          this.config.runApiServer && this.config.runScanWorker && this.config.scanWorkerMode !== "link";
+
+        if (canUseLocalFilePath) {
+          // In combined API+worker mode, queue the local file path directly to avoid
+          // blocking API requests on remote object storage round-trips.
+          queueItem.filePath = filePath;
+        } else {
+          if (!this.objectStorageService?.enabled) {
+            throw new Error("Object storage must be enabled when QUEUE_PROVIDER=bullmq and workers are remote.");
+          }
+
+          queueItem.stagedUpload = await withTimeout(
+            this.objectStorageService.uploadFileFromPath({
+              localPath: filePath,
+              key: this.objectStorageService.buildQueueUploadKey({
+                userId,
+                jobId: job.id,
+                originalName
+              }),
+              contentType: mimeType || "application/octet-stream",
+              metadata: {
+                service: this.config.serviceName,
+                user_id: userId,
+                job_id: job.id,
+                purpose: "queue-ingress"
+              }
+            }),
+            DEFAULT_OBJECT_STAGE_TIMEOUT_MS,
+            "Object staging upload"
+          );
         }
 
-        queueItem.stagedUpload = await this.objectStorageService.uploadFileFromPath({
-          localPath: filePath,
-          key: this.objectStorageService.buildQueueUploadKey({
-            userId,
-            jobId: job.id,
-            originalName
-          }),
-          contentType: mimeType || "application/octet-stream",
-          metadata: {
-            service: this.config.serviceName,
-            user_id: userId,
-            job_id: job.id,
-            purpose: "queue-ingress"
-          }
-        });
-
-        await this.#enqueueBullItem(queueItem);
+        await withTimeout(this.#enqueueBullItem(queueItem), DEFAULT_QUEUE_ENQUEUE_TIMEOUT_MS, "Queue enqueue");
       } else {
         queueItem.filePath = filePath;
         this.queue.push(queueItem);
         this.#drainQueue();
       }
     } catch (error) {
+      this.logger?.error?.(
+        {
+          err: error,
+          userId,
+          jobId: job.id
+        },
+        "Could not enqueue scan job."
+      );
       if (queueItem.stagedUpload?.key && this.objectStorageService?.enabled) {
         await this.objectStorageService
           .deleteObject({
             key: queueItem.stagedUpload.key
           })
           .catch(() => {});
+      }
+      if (queueItem.filePath && this.config.queueProvider === "bullmq") {
+        await fs.unlink(queueItem.filePath).catch(() => {});
       }
       await this.#markEnqueueFailed(job.id);
 
@@ -599,11 +601,10 @@ export class ScanQueueService {
         }
       });
     } finally {
-      if (this.config.queueProvider === "bullmq") {
+      if (this.config.queueProvider === "bullmq" && queueItem.stagedUpload?.key) {
         await fs.unlink(filePath).catch(() => {});
       }
     }
-
     return toJobSummary(job);
   }
 
@@ -638,7 +639,7 @@ export class ScanQueueService {
 
     try {
       if (this.config.queueProvider === "bullmq") {
-        await this.#enqueueBullItem(queueItem);
+        await withTimeout(this.#enqueueBullItem(queueItem), DEFAULT_QUEUE_ENQUEUE_TIMEOUT_MS, "Queue enqueue");
       } else {
         this.queue.push(queueItem);
         this.#drainQueue();
@@ -653,7 +654,6 @@ export class ScanQueueService {
         }
       });
     }
-
     return toJobSummary(job);
   }
 
@@ -688,7 +688,7 @@ export class ScanQueueService {
 
     try {
       if (this.config.queueProvider === "bullmq") {
-        await this.#enqueueBullItem(queueItem);
+        await withTimeout(this.#enqueueBullItem(queueItem), DEFAULT_QUEUE_ENQUEUE_TIMEOUT_MS, "Queue enqueue");
       } else {
         this.queue.push(queueItem);
         this.#drainQueue();
@@ -703,12 +703,11 @@ export class ScanQueueService {
         }
       });
     }
-
     return toJobSummary(job);
   }
 
   async getJobForUser(jobId, user) {
-    const job = await this.store.read((state) => state.jobs.find((candidate) => candidate.id === jobId) || null);
+    const job = await this.store.findJobById(jobId);
 
     if (!job) {
       throw new HttpError(404, "Scan job not found.", { code: "SCAN_JOB_NOT_FOUND" });
@@ -722,29 +721,12 @@ export class ScanQueueService {
   }
 
   async listJobsForUser(user, limit = 20, sourceType = undefined) {
-    return this.store.read((state) => {
-      const safeLimit = Math.max(1, Math.min(100, Number(limit) || 20));
-      const normalizedSourceType = sourceType ? normalizeSourceType(sourceType) : null;
-
-      return state.jobs
-        .filter((job) => {
-          if (user.role !== "admin" && job.userId !== user.id) {
-            return false;
-          }
-
-          if (!normalizedSourceType) {
-            return true;
-          }
-
-          return normalizeSourceType(job.sourceType) === normalizedSourceType;
-        })
-        .slice(0, safeLimit)
-        .map(toJobSummary);
-    });
+    const jobs = await this.store.listJobsForUser(user, limit, sourceType);
+    return jobs.map(toJobSummary);
   }
 
   async getReportForUser(reportId, user) {
-    const report = await this.store.read((state) => state.reports.find((candidate) => candidate.id === reportId) || null);
+    const report = await this.store.findReportById(reportId);
 
     if (!report || !isReportVisible(report)) {
       throw new HttpError(404, "Scan report not found.", { code: "SCAN_REPORT_NOT_FOUND" });
@@ -758,108 +740,40 @@ export class ScanQueueService {
   }
 
   async listReportsForUser(user, limit = 20, sourceType = undefined) {
-    return this.store.read((state) => {
-      const safeLimit = Math.max(1, Math.min(100, Number(limit) || 20));
-      const normalizedSourceType = sourceType ? normalizeSourceType(sourceType) : null;
-
-      return state.reports
-        .filter((report) => {
-          if (!isReportVisible(report)) {
-            return false;
-          }
-
-          if (user.role !== "admin" && report.ownerUserId !== user.id) {
-            return false;
-          }
-
-          if (!normalizedSourceType) {
-            return true;
-          }
-
-          return normalizeSourceType(report?.sourceType) === normalizedSourceType;
-        })
-        .slice(0, safeLimit)
-        .map(toReportSummary);
-    });
+    const reports = await this.store.listReportsForUser(user, limit, sourceType);
+    return reports.map(toReportSummary);
   }
 
   async getAnalyticsForUser(user) {
-    return this.store.read((state) => {
-      const jobs = state.jobs.filter((job) => user.role === "admin" || job.userId === user.id);
-      const reports = state.reports.filter(
-        (report) => isReportVisible(report) && (user.role === "admin" || report.ownerUserId === user.id)
-      );
-      return buildAnalyticsSnapshot({ jobs, reports });
-    });
+    const analytics = await this.store.getAnalyticsSnapshotForUser(user);
+    if (analytics) {
+      return analytics;
+    }
+
+    const jobs = await this.store.listJobsForUser(user, 10_000);
+    const reports = await this.store.listReportsForUser(user, 10_000);
+    return buildAnalyticsSnapshot({ jobs, reports });
   }
 
   async getReportById(reportId, { includeDeleted = false } = {}) {
-    return this.store.read((state) => {
-      const report = state.reports.find((candidate) => candidate.id === reportId) || null;
-      if (!report) {
-        return null;
-      }
-
-      if (!includeDeleted && !isReportVisible(report)) {
-        return null;
-      }
-
-      return report;
-    });
+    return this.store.findReportById(reportId, { includeDeleted });
   }
 
   async deleteReportForUser(reportId, user) {
     const deletedAt = new Date().toISOString();
+    const report = await this.store.findReportById(reportId, { includeDeleted: true });
+    if (!report) {
+      throw new HttpError(404, "Scan report not found.", { code: "SCAN_REPORT_NOT_FOUND" });
+    }
 
-    const result = await this.store.write((state) => {
-      const report = state.reports.find((candidate) => candidate.id === reportId);
-      if (!report) {
-        throw new HttpError(404, "Scan report not found.", { code: "SCAN_REPORT_NOT_FOUND" });
-      }
+    if (user.role !== "admin" && report.ownerUserId !== user.id) {
+      throw new HttpError(403, "Forbidden.", { code: "SCAN_FORBIDDEN" });
+    }
 
-      if (user.role !== "admin" && report.ownerUserId !== user.id) {
-        throw new HttpError(403, "Forbidden.", { code: "SCAN_FORBIDDEN" });
-      }
-
-      if (report.deletedAt) {
-        const expiresAt = Date.parse(report.completedAt || report.createdAt || "");
-        const retentionMs = Number(this.config.reportTtlMs) || 0;
-
-        return {
-          id: report.id,
-          deletedAt: report.deletedAt,
-          retentionExpiresAt:
-            Number.isFinite(expiresAt) && retentionMs > 0 ? new Date(expiresAt + retentionMs).toISOString() : null,
-          alreadyDeleted: true
-        };
-      }
-
-      report.deletedAt = deletedAt;
-      report.deletedByUserId = user.id;
-
-      const expiresAt = Date.parse(report.completedAt || report.createdAt || "");
-      const retentionMs = Number(this.config.reportTtlMs) || 0;
-
-      state.auditEvents.unshift({
-        id: `audit_${crypto.randomUUID()}`,
-        userId: user.id,
-        action: "scan.report.deleted",
-        ipAddress: null,
-        userAgent: "",
-        metadata: {
-          reportId: report.id,
-          ownerUserId: report.ownerUserId,
-          sourceType: report.sourceType || "file"
-        },
-        createdAt: deletedAt
-      });
-
-      return {
-        id: report.id,
-        deletedAt,
-        retentionExpiresAt: Number.isFinite(expiresAt) && retentionMs > 0 ? new Date(expiresAt + retentionMs).toISOString() : null,
-        alreadyDeleted: false
-      };
+    const result = await this.store.softDeleteReport({
+      reportId,
+      actingUserId: user.id,
+      deletedAt
     });
 
     await this.notificationService?.create({
@@ -908,18 +822,11 @@ export class ScanQueueService {
       return;
     }
 
-    await this.store.write((state) => {
-      const now = new Date().toISOString();
+    const shouldRunProcessingRecovery = !this.config.runApiServer && this.config.runScanWorker;
 
-      for (const job of state.jobs) {
-        if (job.status === "processing") {
-          job.status = "queued";
-          job.updatedAt = now;
-          job.startedAt = null;
-          job.errorMessage = null;
-        }
-      }
-    });
+    if (shouldRunProcessingRecovery) {
+      await this.store.requeueProcessingJobs();
+    }
 
     this.bullWorkerRedis = createRedisClient(this.config, {
       purpose: "queue-worker",
@@ -992,7 +899,6 @@ export class ScanQueueService {
     }
 
     const jobName = sourceType === "url" ? "link_scan" : sourceType === "website" ? "website_safety_scan" : "file_scan";
-
     await queue.add(jobName, item, {
       jobId: item.jobId,
       attempts: this.config.queueAttempts,
@@ -1075,16 +981,9 @@ export class ScanQueueService {
 
   async #processQueueItem(item) {
     const startedAt = new Date().toISOString();
-
-    await this.store.write((state) => {
-      const job = state.jobs.find((candidate) => candidate.id === item.jobId);
-      if (!job) {
-        return;
-      }
-
-      job.status = "processing";
-      job.startedAt = startedAt;
-      job.updatedAt = startedAt;
+    await this.store.markJobProcessing({
+      jobId: item.jobId,
+      startedAt
     });
 
     const sourceType = normalizeSourceType(item?.sourceType);
@@ -1158,62 +1057,31 @@ export class ScanQueueService {
       }
 
       const completedAt = new Date().toISOString();
-      const persistedReport = await this.store.write((state) => {
-        const job = state.jobs.find((candidate) => candidate.id === item.jobId);
-
-        if (!job) {
-          return null;
+      const intel = await this.store.getHistoricalHashIntel(report?.file?.hashes?.sha256 || null);
+      const threatIntel = enrichReportThreatIntel(report);
+      const signedReport = signReport(
+        {
+          ...report,
+          sourceType,
+          ownerUserId: item.userId,
+          queuedJobId: item.jobId,
+          completedAt,
+          intel,
+          ...threatIntel,
+          artifacts: null
+        },
+        {
+          secret: this.config.reportIntegritySecret,
+          keyId: this.config.reportIntegrityKeyId
         }
-
-        const visibleHistoricalReports = state.reports.filter((candidate) => isReportVisible(candidate));
-        const intel = buildReportIntel(report, visibleHistoricalReports);
-        const threatIntel = enrichReportThreatIntel(report);
-
-        const signedReport = signReport(
-          {
-            ...report,
-            sourceType,
-            ownerUserId: item.userId,
-            queuedJobId: item.jobId,
-            completedAt,
-            intel,
-            ...threatIntel,
-            artifacts: null
-          },
-          {
-            secret: this.config.reportIntegritySecret,
-            keyId: this.config.reportIntegrityKeyId
-          }
-        );
-
-        state.reports.unshift(signedReport);
-
-        job.status = "completed";
-        job.reportId = signedReport.id;
-        job.completedAt = completedAt;
-        job.updatedAt = completedAt;
-        job.errorMessage = null;
-        job.sourceType = sourceType;
-        job.targetUrl = sourceType === "url" || sourceType === "website" ? item.targetUrl || null : null;
-
-        state.auditEvents.unshift({
-          id: `audit_${crypto.randomUUID()}`,
-          userId: item.userId,
-          action: "scan.job.completed",
-          ipAddress: null,
-          userAgent: "",
-          metadata: {
-            jobId: job.id,
-            reportId: signedReport.id,
-            sourceType,
-            targetUrl: sourceType === "url" || sourceType === "website" ? item.targetUrl || null : null,
-            verdict: signedReport.verdict,
-            riskScore: signedReport.riskScore
-          },
-          createdAt: completedAt
-        });
-
-        return signedReport;
+      );
+      const persistedReport = await this.store.completeJob({
+        jobId: item.jobId,
+        userId: item.userId,
+        sourceType,
+        targetUrl: sourceType === "url" || sourceType === "website" ? item.targetUrl || null : null,
+        report: signedReport,
+        completedAt
       });
 
       if (!persistedReport) {
@@ -1228,13 +1096,9 @@ export class ScanQueueService {
       }
 
       if (artifacts) {
-        await this.store.write((state) => {
-          const storedReport = state.reports.find((candidate) => candidate.id === persistedReport.id);
-          if (!storedReport) {
-            return;
-          }
-
-          storedReport.artifacts = artifacts;
+        await this.store.attachReportArtifacts({
+          reportId: persistedReport.id,
+          artifacts
         });
       }
 
@@ -1250,33 +1114,13 @@ export class ScanQueueService {
       });
     } catch (error) {
       const failedAt = new Date().toISOString();
-
-      await this.store.write((state) => {
-        const job = state.jobs.find((candidate) => candidate.id === item.jobId);
-
-        if (!job) {
-          return;
-        }
-
-        job.status = "failed";
-        job.completedAt = failedAt;
-        job.updatedAt = failedAt;
-        job.errorMessage = error?.message || "Scan failed.";
-
-        state.auditEvents.unshift({
-          id: `audit_${crypto.randomUUID()}`,
-          userId: item.userId,
-          action: "scan.job.failed",
-          ipAddress: null,
-          userAgent: "",
-          metadata: {
-            jobId: job.id,
-            sourceType,
-            targetUrl: sourceType === "url" || sourceType === "website" ? item.targetUrl || null : null,
-            errorMessage: job.errorMessage
-          },
-          createdAt: failedAt
-        });
+      await this.store.failJob({
+        jobId: item.jobId,
+        userId: item.userId,
+        sourceType,
+        targetUrl: sourceType === "url" || sourceType === "website" ? item.targetUrl || null : null,
+        errorMessage: error?.message || "Scan failed.",
+        failedAt
       });
 
       await this.notificationService?.create({
