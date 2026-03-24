@@ -6,10 +6,16 @@
     "dev": "npm run dev --prefix server & npm run dev --prefix client",
     "dev:client": "npm run dev --prefix client",
     "dev:server": "npm run dev --prefix server",
+    "dev:api": "npm run dev:api --prefix server",
+    "dev:worker": "npm run dev:worker --prefix server",
     "build": "npm run build --prefix client",
     "start": "npm run start --prefix server",
+    "start:all": "npm run start:all --prefix server",
+    "start:api": "npm run start:api --prefix server",
+    "start:worker": "npm run start:worker --prefix server",
     "test": "npm run test --prefix server && npm run test --prefix client",
     "test:server": "npm run test --prefix server",
-    "test:client": "npm run test --prefix client"
+    "test:client": "npm run test --prefix client",
+    "test:e2e": "npm run test:e2e --prefix server"
   }
 }

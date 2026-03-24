@@ -376,6 +376,21 @@ describe("ViroVanta API", () => {
     expect(health.body.capabilities).toBeUndefined();
   });
 
+  it("returns lightweight ping responses for uptime monitors", async () => {
+    const app = await setupTestApp();
+
+    const ping = await request(app).get("/ping");
+    const apiPing = await request(app).get("/api/ping");
+
+    expect(ping.status).toBe(200);
+    expect(ping.text).toBe("pong");
+    expect(ping.headers["cache-control"]).toContain("no-store");
+
+    expect(apiPing.status).toBe(200);
+    expect(apiPing.text).toBe("pong");
+    expect(apiPing.headers["content-type"]).toContain("text/plain");
+  });
+
   it("returns reliability and limits metadata from the public status endpoint", async () => {
     const app = await setupTestApp();
 

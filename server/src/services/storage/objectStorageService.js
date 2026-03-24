@@ -174,6 +174,27 @@ export class ObjectStorageService {
     );
   }
 
+  getOperationalStatus() {
+    if (!this.enabled) {
+      return {
+        status: "disabled",
+        ready: true,
+        provider: "none",
+        bucket: null,
+        basePrefix: null
+      };
+    }
+
+    return {
+      status: "configured",
+      ready: true,
+      provider: this.config.objectStorageProvider,
+      bucket: this.config.objectStorageBucket,
+      endpoint: this.config.objectStorageEndpoint || null,
+      basePrefix: this.basePrefix || null
+    };
+  }
+
   buildQueueUploadKey({ userId, jobId, originalName }) {
     return this.buildUploadKey({ userId, jobId, originalName });
   }

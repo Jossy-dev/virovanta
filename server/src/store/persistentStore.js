@@ -2,6 +2,7 @@ import fs from "fs";
 import fsp from "fs/promises";
 import path from "path";
 import { Pool } from "pg";
+import { applyStoreMigrations, buildStoreMigrations } from "./postgresMigrations.js";
 import { hashSecret } from "../utils/security.js";
 
 const POSTGRES_WRITE_MAX_ATTEMPTS = 4;
@@ -283,6 +284,7 @@ export class PersistentStore {
     this.reportsTable = `${this.tableBase}_reports`;
     this.notificationsTable = `${this.tableBase}_notifications`;
     this.auditEventsTable = `${this.tableBase}_audit_events`;
+    this.migrationsTable = `${this.tableBase}_schema_migrations`;
     this.state = cloneState(DEFAULT_STATE);
     this.writeChain = Promise.resolve();
     this.pool = null;
@@ -310,6 +312,40 @@ export class PersistentStore {
       this.state = cloneState(DEFAULT_STATE);
       await this.#persistFile(this.state);
     }
+  }
+
+  async getOperationalStatus() {
+    if (this.driver !== "postgres") {
+      return {
+        status: "ok",
+        ready: true,
+        driver: "file",
+        tableBase: this.tableBase,
+        migrationsTable: null,
+        migrationCount: 0,
+        latestMigration: null,
+        latestMigrationAppliedAt: null,
+        alerts: []
+      };
+    }
+
+    const [probeResult, migrationsResult] = await Promise.all([
+      this.pool.query("SELECT 1 AS ok"),
+      this.pool.query(`SELECT name, applied_at FROM ${this.migrationsTable} ORDER BY name ASC`)
+    ]);
+    const latestMigration = migrationsResult.rows[migrationsResult.rows.length - 1] || null;
+
+    return {
+      status: probeResult.rowCount > 0 ? "ok" : "degraded",
+      ready: probeResult.rowCount > 0,
+      driver: "postgres",
+      tableBase: this.tableBase,
+      migrationsTable: this.migrationsTable,
+      migrationCount: migrationsResult.rowCount,
+      latestMigration: latestMigration?.name || null,
+      latestMigrationAppliedAt: toIsoOrNull(latestMigration?.applied_at),
+      alerts: []
+    };
   }
 
   async read(selector) {
@@ -2742,127 +2778,20 @@ export class PersistentStore {
   }
 
   async #createPostgresSchema() {
-    await this.pool.query(`
-      CREATE TABLE IF NOT EXISTS ${this.usersTable} (
-        id TEXT PRIMARY KEY,
-        email TEXT NOT NULL,
-        email_normalized TEXT NOT NULL UNIQUE,
-        name TEXT NOT NULL,
-        name_normalized TEXT NOT NULL UNIQUE,
-        role TEXT NOT NULL,
-        status TEXT NOT NULL,
-        password_hash TEXT NULL,
-        auth_source TEXT NOT NULL DEFAULT 'local',
-        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-        last_login_at TIMESTAMPTZ NULL
-      );
-
-      CREATE TABLE IF NOT EXISTS ${this.jobsTable} (
-        id TEXT PRIMARY KEY,
-        user_id TEXT NOT NULL REFERENCES ${this.usersTable}(id) ON DELETE CASCADE ON UPDATE CASCADE,
-        source_type TEXT NOT NULL,
-        target_url TEXT NULL,
-        status TEXT NOT NULL,
-        original_name TEXT NOT NULL,
-        mime_type TEXT NULL,
-        file_size BIGINT NOT NULL DEFAULT 0,
-        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-        started_at TIMESTAMPTZ NULL,
-        completed_at TIMESTAMPTZ NULL,
-        report_id TEXT NULL,
-        error_message TEXT NULL
-      );
-
-      CREATE TABLE IF NOT EXISTS ${this.reportsTable} (
-        id TEXT PRIMARY KEY,
-        owner_user_id TEXT NOT NULL REFERENCES ${this.usersTable}(id) ON DELETE CASCADE ON UPDATE CASCADE,
-        source_type TEXT NOT NULL,
-        queued_job_id TEXT NULL UNIQUE REFERENCES ${this.jobsTable}(id) ON DELETE SET NULL ON UPDATE CASCADE,
-        created_at TIMESTAMPTZ NOT NULL,
-        completed_at TIMESTAMPTZ NOT NULL,
-        verdict TEXT NOT NULL,
-        risk_score INTEGER NOT NULL DEFAULT 0,
-        file_name TEXT NOT NULL,
-        file_size BIGINT NOT NULL DEFAULT 0,
-        file_sha256 TEXT NULL,
-        detected_file_type TEXT NULL,
-        file_extension TEXT NULL,
-        payload JSONB NOT NULL,
-        deleted_at TIMESTAMPTZ NULL,
-        deleted_by_user_id TEXT NULL REFERENCES ${this.usersTable}(id) ON DELETE SET NULL ON UPDATE CASCADE
-      );
-
-      CREATE TABLE IF NOT EXISTS ${this.apiKeysTable} (
-        id TEXT PRIMARY KEY,
-        user_id TEXT NOT NULL REFERENCES ${this.usersTable}(id) ON DELETE CASCADE ON UPDATE CASCADE,
-        name TEXT NOT NULL,
-        key_prefix TEXT NOT NULL,
-        key_hash TEXT NOT NULL UNIQUE,
-        scopes JSONB NOT NULL,
-        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-        last_used_at TIMESTAMPTZ NULL,
-        revoked_at TIMESTAMPTZ NULL
-      );
-
-      CREATE TABLE IF NOT EXISTS ${this.refreshTokensTable} (
-        id TEXT PRIMARY KEY,
-        user_id TEXT NOT NULL REFERENCES ${this.usersTable}(id) ON DELETE CASCADE ON UPDATE CASCADE,
-        token_hash TEXT NOT NULL UNIQUE,
-        expires_at TIMESTAMPTZ NOT NULL,
-        revoked_at TIMESTAMPTZ NULL,
-        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-      );
-
-      CREATE TABLE IF NOT EXISTS ${this.passwordResetTable} (
-        id TEXT PRIMARY KEY,
-        user_id TEXT NOT NULL REFERENCES ${this.usersTable}(id) ON DELETE CASCADE ON UPDATE CASCADE,
-        token_hash TEXT NOT NULL UNIQUE,
-        expires_at TIMESTAMPTZ NOT NULL,
-        used_at TIMESTAMPTZ NULL,
-        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-      );
-
-      CREATE TABLE IF NOT EXISTS ${this.notificationsTable} (
-        id TEXT PRIMARY KEY,
-        user_id TEXT NOT NULL REFERENCES ${this.usersTable}(id) ON DELETE CASCADE ON UPDATE CASCADE,
-        type TEXT NOT NULL,
-        tone TEXT NOT NULL,
-        title TEXT NOT NULL,
-        detail TEXT NOT NULL,
-        entity_type TEXT NULL,
-        entity_id TEXT NULL,
-        dedupe_key TEXT NULL,
-        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-        read_at TIMESTAMPTZ NULL
-      );
-
-      CREATE TABLE IF NOT EXISTS ${this.auditEventsTable} (
-        id TEXT PRIMARY KEY,
-        user_id TEXT NULL REFERENCES ${this.usersTable}(id) ON DELETE SET NULL ON UPDATE CASCADE,
-        action TEXT NOT NULL,
-        ip_address TEXT NULL,
-        user_agent TEXT NOT NULL DEFAULT '',
-        metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
-        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-      );
-
-      CREATE INDEX IF NOT EXISTS ${this.jobsTable}_user_created_idx ON ${this.jobsTable}(user_id, created_at DESC);
-      CREATE INDEX IF NOT EXISTS ${this.jobsTable}_status_created_idx ON ${this.jobsTable}(status, created_at DESC);
-      CREATE INDEX IF NOT EXISTS ${this.jobsTable}_source_created_idx ON ${this.jobsTable}(source_type, created_at DESC);
-      CREATE INDEX IF NOT EXISTS ${this.reportsTable}_owner_completed_idx ON ${this.reportsTable}(owner_user_id, completed_at DESC);
-      CREATE INDEX IF NOT EXISTS ${this.reportsTable}_hash_idx ON ${this.reportsTable}(file_sha256);
-      CREATE INDEX IF NOT EXISTS ${this.reportsTable}_visible_idx ON ${this.reportsTable}(deleted_at, completed_at DESC);
-      CREATE INDEX IF NOT EXISTS ${this.apiKeysTable}_user_active_idx ON ${this.apiKeysTable}(user_id, revoked_at, created_at DESC);
-      CREATE INDEX IF NOT EXISTS ${this.refreshTokensTable}_user_active_idx ON ${this.refreshTokensTable}(user_id, revoked_at, expires_at DESC);
-      CREATE INDEX IF NOT EXISTS ${this.passwordResetTable}_user_active_idx ON ${this.passwordResetTable}(user_id, used_at, expires_at DESC);
-      CREATE INDEX IF NOT EXISTS ${this.notificationsTable}_user_created_idx ON ${this.notificationsTable}(user_id, created_at DESC);
-      CREATE INDEX IF NOT EXISTS ${this.notificationsTable}_user_unread_idx ON ${this.notificationsTable}(user_id, read_at, created_at DESC);
-      CREATE UNIQUE INDEX IF NOT EXISTS ${this.notificationsTable}_dedupe_idx ON ${this.notificationsTable}(user_id, dedupe_key) WHERE dedupe_key IS NOT NULL;
-      CREATE INDEX IF NOT EXISTS ${this.auditEventsTable}_created_idx ON ${this.auditEventsTable}(created_at DESC);
-      CREATE INDEX IF NOT EXISTS ${this.auditEventsTable}_user_created_idx ON ${this.auditEventsTable}(user_id, created_at DESC);
-    `);
+    return applyStoreMigrations({
+      pool: this.pool,
+      migrationsTable: this.migrationsTable,
+      migrations: buildStoreMigrations({
+        usersTable: this.usersTable,
+        jobsTable: this.jobsTable,
+        reportsTable: this.reportsTable,
+        apiKeysTable: this.apiKeysTable,
+        refreshTokensTable: this.refreshTokensTable,
+        passwordResetTable: this.passwordResetTable,
+        notificationsTable: this.notificationsTable,
+        auditEventsTable: this.auditEventsTable
+      })
+    });
   }
 
   async #withTransaction(work) {

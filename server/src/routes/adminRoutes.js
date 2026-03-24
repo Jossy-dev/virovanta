@@ -1,7 +1,14 @@
 import { Router } from "express";
 import { asyncHandler } from "../utils/asyncHandler.js";
 
-export function createAdminRouter({ authService, requireAuth, requireAuthMethod, requireRole, preventSensitiveCaching }) {
+export function createAdminRouter({
+  authService,
+  requireAuth,
+  requireAuthMethod,
+  requireRole,
+  preventSensitiveCaching,
+  runtimeInfoProvider = null
+}) {
   const adminRouter = Router();
 
   adminRouter.use(requireAuth, requireAuthMethod("bearer"), requireRole("admin"), preventSensitiveCaching());
@@ -9,8 +16,12 @@ export function createAdminRouter({ authService, requireAuth, requireAuthMethod,
   adminRouter.get(
     "/metrics",
     asyncHandler(async (_req, res) => {
-      const metrics = await authService.getAdminMetrics();
-      res.json({ metrics });
+      const [metrics, runtime] = await Promise.all([
+        authService.getAdminMetrics(),
+        runtimeInfoProvider ? runtimeInfoProvider() : Promise.resolve(null)
+      ]);
+
+      res.json(runtime ? { metrics, runtime } : { metrics });
     })
   );
 

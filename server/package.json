@@ -5,11 +5,17 @@
   "type": "module",
   "scripts": {
     "dev": "nodemon index.js",
+    "dev:api": "RUN_API_SERVER=true RUN_SCAN_WORKER=false nodemon index.js",
+    "dev:worker": "nodemon worker.js",
     "start": "node index.js",
+    "start:all": "RUN_API_SERVER=true RUN_SCAN_WORKER=true node index.js",
+    "start:api": "RUN_API_SERVER=true RUN_SCAN_WORKER=false node index.js",
     "start:worker": "node worker.js",
     "start:worker:file": "SCAN_WORKER_MODE=file node worker.js",
     "start:worker:link": "SCAN_WORKER_MODE=link node worker.js",
     "test": "vitest run",
+    "test:e2e": "vitest run tests/coreWorkflows.e2e.test.js tests/runtimeModes.test.js",
+    "test:migrations": "vitest run tests/postgresMigrations.test.js",
     "test:watch": "vitest"
   },
   "dependencies": {

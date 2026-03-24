@@ -6,7 +6,7 @@ import helmet from "helmet";
 import pino from "pino";
 import pinoHttp from "pino-http";
 import { RedisStore } from "rate-limit-redis";
-import { config, isCorsOriginAllowed } from "../config.js";
+import { config, isCorsOriginAllowed, resolveServiceMode } from "../config.js";
 import { createRedisClient } from "../infrastructure/redis/createRedisClient.js";
 import {
   createAuthMiddleware,
@@ -137,7 +137,10 @@ export async function createApp(options = {}) {
 
   const startQueueService = async () => scanQueueService.start();
 
-  if (runtimeConfig.runApiServer) {
+  const shouldAwaitQueueStartup =
+    !runtimeConfig.runApiServer || runtimeConfig.queueProvider === "local" || runtimeConfig.runScanWorker;
+
+  if (!shouldAwaitQueueStartup && runtimeConfig.runApiServer) {
     startQueueService().catch((error) => {
       logger.error(
         {
@@ -148,6 +151,71 @@ export async function createApp(options = {}) {
     });
   } else {
     await startQueueService();
+  }
+
+  async function collectRuntimeState() {
+    const [storeStatus, queueStatus] = await Promise.all([
+      store.getOperationalStatus().catch((error) => ({
+        status: "error",
+        ready: false,
+        driver: runtimeConfig.dataStoreDriver,
+        alerts: [
+          {
+            component: "store",
+            severity: "error",
+            message: error?.message || "Store health check failed.",
+            code: error?.code || null,
+            occurredAt: new Date().toISOString()
+          }
+        ]
+      })),
+      Promise.resolve(scanQueueService.getOperationalStatus())
+    ]);
+    const objectStorageStatus = objectStorageService.getOperationalStatus();
+    const rateLimitStatus =
+      runtimeConfig.rateLimitStore === "redis"
+        ? {
+            status: rateLimitRedisClient?.status === "ready" ? "ok" : "degraded",
+            ready: rateLimitRedisClient?.status === "ready",
+            store: "redis",
+            connectionState: rateLimitRedisClient?.status || "uninitialized"
+          }
+        : {
+            status: "ok",
+            ready: true,
+            store: "memory",
+            connectionState: "memory"
+          };
+
+    const alerts = [...(storeStatus.alerts || []), ...(queueStatus.alerts || [])];
+
+    if (!rateLimitStatus.ready) {
+      alerts.push({
+        component: "rate-limit",
+        severity: "error",
+        message: "Redis-backed rate limiting is not ready.",
+        code: null,
+        occurredAt: new Date().toISOString()
+      });
+    }
+
+    const ready = Boolean(storeStatus.ready) && Boolean(queueStatus.ready) && Boolean(rateLimitStatus.ready);
+
+    return {
+      status: ready ? "ok" : "degraded",
+      ready,
+      mode: resolveServiceMode(runtimeConfig),
+      service: runtimeConfig.serviceName,
+      version: runtimeConfig.apiVersion,
+      uptimeSeconds: Number(process.uptime().toFixed(1)),
+      components: {
+        store: storeStatus,
+        queue: queueStatus,
+        objectStorage: objectStorageStatus,
+        rateLimit: rateLimitStatus
+      },
+      alerts
+    };
   }
 
   const requireAuth = createAuthMiddleware(authService);
@@ -232,6 +300,19 @@ export async function createApp(options = {}) {
 
   app.use(express.json({ limit: "256kb" }));
 
+  const sendPingResponse = (res) => {
+    res.set("Cache-Control", "no-store, no-cache, must-revalidate, private");
+    res.type("text/plain").status(200).send("pong");
+  };
+
+  app.get("/ping", (_req, res) => {
+    sendPingResponse(res);
+  });
+
+  app.get("/api/ping", (_req, res) => {
+    sendPingResponse(res);
+  });
+
   app.get("/api/health", async (_req, res) => {
     res.json({
       status: "ok",
@@ -239,6 +320,21 @@ export async function createApp(options = {}) {
       version: runtimeConfig.apiVersion,
       uptimeSeconds: Number(process.uptime().toFixed(1))
     });
+  });
+
+  app.get("/api/health/live", async (_req, res) => {
+    res.json({
+      status: "ok",
+      mode: resolveServiceMode(runtimeConfig),
+      service: runtimeConfig.serviceName,
+      version: runtimeConfig.apiVersion,
+      uptimeSeconds: Number(process.uptime().toFixed(1))
+    });
+  });
+
+  app.get("/api/health/ready", async (_req, res) => {
+    const runtime = await collectRuntimeState();
+    res.status(runtime.ready ? 200 : 503).json(runtime);
   });
 
   app.get("/api/openapi.json", (_req, res) => {
@@ -278,7 +374,17 @@ export async function createApp(options = {}) {
       config: runtimeConfig
     })
   );
-  app.use("/api/admin", createAdminRouter({ authService, requireAuth, requireAuthMethod, requireRole, preventSensitiveCaching }));
+  app.use(
+    "/api/admin",
+    createAdminRouter({
+      authService,
+      requireAuth,
+      requireAuthMethod,
+      requireRole,
+      preventSensitiveCaching,
+      runtimeInfoProvider: collectRuntimeState
+    })
+  );
 
   app.use("/api", notFoundHandler);
   app.use(errorHandler(logger, runtimeConfig));
@@ -290,7 +396,8 @@ export async function createApp(options = {}) {
     scanQueueService,
     objectStorageService,
     rateLimitRedisClient,
-    config: runtimeConfig
+    config: runtimeConfig,
+    runtimeInfoProvider: collectRuntimeState
   };
 
   return {

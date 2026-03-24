@@ -130,6 +130,29 @@ const ANALYTICS_MONTH_BUCKETS = 6;
 const DEFAULT_QUEUE_ENQUEUE_TIMEOUT_MS = 12_000;
 const DEFAULT_OBJECT_STAGE_TIMEOUT_MS = 20_000;
 
+
+function resolveQueueServiceMode(config) {
+  if (config.runApiServer && config.runScanWorker) {
+    return "all";
+  }
+
+  if (config.runApiServer) {
+    return "api";
+  }
+
+  return "worker";
+}
+
+function serializeOperationalError(error, component = "queue") {
+  return {
+    component,
+    severity: "error",
+    message: error?.message || "Unknown queue error.",
+    code: error?.code || null,
+    occurredAt: new Date().toISOString()
+  };
+}
+
 function withTimeout(promise, timeoutMs, label) {
   const safeTimeoutMs = Math.max(1_000, Number(timeoutMs) || 0);
   if (!Number.isFinite(safeTimeoutMs) || safeTimeoutMs <= 0) {
@@ -428,30 +451,132 @@ export class ScanQueueService {
     this.bullLinkWorker = null;
     this.bullQueueRedis = null;
     this.bullWorkerRedis = null;
+    this.runtimeState = {
+      status: "idle",
+      ready: false,
+      degraded: false,
+      lastStartedAt: null,
+      lastReadyAt: null,
+      lastError: null
+    };
+  }
+
+  markOperationalDegraded(error, component = "queue") {
+    this.runtimeState = {
+      ...this.runtimeState,
+      status: "degraded",
+      ready: false,
+      degraded: true,
+      lastError: serializeOperationalError(error, component)
+    };
+  }
+
+  getOperationalStatus() {
+    const runFileWorker = this.config.scanWorkerMode === "all" || this.config.scanWorkerMode === "file";
+    const runLinkWorker = this.config.scanWorkerMode === "all" || this.config.scanWorkerMode === "link";
+    const queueReady =
+      this.config.queueProvider === "local"
+        ? this.runtimeState.ready
+        : Boolean(this.bullFileQueue) && Boolean(this.bullLinkQueue) && !this.runtimeState.lastError;
+    const workerReady =
+      !this.config.runScanWorker ||
+      (this.config.queueProvider === "local"
+        ? this.runtimeState.ready
+        : (!runFileWorker || Boolean(this.bullFileWorker)) && (!runLinkWorker || Boolean(this.bullLinkWorker)));
+    const ready = Boolean(this.runtimeState.ready && queueReady && workerReady && !this.runtimeState.degraded);
+
+    return {
+      status: ready ? "ok" : this.runtimeState.degraded ? "degraded" : this.runtimeState.status,
+      ready,
+      provider: this.config.queueProvider,
+      mode: resolveQueueServiceMode(this.config),
+      apiEnabled: this.config.runApiServer,
+      workerEnabled: this.config.runScanWorker,
+      workerMode: this.config.scanWorkerMode,
+      queueNames: {
+        file: this.config.fileQueueName || this.config.queueName,
+        link: this.config.linkQueueName || `${this.config.queueName}-link`
+      },
+      queueConnectionState: this.config.queueProvider === "bullmq" ? this.bullQueueRedis?.status || "uninitialized" : "local",
+      workerConnectionState: !this.config.runScanWorker
+        ? "disabled"
+        : this.config.queueProvider === "bullmq"
+          ? this.bullWorkerRedis?.status || "uninitialized"
+          : "local",
+      workers: {
+        fileEnabled: this.config.runScanWorker && runFileWorker,
+        linkEnabled: this.config.runScanWorker && runLinkWorker,
+        fileReady: !this.config.runScanWorker || !runFileWorker || this.config.queueProvider === "local"
+          ? this.runtimeState.ready || !runFileWorker
+          : Boolean(this.bullFileWorker),
+        linkReady: !this.config.runScanWorker || !runLinkWorker || this.config.queueProvider === "local"
+          ? this.runtimeState.ready || !runLinkWorker
+          : Boolean(this.bullLinkWorker)
+      },
+      backlog: {
+        inMemoryDepth: this.queue.length,
+        activeInProcess: this.processing
+      },
+      alerts: this.runtimeState.lastError ? [this.runtimeState.lastError] : [],
+      lastStartedAt: this.runtimeState.lastStartedAt,
+      lastReadyAt: this.runtimeState.lastReadyAt,
+      lastError: this.runtimeState.lastError
+    };
   }
 
   async start() {
-    if (this.started) {
+    if (this.started && !this.runtimeState.degraded) {
       return;
     }
 
     this.started = true;
+    this.runtimeState = {
+      ...this.runtimeState,
+      status: "starting",
+      ready: false,
+      degraded: false,
+      lastStartedAt: new Date().toISOString(),
+      lastError: null
+    };
 
-    if (this.config.queueProvider === "bullmq") {
-      await this.#startBullQueue();
-      return;
+    try {
+      if (this.config.queueProvider === "bullmq") {
+        await this.#startBullQueue();
+        this.runtimeState = {
+          ...this.runtimeState,
+          status: "ok",
+          ready: true,
+          degraded: false,
+          lastReadyAt: new Date().toISOString(),
+          lastError: null
+        };
+        return;
+      }
+
+      if (!this.config.runScanWorker) {
+        throw new Error("RUN_SCAN_WORKER must be true when QUEUE_PROVIDER=local.");
+      }
+
+      await this.store.markActiveJobsFailed("Scan interrupted by service restart.");
+
+      this.#drainQueue();
+      this.runtimeState = {
+        ...this.runtimeState,
+        status: "ok",
+        ready: true,
+        degraded: false,
+        lastReadyAt: new Date().toISOString(),
+        lastError: null
+      };
+    } catch (error) {
+      this.markOperationalDegraded(error);
+      throw error;
     }
-
-    if (!this.config.runScanWorker) {
-      throw new Error("RUN_SCAN_WORKER must be true when QUEUE_PROVIDER=local.");
-    }
-
-    await this.store.markActiveJobsFailed("Scan interrupted by service restart.");
-
-    this.#drainQueue();
   }
 
   async stop() {
+    this.started = false;
+
     if (this.bullFileWorker) {
       await this.bullFileWorker.close();
       this.bullFileWorker = null;
@@ -481,6 +606,14 @@ export class ScanQueueService {
       await this.bullQueueRedis.quit().catch(() => {});
       this.bullQueueRedis = null;
     }
+
+    this.runtimeState = {
+      ...this.runtimeState,
+      status: "stopped",
+      ready: false,
+      degraded: false,
+      lastError: null
+    };
   }
 
   async #createQueuedJob({ userId, sourceType, originalName, mimeType, fileSize, targetUrl = null }) {
@@ -805,6 +938,10 @@ export class ScanQueueService {
       purpose: "queue",
       maxRetriesPerRequest: 3
     });
+    this.bullQueueRedis?.on?.("error", (error) => {
+      this.markOperationalDegraded(error, "queue");
+      this.logger.error({ err: error, queue: "redis" }, "BullMQ queue connection error");
+    });
 
     this.bullFileQueue = new Queue(this.config.fileQueueName || this.config.queueName, {
       connection: this.bullQueueRedis
@@ -832,6 +969,10 @@ export class ScanQueueService {
       purpose: "queue-worker",
       maxRetriesPerRequest: null
     });
+    this.bullWorkerRedis?.on?.("error", (error) => {
+      this.markOperationalDegraded(error, "worker");
+      this.logger.error({ err: error, queue: "worker-redis" }, "BullMQ worker connection error");
+    });
 
     const runFileWorker = this.config.scanWorkerMode === "all" || this.config.scanWorkerMode === "file";
     const runLinkWorker = this.config.scanWorkerMode === "all" || this.config.scanWorkerMode === "link";
@@ -856,6 +997,7 @@ export class ScanQueueService {
         this.logger.error({ err: error, bullJobId: job?.id, queue: "file" }, "BullMQ file worker job failed");
       });
       this.bullFileWorker.on("error", (error) => {
+        this.markOperationalDegraded(error, "worker");
         this.logger.error({ err: error, queue: "file" }, "BullMQ file worker error");
       });
     }
@@ -876,6 +1018,7 @@ export class ScanQueueService {
         this.logger.error({ err: error, bullJobId: job?.id, queue: "link" }, "BullMQ link worker job failed");
       });
       this.bullLinkWorker.on("error", (error) => {
+        this.markOperationalDegraded(error, "worker");
         this.logger.error({ err: error, queue: "link" }, "BullMQ link worker error");
       });
     }

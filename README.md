@@ -1,124 +1,191 @@
 # ViroVanta
 
-ViroVanta is now a **multi-user, authenticated, async file scanning platform** built with React + Node.js.
+ViroVanta is a multi-user malware and threat analysis platform with guest quick scans, authenticated scan history, async job processing, signed reports, and operational controls for production deployment.
 
-## What Is New in This Upgrade
+## Current Platform Shape
 
-- Account system with:
-  - Registration + login
-  - JWT access tokens
-  - Rotating refresh tokens
-  - API key lifecycle (create/list/revoke)
-- Asynchronous scan job engine:
-  - Queue-based processing (`queued -> processing -> completed/failed`)
-  - Configurable worker concurrency
-  - Per-user report ownership
-- Stronger security posture:
-  - Helmet hardening
-  - CORS allow-list validation
-  - Rate limiting and abuse controls
-  - Strict request validation with `zod`
-  - Correlation IDs and structured errors
-  - Password policy enforcement
-  - Audit trail events
-- Persistent storage:
-  - Atomic JSON datastore on disk
-  - Users, jobs, reports, and audit events survive restart
-- Free-tier enforcement:
-  - Daily scan quota limits per user
-  - Admin override support
+- React + Vite frontend
+- Node.js + Express API
+- Async scan orchestration with local queue or BullMQ
+- Normalized Postgres persistence for users, jobs, reports, notifications, tokens, API keys, and audit events
+- Guest quick scans plus authenticated file, URL, and website safety workflows
+- Signed report integrity, PDF export, notifications, analytics, and admin metrics
 
-## Stack
+## What Changed In This Hardening Pass
 
-- Frontend: React + Vite
-- Backend: Node.js + Express
-- Security: Helmet, express-rate-limit, JWT, bcryptjs, zod
-- Logging: pino + pino-http
-- Uploads: multer
-- Testing:
-  - Backend: Vitest + Supertest integration tests
-  - Frontend: Vitest + React Testing Library
+- Added focused end-to-end smoke coverage for guest quick scan, authenticated file scan, URL scan, website safety scan, history, analytics, and report PDF export
+- Added runtime mode coverage for combined, API-only, and worker-only deployments
+- Replaced embedded Postgres schema bootstrapping with a migration runner
+- Added scale-oriented constraints and indexes for jobs, reports, notifications, and users
+- Added readiness and liveness endpoints plus runtime health data in admin metrics
+- Added runtime topology guards so bad production combinations fail fast
+- Added server scripts and environment examples for clean API/worker separation
 
-## Architecture Summary
+## Repository Layout
 
-- `server/src/app/createApp.js`
-  - App composition, middleware, security policy, route wiring
-- `server/src/services/authService.js`
-  - Auth/session/API-key/quota/business logic
-- `server/src/services/scanQueueService.js`
-  - Async job queue orchestration + report persistence
-- `server/src/store/persistentStore.js`
-  - Atomic file-backed datastore
-- `server/src/scanner/fileScanner.js`
-  - Heuristics + optional ClamAV + optional VirusTotal
-- `client/src/App.jsx`
-  - Auth UX, queue UX, report UX, API key management
+- `/Users/jossychidi/Documents/virovanta/client`
+  Frontend app
+- `/Users/jossychidi/Documents/virovanta/server`
+  API, worker, storage, scanner orchestration, tests
+- `/Users/jossychidi/Documents/virovanta/server/src/app/createApp.js`
+  App composition, health endpoints, route wiring, service bootstrap
+- `/Users/jossychidi/Documents/virovanta/server/src/services/scanQueueService.js`
+  Queue orchestration, worker processing, analytics, job lifecycle
+- `/Users/jossychidi/Documents/virovanta/server/src/store/persistentStore.js`
+  File driver plus normalized Postgres store
+- `/Users/jossychidi/Documents/virovanta/server/src/store/postgresMigrations.js`
+  Migration definitions and runner
+- `/Users/jossychidi/Documents/virovanta/server/DEPLOYMENT.md`
+  Production topology, security, and deployment guidance
 
-## API Surface (v2)
+## Local Development
 
-### Auth
-- `POST /api/auth/register`
-- `POST /api/auth/login`
-- `POST /api/auth/refresh`
-- `POST /api/auth/logout`
-- `GET /api/auth/me`
-- `GET /api/auth/api-keys`
-- `POST /api/auth/api-keys`
-- `DELETE /api/auth/api-keys/:keyId`
+Install dependencies:
 
-### Scans
-- `POST /api/scans/jobs` (multipart file upload)
-- `GET /api/scans/jobs`
-- `GET /api/scans/jobs/:jobId`
-- `GET /api/scans/reports`
-- `GET /api/scans/reports/:reportId`
+- `npm install --prefix server`
+- `npm install --prefix client`
 
-### Platform
+Create backend env:
+
+- copy `/Users/jossychidi/Documents/virovanta/server/.env.example` to `/Users/jossychidi/Documents/virovanta/server/.env`
+
+Start the default local stack:
+
+- `npm run dev`
+
+Useful variants:
+
+- `npm run dev:client`
+- `npm run dev:server`
+- `npm run dev:api`
+- `npm run dev:worker`
+
+Local defaults:
+
+- API: `http://localhost:3001`
+- Client: `http://localhost:5173`
+- Health: `http://localhost:3001/api/health`
+- Readiness: `http://localhost:3001/api/health/ready`
+
+## Runtime Modes
+
+ViroVanta now supports three service modes:
+
+1. Combined mode
+   `RUN_API_SERVER=true`, `RUN_SCAN_WORKER=true`
+2. API-only mode
+   `RUN_API_SERVER=true`, `RUN_SCAN_WORKER=false`
+3. Worker-only mode
+   `RUN_API_SERVER=false`, `RUN_SCAN_WORKER=true`
+
+Recommended production topology:
+
+1. API-only web service
+2. Worker-only background service
+3. Postgres
+4. Redis when `QUEUE_PROVIDER=bullmq`
+5. S3-compatible object storage when API and workers are separated
+
+## Storage And Migrations
+
+The platform supports:
+
+- `DATA_STORE_DRIVER=file`
+  convenient for local development and tests
+- `DATA_STORE_DRIVER=postgres`
+  required for serious multi-user production deployment
+
+Postgres schema management is migration-based:
+
+- migrations table: `<table_base>_schema_migrations`
+- current migrations:
+  - `001_initial_schema`
+  - `002_scale_hardening`
+
+The normalized Postgres model includes:
+
+- users
+- jobs
+- reports
+- notifications
+- API keys
+- refresh tokens
+- password reset tokens
+- audit events
+
+## Queueing
+
+Queue modes:
+
+- `QUEUE_PROVIDER=local`
+  in-process queue, best for local development
+- `QUEUE_PROVIDER=bullmq`
+  Redis-backed async queue for production and split deployments
+
+Production rule enforced by config:
+
+- remote BullMQ workers require `OBJECT_STORAGE_PROVIDER=s3`
+
+## Health And Monitoring
+
+Health endpoints:
+
 - `GET /api/health`
-- `GET /api/openapi.json`
-- `GET /api/admin/metrics` (admin)
-- `GET /api/admin/audit` (admin)
+  basic service heartbeat
+- `GET /api/health/live`
+  liveness view with runtime mode
+- `GET /api/health/ready`
+  readiness view including store, queue, object storage, and rate-limit status
 
-## Quick Start
+Admin operational visibility:
 
-1. Install dependencies:
-   - `npm install --prefix server`
-   - `npm install --prefix client`
-2. Configure backend:
-   - copy `server/.env.example` to `server/.env`
-3. Start app:
-   - `npm run dev`
-4. Open:
-   - UI: [http://localhost:5173](http://localhost:5173)
-   - API health: [http://localhost:3001/api/health](http://localhost:3001/api/health)
+- `GET /api/admin/metrics`
+  returns business metrics plus runtime health snapshot
+- `GET /api/admin/audit`
+  returns audit trail events
 
-## Environment Configuration
+## Security Baseline
 
-Use `server/.env.example` as baseline. Most important options:
+The backend now enforces or supports:
 
-- `JWT_ACCESS_SECRET`
-- `ACCESS_TOKEN_TTL_MINUTES`
-- `REFRESH_TOKEN_TTL_DAYS`
-- `FREE_TIER_DAILY_SCAN_LIMIT`
-- `SCAN_WORKER_CONCURRENCY`
-- `MAX_UPLOAD_MB`
-- `REQUESTS_PER_WINDOW`
-- `REQUEST_WINDOW_MINUTES`
-- `ENABLE_CLAMAV`
-- `VIRUSTOTAL_API_KEY`
+- strict startup validation for production secrets and runtime topology
+- Supabase publishable-key validation when `AUTH_PROVIDER=supabase`
+- signed report integrity payloads
+- rate limiting with memory or Redis store
+- Helmet, CORS allow-listing, request IDs, structured logging, and input validation
+- backend-owned authorization for application tables
+
+Do not expose the application tables directly to the frontend. The intended model is:
+
+1. frontend uses Supabase for auth only
+2. backend verifies the user identity
+3. backend performs all reads and writes against `virovanta_*` tables
 
 ## Testing
 
-- Full suite: `npm run test`
-- Backend only: `npm run test --prefix server`
-- Frontend only: `npm run test --prefix client`
-- Frontend production build: `npm run build --prefix client`
+Root scripts:
 
-## Cybersecurity Standards Alignment (Current)
+- `npm run test`
+- `npm run test:e2e`
+- `npm run build`
 
-As of **February 17, 2026**, this project is aligned to practical controls from:
+Server scripts:
 
-- OWASP ASVS 5.0.0 (auth/session controls, API hardening, logging/auditability, input validation)
-- OWASP API Security Top 10 (2023) (authz/authn, resource abuse controls, misconfiguration reduction, API inventory)
-- NIST SSDF guidance trajectory (SP 800-218 Rev.1 IPD v1.2) through secure dev/test pipeline and control traceability
+- `npm run test --prefix server`
+- `npm run test:e2e --prefix server`
+- `npm run test:migrations --prefix server`
 
+Client scripts:
+
+- `npm run test --prefix client`
+- `npm run build --prefix client`
+
+## Next Recommended Operational Work
+
+1. Add the readiness endpoint to your deployment health checks
+2. Deploy the API and worker as separate services in production
+3. Use Postgres, Redis, and S3-compatible object storage in production
+4. Lock down database grants so only the backend role can access app tables
+5. Add external alerting on `/api/health/ready` and queue degradation signals
+
+For the production rollout guide, use `/Users/jossychidi/Documents/virovanta/server/DEPLOYMENT.md`.

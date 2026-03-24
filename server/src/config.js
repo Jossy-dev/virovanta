@@ -71,6 +71,18 @@ function normalizeSlug(value, fallback = "app") {
   return normalized || fallback;
 }
 
+export function resolveServiceMode(runtimeConfig) {
+  if (runtimeConfig.runApiServer && runtimeConfig.runScanWorker) {
+    return "all";
+  }
+
+  if (runtimeConfig.runApiServer) {
+    return "api";
+  }
+
+  return "worker";
+}
+
 const srcDir = path.dirname(fileURLToPath(import.meta.url));
 const serverDir = path.resolve(srcDir, "..");
 const dataDir = path.resolve(serverDir, "data");
@@ -245,6 +257,32 @@ const resolvedConfig = {
   logLevel: envString("LOG_LEVEL", isProduction ? "info" : "debug")
 };
 
+function assertRuntimeTopology(runtimeConfig) {
+  const issues = [];
+
+  if (!runtimeConfig.runApiServer && !runtimeConfig.runScanWorker) {
+    issues.push("At least one of RUN_API_SERVER or RUN_SCAN_WORKER must be true.");
+  }
+
+  if (runtimeConfig.queueProvider === "local" && !runtimeConfig.runScanWorker) {
+    issues.push("RUN_SCAN_WORKER must be true when QUEUE_PROVIDER=local.");
+  }
+
+  if (
+    runtimeConfig.queueProvider === "bullmq" &&
+    runtimeConfig.runScanWorker &&
+    !runtimeConfig.runApiServer &&
+    runtimeConfig.objectStorageProvider !== "s3"
+  ) {
+    issues.push("OBJECT_STORAGE_PROVIDER must be s3 when running remote BullMQ workers.");
+  }
+
+  if (issues.length > 0) {
+    throw new Error(`Invalid runtime configuration:
+- ${issues.join("\n- ")}`);
+  }
+}
+
 function assertProductionSecurity(runtimeConfig) {
   if (!runtimeConfig.isProduction) {
     return;
@@ -339,6 +377,7 @@ function assertSupabaseAuthKeyMode(runtimeConfig) {
   throw new Error("Invalid Supabase key format. Set SUPABASE_PUBLISHABLE_KEY to an sb_publishable_ key.");
 }
 
+assertRuntimeTopology(resolvedConfig);
 assertSupabaseAuthKeyMode(resolvedConfig);
 assertProductionSecurity(resolvedConfig);
 
