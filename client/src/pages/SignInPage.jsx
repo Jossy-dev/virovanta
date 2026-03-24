@@ -4,6 +4,7 @@ import { toast } from "sonner";
 import AuthShell from "./auth/AuthShell";
 import PasswordField from "./auth/PasswordField";
 import { prefetchRouteModule } from "../routeModules";
+import ButtonSpinner from "../ui/ButtonSpinner";
 
 function isValidEmail(value) {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(value || "").trim());
@@ -12,6 +13,8 @@ function isValidEmail(value) {
 export default function SignInPage({ appName, appTagline, logoAltText, brandMarks, onLogin }) {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
+  const submitButtonClass =
+    "inline-flex min-h-12 w-full touch-manipulation select-none items-center justify-center gap-2 rounded-2xl border border-viro-500 bg-viro-500 px-5 text-sm font-semibold text-white shadow-[0_18px_36px_rgba(45,163,100,0.22)] transition duration-150 ease-out hover:border-viro-600 hover:bg-viro-600 active:scale-[0.985] disabled:cursor-not-allowed disabled:border-slate-200 disabled:bg-slate-200 disabled:text-slate-500 disabled:shadow-none";
   const [form, setForm] = useState({
     email: String(searchParams.get("email") || "").trim(),
     password: "",
@@ -21,8 +24,7 @@ export default function SignInPage({ appName, appTagline, logoAltText, brandMark
   const [submitting, setSubmitting] = useState(false);
   const buildPrefetchIntentProps = (path) => ({
     onMouseEnter: () => prefetchRouteModule(path),
-    onFocus: () => prefetchRouteModule(path),
-    onTouchStart: () => prefetchRouteModule(path)
+    onFocus: () => prefetchRouteModule(path)
   });
 
   useEffect(() => {
@@ -187,8 +189,15 @@ export default function SignInPage({ appName, appTagline, logoAltText, brandMark
           </div>
         ) : null}
 
-        <button type="submit" className="primary auth-submit" disabled={submitting}>
-          {submitting ? "Signing in..." : "Sign in"}
+        <button type="submit" className={submitButtonClass} disabled={submitting}>
+          {submitting ? (
+            <>
+              <ButtonSpinner className="text-white" />
+              <span>Signing in...</span>
+            </>
+          ) : (
+            "Sign in"
+          )}
         </button>
       </form>
     </AuthShell>

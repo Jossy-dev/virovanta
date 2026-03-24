@@ -10,6 +10,7 @@ import {
   motionPreset
 } from "../appUtils";
 import { createInteractiveMotion } from "../ui/motionSystem";
+import ButtonSpinner from "../ui/ButtonSpinner";
 import PublicSiteFooter from "./public/PublicSiteFooter";
 import PublicSiteHeader from "./public/PublicSiteHeader";
 import { prefetchRouteModule } from "../routeModules";
@@ -35,12 +36,19 @@ export default function LandingPage({
     hoverScale: 1.012,
     tapScale: 0.985
   });
-  const MotionLink = motion(Link);
+  const landingButtonBaseClass =
+    "inline-flex min-h-11 touch-manipulation select-none items-center justify-center gap-2 rounded-full px-5 text-sm font-semibold transition duration-150 ease-out active:scale-[0.985] disabled:cursor-not-allowed disabled:opacity-55";
+  const landingPrimaryButtonClass = `${landingButtonBaseClass} border border-viro-500 bg-viro-500 text-white shadow-[0_12px_30px_rgba(45,163,100,0.24)] hover:border-viro-600 hover:bg-viro-600`;
+  const landingGhostButtonClass =
+    `${landingButtonBaseClass} border border-slate-200 bg-white/88 text-slate-800 shadow-[0_10px_25px_rgba(15,23,42,0.08)] hover:border-viro-200 hover:bg-viro-50 hover:text-viro-800`;
+  const landingAuthButtonClass =
+    `${landingButtonBaseClass} w-full sm:w-auto border border-slate-200 bg-white/92 text-slate-800 shadow-[0_12px_28px_rgba(15,23,42,0.1)] hover:border-viro-200 hover:bg-viro-50 hover:text-viro-800`;
+  const landingAuthPrimaryButtonClass =
+    `${landingButtonBaseClass} w-full sm:w-auto border border-viro-500 bg-viro-500 text-white shadow-[0_16px_34px_rgba(45,163,100,0.28)] hover:border-viro-600 hover:bg-viro-600`;
 
   const buildPrefetchIntentProps = (path) => ({
     onMouseEnter: () => prefetchRouteModule(path),
-    onFocus: () => prefetchRouteModule(path),
-    onTouchStart: () => prefetchRouteModule(path)
+    onFocus: () => prefetchRouteModule(path)
   });
 
   const guestVerdictMeta = VERDICT_META[guestReport?.verdict] || VERDICT_META.clean;
@@ -186,16 +194,23 @@ export default function LandingPage({
         <div className="upload-actions">
           <motion.button
             type="button"
-            className="primary"
+            className={landingPrimaryButtonClass}
             disabled={!guestFile || isGuestScanning || !guestStatus.enabled}
             onClick={handleRunGuestScan}
             {...interactiveMotion}
           >
-            {isGuestScanning ? "Scanning..." : "Run Guest Scan"}
+            {isGuestScanning ? (
+              <>
+                <ButtonSpinner className="text-white" />
+                <span>Scanning...</span>
+              </>
+            ) : (
+              "Run Guest Scan"
+            )}
           </motion.button>
           <motion.button
             type="button"
-            className="ghost"
+            className={landingGhostButtonClass}
             disabled={!guestFile || !guestStatus.enabled}
             onClick={() => {
               setGuestFile(null);
@@ -252,13 +267,13 @@ export default function LandingPage({
         <h2 className="auth-title">Create Account for Full Workflow</h2>
         <p className="subtext">Save reports, queue jobs, and generate API keys for automation.</p>
 
-        <div className="auth-switch">
-          <MotionLink className="ghost" to="/signin" {...buildPrefetchIntentProps("/signin")} {...interactiveMotion}>
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+          <Link className={landingAuthButtonClass} to="/signin" {...buildPrefetchIntentProps("/signin")}>
             Sign in
-          </MotionLink>
-          <MotionLink className="primary" to="/signup" {...buildPrefetchIntentProps("/signup")} {...interactiveMotion}>
+          </Link>
+          <Link className={landingAuthPrimaryButtonClass} to="/signup" {...buildPrefetchIntentProps("/signup")}>
             Create account
-          </MotionLink>
+          </Link>
         </div>
 
         <ul className="hero-points">

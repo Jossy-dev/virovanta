@@ -11,6 +11,7 @@ import {
 import AuthShell from "./auth/AuthShell";
 import PasswordField from "./auth/PasswordField";
 import { prefetchRouteModule } from "../routeModules";
+import ButtonSpinner from "../ui/ButtonSpinner";
 
 function isValidEmail(value) {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(value || "").trim());
@@ -41,6 +42,12 @@ function getPasswordStrength(password, email) {
 
 function AuthModal({ modal, onClose, onForgotPassword, forgotPasswordSubmitting, buildPrefetchIntentProps }) {
   const prefersReducedMotion = useReducedMotion();
+  const modalActionBaseClass =
+    "inline-flex min-h-11 w-full touch-manipulation select-none items-center justify-center gap-2 rounded-2xl border px-4 text-sm font-semibold transition duration-150 ease-out active:scale-[0.985] disabled:cursor-not-allowed disabled:opacity-55 sm:w-auto";
+  const modalPrimaryActionClass =
+    `${modalActionBaseClass} border-viro-500 bg-viro-500 text-white shadow-[0_14px_30px_rgba(45,163,100,0.22)] hover:border-viro-600 hover:bg-viro-600`;
+  const modalSecondaryActionClass =
+    `${modalActionBaseClass} border-slate-200 bg-white text-slate-800 shadow-[0_10px_24px_rgba(15,23,42,0.08)] hover:border-viro-200 hover:bg-viro-50 hover:text-viro-800`;
 
   return (
     <AnimatePresence>
@@ -74,7 +81,7 @@ function AuthModal({ modal, onClose, onForgotPassword, forgotPasswordSubmitting,
             <div className="auth-modal-actions">
               <Link
                 type="button"
-                className="primary"
+                className={modalPrimaryActionClass}
                 to={`/signin${modal.email ? `?email=${encodeURIComponent(modal.email)}` : ""}`}
                 onClick={onClose}
                 {...buildPrefetchIntentProps("/signin")}
@@ -82,11 +89,18 @@ function AuthModal({ modal, onClose, onForgotPassword, forgotPasswordSubmitting,
                 Sign in
               </Link>
               {modal.variant === "conflict" ? (
-                <button type="button" className="ghost" disabled={forgotPasswordSubmitting} onClick={onForgotPassword}>
-                  {forgotPasswordSubmitting ? "Sending reset..." : "Forgot password"}
+                <button type="button" className={modalSecondaryActionClass} disabled={forgotPasswordSubmitting} onClick={onForgotPassword}>
+                  {forgotPasswordSubmitting ? (
+                    <>
+                      <ButtonSpinner />
+                      <span>Sending reset...</span>
+                    </>
+                  ) : (
+                    "Forgot password"
+                  )}
                 </button>
               ) : (
-                <button type="button" className="ghost" onClick={onClose}>
+                <button type="button" className={modalSecondaryActionClass} onClick={onClose}>
                   Close
                 </button>
               )}
@@ -108,6 +122,8 @@ export default function SignUpPage({
   onRequestForgotPassword
 }) {
   const navigate = useNavigate();
+  const submitButtonClass =
+    "inline-flex min-h-12 w-full touch-manipulation select-none items-center justify-center gap-2 rounded-2xl border border-viro-500 bg-viro-500 px-5 text-sm font-semibold text-white shadow-[0_18px_36px_rgba(45,163,100,0.22)] transition duration-150 ease-out hover:border-viro-600 hover:bg-viro-600 active:scale-[0.985] disabled:cursor-not-allowed disabled:border-slate-200 disabled:bg-slate-200 disabled:text-slate-500 disabled:shadow-none";
   const [form, setForm] = useState({
     email: "",
     username: "",
@@ -145,8 +161,7 @@ export default function SignUpPage({
   const buildPrefetchIntentProps = useCallback(
     (path) => ({
       onMouseEnter: () => prefetchRouteModule(path),
-      onFocus: () => prefetchRouteModule(path),
-      onTouchStart: () => prefetchRouteModule(path)
+      onFocus: () => prefetchRouteModule(path)
     }),
     []
   );
@@ -688,8 +703,15 @@ export default function SignUpPage({
             </div>
           ) : null}
 
-          <button type="submit" className="primary auth-submit" disabled={submitting}>
-            {submitting ? "Creating account..." : "Sign up"}
+          <button type="submit" className={submitButtonClass} disabled={submitting}>
+            {submitting ? (
+              <>
+                <ButtonSpinner className="text-white" />
+                <span>Creating account...</span>
+              </>
+            ) : (
+              "Sign up"
+            )}
           </button>
         </form>
       </AuthShell>

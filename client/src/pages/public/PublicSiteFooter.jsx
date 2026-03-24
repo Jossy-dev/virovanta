@@ -3,10 +3,15 @@ import { MARKETING_FOOTER_GROUPS } from "../../marketing/marketingContent";
 import { prefetchRouteModule } from "../../routeModules";
 
 export default function PublicSiteFooter({ appName, appTagline, logoSrc, logoAltText }) {
+  const footerButtonBaseClass =
+    "inline-flex min-h-10 touch-manipulation select-none items-center justify-center rounded-full border px-4 text-sm font-semibold transition duration-150 ease-out active:scale-[0.985]";
+  const footerPrimaryButtonClass =
+    `${footerButtonBaseClass} border-viro-500 bg-viro-500 text-white shadow-[0_16px_34px_rgba(45,163,100,0.22)] hover:border-viro-600 hover:bg-viro-600`;
+  const footerSecondaryButtonClass =
+    `${footerButtonBaseClass} border-emerald-100/20 bg-white/[0.04] text-emerald-50 hover:border-emerald-100/35 hover:bg-white/[0.08]`;
   const buildPrefetchIntentProps = (path) => ({
     onMouseEnter: () => prefetchRouteModule(path),
-    onFocus: () => prefetchRouteModule(path),
-    onTouchStart: () => prefetchRouteModule(path)
+    onFocus: () => prefetchRouteModule(path)
   });
 
   return (
@@ -24,10 +29,10 @@ export default function PublicSiteFooter({ appName, appTagline, logoSrc, logoAlt
             Plain-language malware and anomaly scanning for suspicious files, attachments, and downloaded artifacts.
           </p>
           <div className="public-site-footer-actions">
-            <Link to="/" className="public-site-footer-button secondary" {...buildPrefetchIntentProps("/")}>
+            <Link to="/" className={footerSecondaryButtonClass} {...buildPrefetchIntentProps("/")}>
               Try guest scan
             </Link>
-            <Link to="/signup" className="public-site-footer-button primary" {...buildPrefetchIntentProps("/signup")}>
+            <Link to="/signup" className={footerPrimaryButtonClass} {...buildPrefetchIntentProps("/signup")}>
               Create account
             </Link>
           </div>
