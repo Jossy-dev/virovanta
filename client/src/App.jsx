@@ -91,6 +91,8 @@ const ACCESS_TOKEN_MIN_REFRESH_DELAY_MS = 15 * 1000;
 const ACCESS_TOKEN_UNKNOWN_REFRESH_DELAY_MS = 5 * 60 * 1000;
 const API_REQUEST_TIMEOUT_DEFAULT_MS = 20 * 1000;
 const API_REQUEST_TIMEOUT_UPLOAD_MS = 45 * 1000;
+const API_REQUEST_TIMEOUT_AUTH_COLD_START_MS = 65 * 1000;
+const API_REQUEST_TIMEOUT_WAKE_PROBE_MS = 15 * 1000;
 const AUTH_INVALID_CODES = new Set([
   "AUTH_REFRESH_INVALID",
   "AUTH_TOKEN_INVALID",
@@ -1376,6 +1378,23 @@ function AppContent() {
     return payload;
   }
 
+  function isRequestTimeoutError(error) {
+    return String(error?.code || "") === "REQUEST_TIMEOUT";
+  }
+
+  async function warmApiForAuthLogin() {
+    try {
+      await apiRequest("/ping", {
+        authSession: null,
+        retry: false,
+        timeoutMs: API_REQUEST_TIMEOUT_WAKE_PROBE_MS
+      });
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
   async function refreshAuthSession(refreshToken, currentSession = session) {
     if (isSessionHardExpired(currentSession)) {
       throw createSessionExpiredError();
@@ -1605,15 +1624,34 @@ function AppContent() {
 
   async function loginUser({ email, password, rememberMe = true }) {
     const normalizedEmail = String(email || "").trim().toLowerCase();
-    const payload = await apiRequest("/api/auth/login", {
-      method: "POST",
-      body: {
-        email: normalizedEmail,
-        password: String(password || "")
-      },
-      authSession: null,
-      retry: false
-    });
+    const loginBody = {
+      email: normalizedEmail,
+      password: String(password || "")
+    };
+    let payload;
+
+    try {
+      payload = await apiRequest("/api/auth/login", {
+        method: "POST",
+        body: loginBody,
+        authSession: null,
+        retry: false
+      });
+    } catch (error) {
+      if (!isRequestTimeoutError(error)) {
+        throw error;
+      }
+
+      await warmApiForAuthLogin();
+
+      payload = await apiRequest("/api/auth/login", {
+        method: "POST",
+        body: loginBody,
+        authSession: null,
+        retry: false,
+        timeoutMs: API_REQUEST_TIMEOUT_AUTH_COLD_START_MS
+      });
+    }
 
     const nextSession = buildSessionFromAuthPayload(payload, {
       user: payload.user,
