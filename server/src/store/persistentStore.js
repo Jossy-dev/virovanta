@@ -2127,6 +2127,72 @@ export class PersistentStore {
     });
   }
 
+  async replaceReport(report) {
+    if (!report?.id) {
+      return null;
+    }
+
+    if (this.driver !== "postgres") {
+      return this.write((state) => {
+        const index = state.reports.findIndex((candidate) => candidate.id === report.id);
+        if (index === -1) {
+          return null;
+        }
+
+        state.reports[index] = report;
+        return report;
+      });
+    }
+
+    const columns = extractReportColumns(report);
+    const result = await this.pool.query(
+      `
+        UPDATE ${this.reportsTable}
+        SET
+          owner_user_id = $2,
+          source_type = $3,
+          queued_job_id = $4,
+          created_at = $5,
+          completed_at = $6,
+          verdict = $7,
+          risk_score = $8,
+          file_name = $9,
+          file_size = $10,
+          file_sha256 = $11,
+          detected_file_type = $12,
+          file_extension = $13,
+          payload = $14::jsonb,
+          deleted_at = $15,
+          deleted_by_user_id = $16
+        WHERE id = $1
+      `,
+      [
+        columns.id,
+        columns.ownerUserId,
+        columns.sourceType,
+        columns.queuedJobId,
+        columns.createdAt,
+        columns.completedAt,
+        columns.verdict,
+        columns.riskScore,
+        columns.fileName,
+        columns.fileSize,
+        columns.fileSha256,
+        columns.detectedFileType,
+        columns.fileExtension,
+        JSON.stringify(columns.payload),
+        columns.deletedAt,
+        columns.deletedByUserId
+      ]
+    );
+
+    if (result.rowCount === 0) {
+      return null;
+    }
+
+    return report;
+  }
+
   async failJob({ jobId, userId, sourceType, targetUrl = null, errorMessage, failedAt }) {
     if (this.driver !== "postgres") {
       await this.write((state) => {

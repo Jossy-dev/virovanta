@@ -589,6 +589,188 @@ describe("ViroVanta API", () => {
     expect(reportResponse.body.report.websiteSafety?.score).toBeGreaterThanOrEqual(0);
   });
 
+  it("normalizes legacy website reports before returning them and keeps integrity valid", async () => {
+    const app = await setupTestApp({
+      websiteSafetyScanner: async ({ url }) => {
+        const parsed = new URL(String(url || "https://docs.djangoproject.com/en/4.1/"));
+
+        return {
+          id: `scan_${Math.random().toString(36).slice(2, 10)}`,
+          createdAt: new Date().toISOString(),
+          completedAt: new Date().toISOString(),
+          sourceType: "website",
+          verdict: "suspicious",
+          riskScore: 42,
+          file: {
+            originalName: parsed.toString(),
+            extension: "(website)",
+            size: 2048,
+            sizeDisplay: "2 KB",
+            declaredMimeType: "text/url",
+            detectedMimeType: "text/html",
+            detectedFileType: "website",
+            magicType: "Website target",
+            entropy: 0,
+            printableRatio: 1,
+            hashes: {
+              md5: crypto.createHash("md5").update(parsed.toString()).digest("hex"),
+              sha1: crypto.createHash("sha1").update(parsed.toString()).digest("hex"),
+              sha256: crypto.createHash("sha256").update(parsed.toString()).digest("hex")
+            }
+          },
+          findings: [
+            {
+              id: "website_domain_new",
+              severity: "high",
+              category: "Domain",
+              weight: 15,
+              title: "Newly registered domain",
+              description: "The domain appears recently registered, which increases phishing risk.",
+              evidence: "unknown"
+            },
+            {
+              id: "website_sensitive_path_exposed",
+              severity: "critical",
+              category: "Exposure",
+              weight: 30,
+              title: "Sensitive endpoint appears publicly reachable",
+              description: "One or more sensitive paths responded successfully and may expose confidential data.",
+              evidence: "/.env (200), /.git/config (200)"
+            }
+          ],
+          recommendations: ["Legacy report."],
+          plainLanguageReasons: ["The domain appears recently registered, which increases phishing risk."],
+          technicalIndicators: {},
+          websiteSafety: {
+            score: 58,
+            verdict: "suspicious",
+            checkedAt: new Date().toISOString(),
+            url: {
+              input: parsed.toString(),
+              normalized: parsed.toString(),
+              final: parsed.toString(),
+              hostname: parsed.hostname,
+              protocol: parsed.protocol.replace(/:$/, "")
+            },
+            modules: {
+              dnsDomain: {
+                status: "completed",
+                ageDays: null,
+                rdap: {
+                  domain: "djangoproject.com",
+                  registrationEvidence: "unverified"
+                }
+              },
+              ipHosting: {
+                status: "completed"
+              },
+              headers: {
+                status: "completed",
+                missing: ["content-security-policy"]
+              },
+              content: {
+                status: "completed",
+                phishingSignalScore: 0,
+                hiddenIframes: 0,
+                obfuscatedScriptIndicators: 0,
+                suspiciousExternalLinkCount: 0,
+                suspiciousExternalLinks: [],
+                suspiciousKeywords: [],
+                phishingPhrases: []
+              },
+              redirects: {
+                status: "completed",
+                count: 0,
+                crossDomainCount: 0
+              },
+              ssl: {
+                status: "completed",
+                certExpired: false,
+                certSelfSigned: false,
+                authorized: true
+              },
+              reputation: {
+                flagged: false,
+                flaggedProviders: [],
+                flaggedThreats: []
+              },
+              vulnerabilityChecks: {
+                status: "completed",
+                exposures: [
+                  { path: "/.env", status: 200, reachable: true },
+                  { path: "/.git/config", status: 200, reachable: true }
+                ],
+                adminEndpoints: []
+              },
+              fetch: {
+                status: "ok",
+                statusCode: 200,
+                attempts: []
+              }
+            }
+          },
+          engines: {
+            fetch: { status: "ok", statusCode: 200 },
+            dnsDomain: { status: "completed" },
+            headers: { status: "completed" },
+            content: { status: "completed" },
+            redirects: { status: "completed" },
+            reputation: { status: "clean" },
+            vulnerabilityChecks: { status: "completed" }
+          },
+          url: {
+            input: parsed.toString(),
+            normalized: parsed.toString(),
+            final: parsed.toString(),
+            protocol: parsed.protocol.replace(/:$/, ""),
+            hostname: parsed.hostname
+          }
+        };
+      }
+    });
+    const session = await registerAndGetToken(app, "website-legacy@example.com");
+
+    const submit = await request(app)
+      .post("/api/scans/website/jobs")
+      .set("Authorization", `Bearer ${session.accessToken}`)
+      .send({
+        url: "https://docs.djangoproject.com/en/4.1/"
+      });
+
+    expect(submit.status).toBe(202);
+
+    const finished = await waitForJobCompletion(app, session.accessToken, submit.body.job.id);
+    expect(finished.status).toBe("completed");
+
+    const storedBefore = await app.locals.services.store.read((state) => state.reports.find((report) => report.id === finished.reportId));
+    expect(storedBefore.findings.some((item) => item.id === "website_domain_new")).toBe(true);
+    expect(storedBefore.findings.some((item) => item.id === "website_sensitive_path_exposed")).toBe(true);
+
+    const reportResponse = await request(app)
+      .get(`/api/scans/reports/${finished.reportId}`)
+      .set("Authorization", `Bearer ${session.accessToken}`);
+
+    expect(reportResponse.status).toBe(200);
+    expect(reportResponse.body.report.findings.some((item) => item.id === "website_domain_new")).toBe(false);
+    expect(reportResponse.body.report.findings.some((item) => item.id === "website_sensitive_path_exposed")).toBe(false);
+    expect(reportResponse.body.report.websiteSafety.modules.vulnerabilityChecks.exposures).toHaveLength(0);
+    expect(reportResponse.body.report.riskScore).toBe(4);
+    expect(reportResponse.body.report.verdict).toBe("clean");
+    expect(reportResponse.body.report.signature).toBeTruthy();
+
+    const storedAfter = await app.locals.services.store.read((state) => state.reports.find((report) => report.id === finished.reportId));
+    expect(storedAfter.findings.some((item) => item.id === "website_domain_new")).toBe(false);
+    expect(storedAfter.findings.some((item) => item.id === "website_sensitive_path_exposed")).toBe(false);
+    expect(storedAfter.signature).toBeTruthy();
+
+    const integrityResponse = await request(app)
+      .get(`/api/scans/reports/${finished.reportId}/integrity`)
+      .set("Authorization", `Bearer ${session.accessToken}`);
+
+    expect(integrityResponse.status).toBe(200);
+    expect(integrityResponse.body.integrity.valid).toBe(true);
+  });
+
   it("downloads report PDFs and filters reports by source type", async () => {
     const app = await setupTestApp();
     const session = await registerAndGetToken(app, "pdf@example.com");

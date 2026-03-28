@@ -91,6 +91,35 @@ function formatValue(value) {
   return String(value);
 }
 
+function pluralize(count, singular) {
+  return `${count} ${singular}${count === 1 ? "" : "s"}`;
+}
+
+function formatDomainAge(value, { includeDays = false } = {}) {
+  const ageDays = Number(value);
+  if (!Number.isFinite(ageDays) || ageDays < 0) {
+    return "Not collected";
+  }
+
+  const totalDays = Math.max(0, Math.round(ageDays));
+  if (totalDays < 45) {
+    return pluralize(totalDays, "day");
+  }
+
+  const totalMonths = Math.max(1, Math.floor(totalDays / 30.4375));
+  if (totalDays < 548) {
+    const monthLabel = pluralize(totalMonths, "month");
+    return includeDays ? `${monthLabel} (${pluralize(totalDays, "day")})` : monthLabel;
+  }
+
+  const totalYears = Math.max(1, Math.floor(totalDays / 365.25));
+  const remainingDays = totalDays - Math.floor(totalYears * 365.25);
+  const remainingMonths = Math.max(0, Math.floor(remainingDays / 30.4375));
+  const yearLabel = pluralize(totalYears, "year");
+  const ageLabel = remainingMonths > 0 ? `${yearLabel}, ${pluralize(remainingMonths, "month")}` : yearLabel;
+  return includeDays ? `${ageLabel} (${pluralize(totalDays, "day")})` : ageLabel;
+}
+
 function summarizeFindingsBySeverity(findings) {
   const summary = {
     critical: 0,
@@ -610,10 +639,21 @@ function addWebsiteDeepAnalysis(layout, report) {
   });
   layout.keyValue("ASCII Hostname", modules?.normalization?.asciiHostname || "Not collected", { indent: 10 });
   layout.keyValue("Unicode Hostname", modules?.normalization?.unicodeHostname || "Not collected", { indent: 10 });
-  layout.keyValue("Domain Age (Days)", modules?.dnsDomain?.ageDays, { indent: 10, hideIfMissing: true });
+  layout.keyValue("Domain Age", formatDomainAge(modules?.dnsDomain?.ageDays, { includeDays: true }), {
+    indent: 10,
+    hideIfMissing: modules?.dnsDomain?.ageDays == null
+  });
+  layout.keyValue("RDAP Lookup Domain", modules?.dnsDomain?.rdap?.domain || modules?.dnsDomain?.rdap?.payloadDomain, {
+    indent: 10,
+    hideIfMissing: true
+  });
+  layout.keyValue("Registration Evidence", modules?.dnsDomain?.rdap?.registrationEvidence, { indent: 10, hideIfMissing: true });
   layout.keyValue("Registrar", modules?.dnsDomain?.registrar, { indent: 10, hideIfMissing: true });
   layout.keyValue("Registered At", toDisplayDate(modules?.dnsDomain?.registeredAt), { indent: 10, hideIfMissing: true });
   layout.keyValue("Expires At", toDisplayDate(modules?.dnsDomain?.expiresAt), { indent: 10, hideIfMissing: true });
+  layout.keyValue("DNSSEC Signed", modules?.dnsDomain?.rdap?.dnssecSigned, { indent: 10, hideIfMissing: true });
+  layout.keyValue("RDAP Abuse Email", modules?.dnsDomain?.rdap?.abuseEmail, { indent: 10, hideIfMissing: true });
+  layout.keyValue("RDAP Domain Status", modules?.dnsDomain?.rdap?.domainStatus, { indent: 10, hideIfMissing: true });
   layout.keyValue("Nameservers", modules?.dnsDomain?.nameservers, { indent: 10, hideIfMissing: true });
   layout.keyValue("A Records", modules?.dnsDomain?.records?.a, { indent: 10, hideIfMissing: true });
   layout.keyValue("AAAA Records", modules?.dnsDomain?.records?.aaaa, { indent: 10, hideIfMissing: true });

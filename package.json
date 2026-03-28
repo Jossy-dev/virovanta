@@ -9,7 +9,7 @@
     "dev:api": "npm run dev:api --prefix server",
     "dev:worker": "npm run dev:worker --prefix server",
     "build": "npm run build --prefix client",
-    "start": "npm run start --prefix server",
+    "start": "npm run start:api --prefix server",
     "start:all": "npm run start:all --prefix server",
     "start:api": "npm run start:api --prefix server",
     "start:worker": "npm run start:worker --prefix server",

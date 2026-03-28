@@ -212,11 +212,20 @@ const resolvedConfig = {
   virusTotalApiKey: envString("VIRUSTOTAL_API_KEY", ""),
   redisUrl,
   redisTls: envBoolean("REDIS_TLS", false),
+  bullmqQueueTopology: envEnum("BULLMQ_QUEUE_TOPOLOGY", ["single", "split"], "single"),
   queueName: envString("QUEUE_NAME", `${serviceName}-scan-jobs`),
   fileQueueName: envString("FILE_QUEUE_NAME", `${serviceName}-file-scan-jobs`),
   linkQueueName: envString("LINK_QUEUE_NAME", `${serviceName}-link-scan-jobs`),
   queueAttempts: envNumber("QUEUE_ATTEMPTS", 3, { min: 1, max: 20 }),
   queueBackoffMs: envNumber("QUEUE_BACKOFF_MS", 2000, { min: 100, max: 120000 }),
+  bullmqWorkerDrainDelaySeconds: envNumber("BULLMQ_WORKER_DRAIN_DELAY_SECONDS", 30, { min: 5, max: 300 }),
+  bullmqWorkerLockDurationMs: envNumber("BULLMQ_WORKER_LOCK_DURATION_MS", 120_000, { min: 30_000, max: 900_000 }),
+  bullmqWorkerStalledIntervalMs: envNumber("BULLMQ_WORKER_STALLED_INTERVAL_MS", 120_000, {
+    min: 30_000,
+    max: 900_000
+  }),
+  bullmqRemoveOnCompleteCount: envNumber("BULLMQ_REMOVE_ON_COMPLETE_COUNT", 10, { min: 1, max: 1000 }),
+  bullmqRemoveOnFailCount: envNumber("BULLMQ_REMOVE_ON_FAIL_COUNT", 50, { min: 1, max: 5000 }),
   objectStorageEndpoint: envString("OBJECT_STORAGE_ENDPOINT", ""),
   objectStorageRegion: envString("OBJECT_STORAGE_REGION", "us-west-000"),
   objectStorageBucket: envString("OBJECT_STORAGE_BUCKET", serviceName),
@@ -304,6 +313,15 @@ function assertRuntimeTopology(runtimeConfig) {
 
   if (runtimeConfig.queueProvider === "local" && !runtimeConfig.runScanWorker) {
     issues.push("RUN_SCAN_WORKER must be true when QUEUE_PROVIDER=local.");
+  }
+
+  if (
+    runtimeConfig.queueProvider === "bullmq" &&
+    runtimeConfig.runScanWorker &&
+    runtimeConfig.bullmqQueueTopology === "single" &&
+    runtimeConfig.scanWorkerMode !== "all"
+  ) {
+    issues.push("SCAN_WORKER_MODE=file|link requires BULLMQ_QUEUE_TOPOLOGY=split. Single BullMQ topology uses one shared worker.");
   }
 
   if (

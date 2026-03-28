@@ -3,6 +3,7 @@ import fs from "fs/promises";
 import path from "path";
 import { Queue, Worker } from "bullmq";
 import { createRedisClient } from "../infrastructure/redis/createRedisClient.js";
+import { normalizeWebsiteSafetyReport } from "../scanner/websiteSafetyScanner.js";
 import { HttpError } from "../utils/httpError.js";
 import { signReport, verifySignedReport } from "../utils/reportIntegrity.js";
 import { enrichReportThreatIntel } from "../utils/threatIntel.js";
@@ -125,6 +126,19 @@ function normalizeSourceType(value) {
   return "file";
 }
 
+function stripReportSignature(report) {
+  const cloned = structuredClone(report || {});
+  if (cloned && typeof cloned === "object") {
+    delete cloned.signature;
+  }
+
+  return cloned;
+}
+
+function reportPayloadFingerprint(report) {
+  return JSON.stringify(stripReportSignature(report));
+}
+
 const ANALYTICS_WINDOW_DAYS = 30;
 const ANALYTICS_MONTH_BUCKETS = 6;
 const DEFAULT_QUEUE_ENQUEUE_TIMEOUT_MS = 12_000;
@@ -141,6 +155,62 @@ function resolveQueueServiceMode(config) {
   }
 
   return "worker";
+}
+
+function resolveBullQueueTopology(config) {
+  return config.bullmqQueueTopology === "split" ? "split" : "single";
+}
+
+function resolveBullQueueNames(config) {
+  const sharedQueueName = config.queueName;
+  const fileQueueName = config.fileQueueName || sharedQueueName;
+  const linkQueueName = config.linkQueueName || `${config.queueName}-link`;
+
+  if (resolveBullQueueTopology(config) === "split") {
+    return {
+      topology: "split",
+      shared: sharedQueueName,
+      file: fileQueueName,
+      link: linkQueueName
+    };
+  }
+
+  return {
+    topology: "single",
+    shared: sharedQueueName,
+    file: sharedQueueName,
+    link: sharedQueueName
+  };
+}
+
+function buildBullKeepJobs(count) {
+  return {
+    count: Math.max(1, Number(count) || 1)
+  };
+}
+
+function buildBullDefaultJobOptions(config) {
+  return {
+    attempts: config.queueAttempts,
+    backoff: {
+      type: "exponential",
+      delay: config.queueBackoffMs
+    },
+    removeOnComplete: buildBullKeepJobs(config.bullmqRemoveOnCompleteCount),
+    removeOnFail: buildBullKeepJobs(config.bullmqRemoveOnFailCount)
+  };
+}
+
+function buildBullWorkerOptions(config, connection) {
+  return {
+    connection,
+    concurrency: config.scanWorkerConcurrency,
+    drainDelay: config.bullmqWorkerDrainDelaySeconds,
+    lockDuration: config.bullmqWorkerLockDurationMs,
+    stalledInterval: config.bullmqWorkerStalledIntervalMs,
+    removeOnComplete: buildBullKeepJobs(config.bullmqRemoveOnCompleteCount),
+    removeOnFail: buildBullKeepJobs(config.bullmqRemoveOnFailCount)
+  };
 }
 
 function serializeOperationalError(error, component = "queue") {
@@ -472,8 +542,10 @@ export class ScanQueueService {
   }
 
   getOperationalStatus() {
-    const runFileWorker = this.config.scanWorkerMode === "all" || this.config.scanWorkerMode === "file";
-    const runLinkWorker = this.config.scanWorkerMode === "all" || this.config.scanWorkerMode === "link";
+    const bullQueueNames = resolveBullQueueNames(this.config);
+    const splitBullTopology = bullQueueNames.topology === "split";
+    const runFileWorker = this.config.runScanWorker && (!splitBullTopology || this.config.scanWorkerMode === "all" || this.config.scanWorkerMode === "file");
+    const runLinkWorker = this.config.runScanWorker && (!splitBullTopology || this.config.scanWorkerMode === "all" || this.config.scanWorkerMode === "link");
     const queueReady =
       this.config.queueProvider === "local"
         ? this.runtimeState.ready
@@ -490,12 +562,14 @@ export class ScanQueueService {
       ready,
       provider: this.config.queueProvider,
       mode: resolveQueueServiceMode(this.config),
+      topology: this.config.queueProvider === "bullmq" ? bullQueueNames.topology : "local",
       apiEnabled: this.config.runApiServer,
       workerEnabled: this.config.runScanWorker,
       workerMode: this.config.scanWorkerMode,
       queueNames: {
-        file: this.config.fileQueueName || this.config.queueName,
-        link: this.config.linkQueueName || `${this.config.queueName}-link`
+        shared: bullQueueNames.shared,
+        file: bullQueueNames.file,
+        link: bullQueueNames.link
       },
       queueConnectionState: this.config.queueProvider === "bullmq" ? this.bullQueueRedis?.status || "uninitialized" : "local",
       workerConnectionState: !this.config.runScanWorker
@@ -577,25 +651,17 @@ export class ScanQueueService {
   async stop() {
     this.started = false;
 
-    if (this.bullFileWorker) {
-      await this.bullFileWorker.close();
-      this.bullFileWorker = null;
+    for (const worker of new Set([this.bullFileWorker, this.bullLinkWorker].filter(Boolean))) {
+      await worker.close();
     }
+    this.bullFileWorker = null;
+    this.bullLinkWorker = null;
 
-    if (this.bullLinkWorker) {
-      await this.bullLinkWorker.close();
-      this.bullLinkWorker = null;
+    for (const queue of new Set([this.bullFileQueue, this.bullLinkQueue].filter(Boolean))) {
+      await queue.close();
     }
-
-    if (this.bullFileQueue) {
-      await this.bullFileQueue.close();
-      this.bullFileQueue = null;
-    }
-
-    if (this.bullLinkQueue) {
-      await this.bullLinkQueue.close();
-      this.bullLinkQueue = null;
-    }
+    this.bullFileQueue = null;
+    this.bullLinkQueue = null;
 
     if (this.bullWorkerRedis) {
       await this.bullWorkerRedis.quit().catch(() => {});
@@ -874,7 +940,7 @@ export class ScanQueueService {
   }
 
   async getReportForUser(reportId, user) {
-    const report = await this.store.findReportById(reportId);
+    const report = await this.#prepareReportForDelivery(await this.store.findReportById(reportId));
 
     if (!report || !isReportVisible(report)) {
       throw new HttpError(404, "Scan report not found.", { code: "SCAN_REPORT_NOT_FOUND" });
@@ -889,7 +955,8 @@ export class ScanQueueService {
 
   async listReportsForUser(user, limit = 20, sourceType = undefined) {
     const reports = await this.store.listReportsForUser(user, limit, sourceType);
-    return reports.map(toReportSummary);
+    const preparedReports = await Promise.all(reports.map((report) => this.#prepareReportForDelivery(report)));
+    return preparedReports.map(toReportSummary);
   }
 
   async getAnalyticsForUser(user) {
@@ -904,7 +971,8 @@ export class ScanQueueService {
   }
 
   async getReportById(reportId, { includeDeleted = false } = {}) {
-    return this.store.findReportById(reportId, { includeDeleted });
+    const report = await this.store.findReportById(reportId, { includeDeleted });
+    return this.#prepareReportForDelivery(report);
   }
 
   async deleteReportForUser(reportId, user) {
@@ -944,10 +1012,43 @@ export class ScanQueueService {
     });
   }
 
+  async #prepareReportForDelivery(report) {
+    if (!report || report.sourceType !== "website") {
+      return report;
+    }
+
+    const normalizedReport = normalizeWebsiteSafetyReport(report);
+    if (reportPayloadFingerprint(normalizedReport) === reportPayloadFingerprint(report)) {
+      return report;
+    }
+
+    const integrity = this.verifyReportIntegrity(report);
+    if (!integrity.valid) {
+      return report;
+    }
+
+    const signedNormalizedReport = signReport(stripReportSignature(normalizedReport), {
+      secret: this.config.reportIntegritySecret,
+      keyId: report?.signature?.keyId || "default"
+    });
+
+    if (typeof this.store.replaceReport === "function") {
+      const persisted = await this.store.replaceReport(signedNormalizedReport);
+      if (persisted) {
+        return persisted;
+      }
+    }
+
+    return signedNormalizedReport;
+  }
+
   async #startBullQueue() {
     if (!this.config.redisUrl) {
       throw new Error("REDIS_URL is required when QUEUE_PROVIDER=bullmq.");
     }
+
+    const bullQueueNames = resolveBullQueueNames(this.config);
+    const splitBullTopology = bullQueueNames.topology === "split";
 
     this.bullQueueRedis = createRedisClient(this.config, {
       purpose: "queue",
@@ -958,17 +1059,27 @@ export class ScanQueueService {
       this.logger.error({ err: error, queue: "redis" }, "BullMQ queue connection error");
     });
 
-    this.bullFileQueue = new Queue(this.config.fileQueueName || this.config.queueName, {
-      connection: this.bullQueueRedis
-    });
+    const bullQueueOptions = {
+      connection: this.bullQueueRedis,
+      defaultJobOptions: buildBullDefaultJobOptions(this.config)
+    };
 
-    this.bullLinkQueue = new Queue(this.config.linkQueueName || `${this.config.queueName}-link`, {
-      connection: this.bullQueueRedis
-    });
+    if (splitBullTopology) {
+      this.bullFileQueue = new Queue(bullQueueNames.file, bullQueueOptions);
+      this.bullLinkQueue = new Queue(bullQueueNames.link, bullQueueOptions);
+    } else {
+      this.bullFileQueue = new Queue(bullQueueNames.shared, bullQueueOptions);
+      this.bullLinkQueue = this.bullFileQueue;
+    }
 
     if (!this.config.runScanWorker) {
       this.logger.info(
-        { fileQueueName: this.config.fileQueueName, linkQueueName: this.config.linkQueueName },
+        {
+          topology: bullQueueNames.topology,
+          queueName: bullQueueNames.shared,
+          fileQueueName: bullQueueNames.file,
+          linkQueueName: bullQueueNames.link
+        },
         "Scan queues initialized in API-only mode."
       );
       return;
@@ -989,61 +1100,59 @@ export class ScanQueueService {
       this.logger.error({ err: error, queue: "worker-redis" }, "BullMQ worker connection error");
     });
 
-    const runFileWorker = this.config.scanWorkerMode === "all" || this.config.scanWorkerMode === "file";
-    const runLinkWorker = this.config.scanWorkerMode === "all" || this.config.scanWorkerMode === "link";
+    const createBullWorker = (queueName, queueLabel) => {
+      const worker = new Worker(
+        queueName,
+        async (job) => {
+          await this.#processQueueItem(job.data);
+        },
+        buildBullWorkerOptions(this.config, this.bullWorkerRedis)
+      );
+
+      worker.on("failed", (job, error) => {
+        this.logger.error({ err: error, bullJobId: job?.id, queue: queueLabel }, `BullMQ ${queueLabel} worker job failed`);
+      });
+      worker.on("error", (error) => {
+        this.markOperationalDegraded(error, "worker");
+        this.logger.error({ err: error, queue: queueLabel }, `BullMQ ${queueLabel} worker error`);
+      });
+
+      return worker;
+    };
+
+    const runFileWorker = !splitBullTopology || this.config.scanWorkerMode === "all" || this.config.scanWorkerMode === "file";
+    const runLinkWorker = !splitBullTopology || this.config.scanWorkerMode === "all" || this.config.scanWorkerMode === "link";
 
     if (!runFileWorker && !runLinkWorker) {
       throw new Error("SCAN_WORKER_MODE must be one of all, file, or link.");
     }
 
-    if (runFileWorker) {
-      this.bullFileWorker = new Worker(
-        this.config.fileQueueName || this.config.queueName,
-        async (job) => {
-          await this.#processQueueItem(job.data);
-        },
-        {
-          connection: this.bullWorkerRedis,
-          concurrency: this.config.scanWorkerConcurrency
-        }
-      );
+    if (splitBullTopology) {
+      if (runFileWorker) {
+        this.bullFileWorker = createBullWorker(bullQueueNames.file, "file");
+      }
 
-      this.bullFileWorker.on("failed", (job, error) => {
-        this.logger.error({ err: error, bullJobId: job?.id, queue: "file" }, "BullMQ file worker job failed");
-      });
-      this.bullFileWorker.on("error", (error) => {
-        this.markOperationalDegraded(error, "worker");
-        this.logger.error({ err: error, queue: "file" }, "BullMQ file worker error");
-      });
-    }
-
-    if (runLinkWorker) {
-      this.bullLinkWorker = new Worker(
-        this.config.linkQueueName || `${this.config.queueName}-link`,
-        async (job) => {
-          await this.#processQueueItem(job.data);
-        },
-        {
-          connection: this.bullWorkerRedis,
-          concurrency: this.config.scanWorkerConcurrency
-        }
-      );
-
-      this.bullLinkWorker.on("failed", (job, error) => {
-        this.logger.error({ err: error, bullJobId: job?.id, queue: "link" }, "BullMQ link worker job failed");
-      });
-      this.bullLinkWorker.on("error", (error) => {
-        this.markOperationalDegraded(error, "worker");
-        this.logger.error({ err: error, queue: "link" }, "BullMQ link worker error");
-      });
+      if (runLinkWorker) {
+        this.bullLinkWorker = createBullWorker(bullQueueNames.link, "link");
+      }
+    } else {
+      this.bullFileWorker = createBullWorker(bullQueueNames.shared, "shared");
+      this.bullLinkWorker = this.bullFileWorker;
     }
 
     this.logger.info(
       {
-        fileQueueName: this.config.fileQueueName || this.config.queueName,
-        linkQueueName: this.config.linkQueueName || `${this.config.queueName}-link`,
+        topology: bullQueueNames.topology,
+        queueName: bullQueueNames.shared,
+        fileQueueName: bullQueueNames.file,
+        linkQueueName: bullQueueNames.link,
         concurrency: this.config.scanWorkerConcurrency,
-        scanWorkerMode: this.config.scanWorkerMode
+        scanWorkerMode: this.config.scanWorkerMode,
+        drainDelaySeconds: this.config.bullmqWorkerDrainDelaySeconds,
+        lockDurationMs: this.config.bullmqWorkerLockDurationMs,
+        stalledIntervalMs: this.config.bullmqWorkerStalledIntervalMs,
+        removeOnCompleteCount: this.config.bullmqRemoveOnCompleteCount,
+        removeOnFailCount: this.config.bullmqRemoveOnFailCount
       },
       "BullMQ workers started."
     );
@@ -1058,14 +1167,7 @@ export class ScanQueueService {
 
     const jobName = sourceType === "url" ? "link_scan" : sourceType === "website" ? "website_safety_scan" : "file_scan";
     await queue.add(jobName, item, {
-      jobId: item.jobId,
-      attempts: this.config.queueAttempts,
-      backoff: {
-        type: "exponential",
-        delay: this.config.queueBackoffMs
-      },
-      removeOnComplete: 500,
-      removeOnFail: 1000
+      jobId: item.jobId
     });
   }
 

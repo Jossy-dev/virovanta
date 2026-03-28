@@ -86,8 +86,8 @@ describe("core workflow smoke coverage", () => {
 
     expect(analytics.status).toBe(200);
     expect(analytics.body.analytics.summary.totalReports).toBe(3);
-    expect(analytics.body.analytics.summary.cleanReports).toBe(2);
-    expect(analytics.body.analytics.summary.suspiciousReports).toBe(1);
+    expect(analytics.body.analytics.summary.cleanReports).toBe(3);
+    expect(analytics.body.analytics.summary.suspiciousReports).toBe(0);
     expect(analytics.body.analytics.summary.maliciousReports).toBe(0);
   });
 });

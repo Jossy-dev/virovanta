@@ -70,6 +70,22 @@ describe("runtime modes and readiness", () => {
     ).rejects.toThrow(/Redis is reserved for BullMQ scan queue traffic only/i);
   });
 
+  it("rejects dedicated BullMQ worker modes unless split topology is enabled", async () => {
+    await expect(
+      setupTestApp({
+        configOverrides: {
+          queueProvider: "bullmq",
+          redisUrl: "redis://localhost:6379",
+          objectStorageProvider: "s3",
+          runApiServer: false,
+          runScanWorker: true,
+          scanWorkerMode: "file",
+          bullmqQueueTopology: "single"
+        }
+      })
+    ).rejects.toThrow(/BULLMQ_QUEUE_TOPOLOGY=split/i);
+  });
+
   it("includes runtime details in admin metrics for operational monitoring", async () => {
     const app = await setupTestApp();
     const admin = await registerAndGetToken(app, "admin-monitor@example.com", "StrongPass!123", "admin");

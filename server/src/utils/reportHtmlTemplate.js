@@ -75,6 +75,35 @@ function asTextList(value) {
     .join(", ");
 }
 
+function pluralize(count, singular) {
+  return `${count} ${singular}${count === 1 ? "" : "s"}`;
+}
+
+function formatDomainAge(value, { includeDays = false } = {}) {
+  const ageDays = Number(value);
+  if (!Number.isFinite(ageDays) || ageDays < 0) {
+    return "Not collected";
+  }
+
+  const totalDays = Math.max(0, Math.round(ageDays));
+  if (totalDays < 45) {
+    return pluralize(totalDays, "day");
+  }
+
+  const totalMonths = Math.max(1, Math.floor(totalDays / 30.4375));
+  if (totalDays < 548) {
+    const monthLabel = pluralize(totalMonths, "month");
+    return includeDays ? `${monthLabel} (${pluralize(totalDays, "day")})` : monthLabel;
+  }
+
+  const totalYears = Math.max(1, Math.floor(totalDays / 365.25));
+  const remainingDays = totalDays - Math.floor(totalYears * 365.25);
+  const remainingMonths = Math.max(0, Math.floor(remainingDays / 30.4375));
+  const yearLabel = pluralize(totalYears, "year");
+  const ageLabel = remainingMonths > 0 ? `${yearLabel}, ${pluralize(remainingMonths, "month")}` : yearLabel;
+  return includeDays ? `${ageLabel} (${pluralize(totalDays, "day")})` : ageLabel;
+}
+
 function toneForVerdict(verdict) {
   const normalized = String(verdict || "").toLowerCase();
   if (normalized === "safe" || normalized === "clean") {
@@ -130,7 +159,7 @@ function buildScoreBreakdown(report) {
   const headerMissing = asArray(headers?.missing).length;
   const headersScore = Math.max(0, 20 - headerMissing * 4);
 
-  const ageDays = Number(dns?.ageDays);
+  const ageDays = typeof dns?.ageDays === "number" ? dns.ageDays : Number.NaN;
   const domainScore = Number.isFinite(ageDays) && ageDays >= 0 ? (ageDays < 30 ? 4 : ageDays < 90 ? 9 : 15) : 10;
 
   const flaggedProviders = asArray(reputation?.flaggedProviders).length;
@@ -500,10 +529,15 @@ function mainReportPages({ report, scoreBreakdown, logoDataUri }) {
     subtitle: "Registration, DNS, and hosting intelligence",
     body: `
       <div class="kv-grid">
-        ${HeaderRow({ label: "Domain age (days)", value: modules?.dnsDomain?.ageDays ?? "Not collected" })}
+        ${HeaderRow({ label: "Domain age", value: formatDomainAge(modules?.dnsDomain?.ageDays, { includeDays: true }) })}
+        ${HeaderRow({ label: "RDAP lookup domain", value: modules?.dnsDomain?.rdap?.domain || modules?.dnsDomain?.rdap?.payloadDomain || "Not collected" })}
+        ${HeaderRow({ label: "Registration evidence", value: modules?.dnsDomain?.rdap?.registrationEvidence || "Not collected" })}
         ${HeaderRow({ label: "Registrar", value: modules?.dnsDomain?.registrar || "Not collected" })}
         ${HeaderRow({ label: "Registered", value: formatDateTime(modules?.dnsDomain?.registeredAt) })}
         ${HeaderRow({ label: "Expires", value: formatDateTime(modules?.dnsDomain?.expiresAt) })}
+        ${HeaderRow({ label: "DNSSEC signed", value: modules?.dnsDomain?.rdap?.dnssecSigned == null ? "Not collected" : modules?.dnsDomain?.rdap?.dnssecSigned ? "Yes" : "No" })}
+        ${HeaderRow({ label: "RDAP abuse email", value: modules?.dnsDomain?.rdap?.abuseEmail || "Not collected" })}
+        ${HeaderRow({ label: "RDAP domain status", value: asTextList(modules?.dnsDomain?.rdap?.domainStatus) })}
         ${HeaderRow({ label: "Primary IP", value: modules?.ipHosting?.primaryIp || "Not collected" })}
         ${HeaderRow({ label: "ASN", value: modules?.ipHosting?.asn || "Not collected" })}
         ${HeaderRow({ label: "Hosting org", value: modules?.ipHosting?.organization || "Not collected" })}

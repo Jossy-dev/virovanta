@@ -108,6 +108,27 @@ const RDAP_FALLBACK_ENDPOINTS = Object.freeze({
   net: "https://rdap.verisign.com/net/v1/domain",
   org: "https://rdap.publicinterestregistry.org/rdap/domain"
 });
+const IANA_RDAP_BOOTSTRAP_URL = "https://data.iana.org/rdap/dns.json";
+const RDAP_BOOTSTRAP_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
+const RDAP_LOOKUP_REDIRECT_LIMIT = 2;
+const KNOWN_MULTI_LABEL_PUBLIC_SUFFIXES = new Set([
+  "ac.uk",
+  "co.il",
+  "co.in",
+  "co.jp",
+  "co.kr",
+  "co.nz",
+  "co.uk",
+  "com.au",
+  "com.br",
+  "com.mx",
+  "com.sg",
+  "com.tr",
+  "gov.uk",
+  "net.au",
+  "org.au",
+  "org.uk"
+]);
 
 const IPV4_RESERVED_RANGES = [
   [ipV4ToNumber("0.0.0.0"), ipV4ToNumber("0.255.255.255")],
@@ -124,6 +145,11 @@ const IPV4_RESERVED_RANGES = [
   [ipV4ToNumber("203.0.113.0"), ipV4ToNumber("203.0.113.255")],
   [ipV4ToNumber("224.0.0.0"), ipV4ToNumber("255.255.255.255")]
 ];
+const rdapBootstrapCache = {
+  loadedAt: 0,
+  services: [],
+  pending: null
+};
 
 function ipV4ToNumber(address) {
   return address.split(".").reduce((value, octet) => (value << 8) + Number(octet), 0) >>> 0;
@@ -280,19 +306,317 @@ async function safeJsonResponse(response) {
   }
 }
 
-function resolveRdapEndpoints(hostname) {
-  const normalized = String(hostname || "")
+function normalizeLookupHostname(hostname) {
+  return String(hostname || "")
     .trim()
     .toLowerCase()
     .replace(/\.+$/, "");
+}
+
+function normalizeRdapBaseUrl(url) {
+  const normalized = String(url || "").trim();
+  if (!/^https?:\/\//i.test(normalized)) {
+    return null;
+  }
+
+  return normalized.replace(/\/+$/, "");
+}
+
+function buildRdapLookupUrl(baseUrl, hostname) {
+  const normalizedBaseUrl = normalizeRdapBaseUrl(baseUrl);
+  const normalizedHostname = normalizeLookupHostname(hostname);
+  if (!normalizedBaseUrl || !normalizedHostname) {
+    return null;
+  }
+
+  const hasDomainPath = /\/domain$/i.test(normalizedBaseUrl);
+  return `${normalizedBaseUrl}${hasDomainPath ? "" : "/domain"}/${encodeURIComponent(normalizedHostname)}`;
+}
+
+function parseRdapBootstrapServices(payload) {
+  if (!Array.isArray(payload?.services)) {
+    return [];
+  }
+
+  return payload.services
+    .map((entry) => {
+      const suffixes = Array.isArray(entry?.[0]) ? entry[0].map(normalizeLookupHostname).filter(Boolean) : [];
+      const baseUrls = Array.isArray(entry?.[1]) ? entry[1].map(normalizeRdapBaseUrl).filter(Boolean) : [];
+
+      if (suffixes.length === 0 || baseUrls.length === 0) {
+        return null;
+      }
+
+      return {
+        suffixes,
+        baseUrls
+      };
+    })
+    .filter(Boolean);
+}
+
+async function getRdapBootstrapServices(timeoutMs) {
+  const cacheIsFresh =
+    Array.isArray(rdapBootstrapCache.services) &&
+    rdapBootstrapCache.services.length > 0 &&
+    Date.now() - rdapBootstrapCache.loadedAt < RDAP_BOOTSTRAP_CACHE_TTL_MS;
+  if (cacheIsFresh) {
+    return rdapBootstrapCache.services;
+  }
+
+  if (rdapBootstrapCache.pending) {
+    return rdapBootstrapCache.pending;
+  }
+
+  rdapBootstrapCache.pending = (async () => {
+    const timeoutHandle = withTimeoutSignal(Math.min(Number(timeoutMs) || DEFAULT_SCAN_TIMEOUT_MS, 6_000));
+    const staleServices = Array.isArray(rdapBootstrapCache.services) ? rdapBootstrapCache.services : [];
+
+    try {
+      const response = await fetch(IANA_RDAP_BOOTSTRAP_URL, {
+        method: "GET",
+        headers: {
+          accept: "application/json"
+        },
+        signal: timeoutHandle.signal
+      });
+
+      if (!response.ok) {
+        return staleServices;
+      }
+
+      const payload = await safeJsonResponse(response);
+      const services = parseRdapBootstrapServices(payload);
+      if (services.length === 0) {
+        return staleServices;
+      }
+
+      rdapBootstrapCache.loadedAt = Date.now();
+      rdapBootstrapCache.services = services;
+      return services;
+    } catch {
+      return staleServices;
+    } finally {
+      timeoutHandle.clear();
+      rdapBootstrapCache.pending = null;
+    }
+  })();
+
+  return rdapBootstrapCache.pending;
+}
+
+function buildHostnameSuffixCandidates(hostname) {
+  const normalized = normalizeLookupHostname(hostname);
+  const labels = normalized.split(".").filter(Boolean);
+  const suffixes = [];
+
+  for (let index = 0; index < labels.length; index += 1) {
+    suffixes.push(labels.slice(index).join("."));
+  }
+
+  return suffixes;
+}
+
+function resolveBootstrapRdapBaseUrls(hostname, services = []) {
+  const suffixCandidates = buildHostnameSuffixCandidates(hostname);
+  for (const candidate of suffixCandidates) {
+    const matchingService = services.find((service) => Array.isArray(service?.suffixes) && service.suffixes.includes(candidate));
+    if (matchingService?.baseUrls?.length) {
+      return matchingService.baseUrls;
+    }
+  }
+
+  return [];
+}
+
+async function resolveRdapEndpoints(hostname, timeoutMs) {
+  const normalized = normalizeLookupHostname(hostname);
+  if (!normalized) {
+    return [];
+  }
+
   const labels = normalized.split(".");
   const tld = labels[labels.length - 1] || "";
   const fallbackEndpoint = RDAP_FALLBACK_ENDPOINTS[tld];
+  const bootstrapServices = await getRdapBootstrapServices(timeoutMs);
+  const bootstrapBaseUrls = resolveBootstrapRdapBaseUrls(normalized, bootstrapServices);
 
   return [
+    ...bootstrapBaseUrls.map((baseUrl) => buildRdapLookupUrl(baseUrl, normalized)),
     `https://rdap.org/domain/${encodeURIComponent(normalized)}`,
     fallbackEndpoint ? `${fallbackEndpoint}/${encodeURIComponent(normalized)}` : null
-  ].filter(Boolean);
+  ].filter((value, index, items) => Boolean(value) && items.indexOf(value) === index);
+}
+
+async function fetchRdapPayload(endpoint, timeoutMs) {
+  const timeoutHandle = withTimeoutSignal(timeoutMs);
+  const redirects = [];
+  let currentEndpoint = endpoint;
+
+  try {
+    for (let attempt = 0; attempt <= RDAP_LOOKUP_REDIRECT_LIMIT; attempt += 1) {
+      const response = await fetch(currentEndpoint, {
+        method: "GET",
+        redirect: "manual",
+        headers: {
+          accept: "application/rdap+json,application/json"
+        },
+        signal: timeoutHandle.signal
+      });
+
+      const location = response.headers.get("location");
+      const isRedirect = Number(response.status) >= 300 && Number(response.status) < 400 && Boolean(location);
+      if (isRedirect) {
+        if (attempt === RDAP_LOOKUP_REDIRECT_LIMIT) {
+          return {
+            ok: false,
+            status: "redirect_limit_exceeded",
+            finalUrl: currentEndpoint,
+            redirects
+          };
+        }
+
+        let nextEndpoint = null;
+        try {
+          nextEndpoint = new URL(location, currentEndpoint).toString();
+        } catch {
+          return {
+            ok: false,
+            status: "invalid_redirect_url",
+            finalUrl: currentEndpoint,
+            redirects
+          };
+        }
+
+        redirects.push({
+          from: currentEndpoint,
+          to: nextEndpoint,
+          statusCode: Number(response.status) || 0
+        });
+        currentEndpoint = nextEndpoint;
+        continue;
+      }
+
+      if (!response.ok) {
+        return {
+          ok: false,
+          status: `http_${response.status}`,
+          finalUrl: currentEndpoint,
+          redirects
+        };
+      }
+
+      const payload = await safeJsonResponse(response);
+      if (!payload || typeof payload !== "object") {
+        return {
+          ok: false,
+          status: "invalid_payload",
+          finalUrl: currentEndpoint,
+          redirects
+        };
+      }
+
+      return {
+        ok: true,
+        payload,
+        finalUrl: currentEndpoint,
+        redirects
+      };
+    }
+
+    return {
+      ok: false,
+      status: "redirect_limit_exceeded",
+      finalUrl: currentEndpoint,
+      redirects
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      status: error?.name === "AbortError" ? "timeout" : "request_failed",
+      finalUrl: currentEndpoint,
+      redirects
+    };
+  } finally {
+    timeoutHandle.clear();
+  }
+}
+
+export function buildRdapLookupCandidates(hostname) {
+  const normalized = normalizeLookupHostname(hostname);
+  if (!normalized) {
+    return [];
+  }
+
+  const labels = normalized.split(".").filter(Boolean);
+  if (labels.length <= 2) {
+    return [normalized];
+  }
+
+  const publicSuffix = labels.slice(-2).join(".");
+  const registrableDomainSize = KNOWN_MULTI_LABEL_PUBLIC_SUFFIXES.has(publicSuffix) ? 3 : 2;
+  const estimatedRegistrableDomain =
+    labels.length >= registrableDomainSize ? labels.slice(-registrableDomainSize).join(".") : normalized;
+  const candidates = [];
+
+  for (const candidate of [estimatedRegistrableDomain, normalized]) {
+    if (candidate && candidate.split(".").length >= 2 && !candidates.includes(candidate)) {
+      candidates.push(candidate);
+    }
+  }
+
+  for (let index = 1; index <= labels.length - 2; index += 1) {
+    const candidate = labels.slice(index).join(".");
+    if (candidate.split(".").length < 2 || candidates.includes(candidate)) {
+      continue;
+    }
+
+    candidates.push(candidate);
+  }
+
+  return candidates.length > 0 ? candidates : [normalized];
+}
+
+function resolveRegistrarName(registrar) {
+  return (
+    registrar?.vcardArray?.[1]?.find((entry) => Array.isArray(entry) && entry[0] === "fn")?.[3] ||
+    (Array.isArray(registrar?.publicIds) ? registrar.publicIds.map((entry) => entry?.identifier).find(Boolean) : null) ||
+    null
+  );
+}
+
+function extractVcardField(entity, fieldName) {
+  const vcardEntries = Array.isArray(entity?.vcardArray?.[1]) ? entity.vcardArray[1] : [];
+  const matchingEntry = vcardEntries.find((entry) => Array.isArray(entry) && String(entry[0] || "").toLowerCase() === String(fieldName || "").toLowerCase());
+  return matchingEntry?.[3] ? String(matchingEntry[3]).trim() : null;
+}
+
+export function extractRdapMetadata(rdap, queriedDomain = "") {
+  const entities = Array.isArray(rdap?.entities) ? rdap.entities : [];
+  const registrar = Array.isArray(rdap?.entities)
+    ? rdap.entities.find((entity) => Array.isArray(entity?.roles) && entity.roles.includes("registrar"))
+    : null;
+  const abuseContact = entities.find((entity) => Array.isArray(entity?.roles) && entity.roles.includes("abuse")) || null;
+  const rdapNameservers = Array.isArray(rdap?.nameservers)
+    ? rdap.nameservers.map((entry) => entry?.ldhName || entry?.unicodeName).filter(Boolean)
+    : [];
+  const registeredAt = parseRdapEventDate(rdap?.events, ["registration", "created"]) || null;
+  const expiresAt = parseRdapEventDate(rdap?.events, ["expiration", "expiry"]) || null;
+  const domainStatus = Array.isArray(rdap?.status) ? rdap.status.map((entry) => String(entry || "").trim()).filter(Boolean) : [];
+
+  return {
+    queriedDomain: normalizeLookupHostname(queriedDomain),
+    payloadDomain: normalizeLookupHostname(rdap?.ldhName || rdap?.unicodeName || queriedDomain),
+    registeredAt,
+    expiresAt,
+    registrarName: resolveRegistrarName(registrar),
+    nameservers: rdapNameservers,
+    whoisPrivacyLikely: JSON.stringify(rdap || {}).toLowerCase().includes("redacted"),
+    registrationEvidence: registeredAt ? "explicit_rdap_event" : "unverified",
+    domainStatus,
+    dnssecSigned: Boolean(rdap?.secureDNS?.delegationSigned),
+    abuseEmail: extractVcardField(abuseContact, "email")
+  };
 }
 
 function hashText(value) {
@@ -722,74 +1046,74 @@ async function analyzeDnsAndDomain(hostname, runtimeConfig) {
 
   let rdap = null;
   let rdapSource = null;
+  let rdapSelectedDomain = null;
+  let rdapMetadata = null;
   const rdapAttempts = [];
+  let fallbackRdapResult = null;
 
-  for (const endpoint of resolveRdapEndpoints(hostname)) {
-    const timeoutHandle = withTimeoutSignal(timeoutMs);
-    try {
-      const rdapResponse = await fetch(endpoint, {
-        method: "GET",
-        headers: {
-          accept: "application/rdap+json,application/json"
-        },
-        signal: timeoutHandle.signal
-      });
-
-      if (!rdapResponse.ok) {
+  rdapLookup:
+  for (const candidateDomain of buildRdapLookupCandidates(hostname)) {
+    const endpoints = await resolveRdapEndpoints(candidateDomain, timeoutMs);
+    for (const endpoint of endpoints) {
+      const rdapResult = await fetchRdapPayload(endpoint, timeoutMs);
+      if (!rdapResult.ok) {
         rdapAttempts.push({
+          domain: candidateDomain,
           endpoint,
-          status: `http_${rdapResponse.status}`
+          finalUrl: rdapResult.finalUrl || endpoint,
+          status: rdapResult.status,
+          redirectCount: Array.isArray(rdapResult.redirects) ? rdapResult.redirects.length : 0
         });
         continue;
       }
 
-      const payload = await safeJsonResponse(rdapResponse);
-      if (!payload || typeof payload !== "object") {
-        rdapAttempts.push({
-          endpoint,
-          status: "invalid_payload"
-        });
-        continue;
+      const payload = rdapResult.payload;
+      const metadata = extractRdapMetadata(payload, candidateDomain);
+      rdapAttempts.push({
+        domain: candidateDomain,
+        endpoint,
+        finalUrl: rdapResult.finalUrl || endpoint,
+        status: "ok",
+        redirectCount: Array.isArray(rdapResult.redirects) ? rdapResult.redirects.length : 0,
+        registrationEvidence: metadata.registrationEvidence
+      });
+
+      if (!fallbackRdapResult) {
+        fallbackRdapResult = {
+          payload,
+          source: rdapResult.finalUrl || endpoint,
+          selectedDomain: candidateDomain,
+          metadata
+        };
       }
 
-      rdap = payload;
-      rdapSource = endpoint;
-      rdapAttempts.push({
-        endpoint,
-        status: "ok"
-      });
-      break;
-    } catch (error) {
-      rdapAttempts.push({
-        endpoint,
-        status: error?.name === "AbortError" ? "timeout" : "request_failed"
-      });
-    } finally {
-      timeoutHandle.clear();
+      if (metadata.registeredAt) {
+        rdap = payload;
+        rdapSource = rdapResult.finalUrl || endpoint;
+        rdapSelectedDomain = candidateDomain;
+        rdapMetadata = metadata;
+        break rdapLookup;
+      }
     }
   }
 
-  const registeredAt =
-    parseRdapEventDate(rdap?.events, ["registration", "created"]) ||
-    safeParseDate(rdap?.events?.[0]?.eventDate) ||
-    null;
-  const expiresAt = parseRdapEventDate(rdap?.events, ["expiration", "expiry"]) || null;
-  const registrar = Array.isArray(rdap?.entities)
-    ? rdap.entities.find((entity) => Array.isArray(entity?.roles) && entity.roles.includes("registrar"))
-    : null;
+  if (!rdap && fallbackRdapResult) {
+    rdap = fallbackRdapResult.payload;
+    rdapSource = fallbackRdapResult.source;
+    rdapSelectedDomain = fallbackRdapResult.selectedDomain;
+    rdapMetadata = fallbackRdapResult.metadata;
+  }
 
-  const registrarName = (
-    registrar?.vcardArray?.[1]?.find((entry) => Array.isArray(entry) && entry[0] === "fn")?.[3] ||
-    (Array.isArray(registrar?.publicIds) ? registrar.publicIds.map((entry) => entry?.identifier).find(Boolean) : null) ||
-    null
-  );
-  const rdapNameservers = Array.isArray(rdap?.nameservers)
-    ? rdap.nameservers.map((entry) => entry?.ldhName || entry?.unicodeName).filter(Boolean)
-    : [];
+  const registeredAt = rdapMetadata?.registeredAt || null;
+  const expiresAt = rdapMetadata?.expiresAt || null;
+  const registrarName = rdapMetadata?.registrarName || null;
+  const rdapNameservers = Array.isArray(rdapMetadata?.nameservers) ? rdapMetadata.nameservers : [];
   const nameservers = rdapNameservers.length > 0 ? rdapNameservers : ns;
 
-  const ageDays = Number.isFinite(Date.parse(registeredAt || "")) ? Math.floor((Date.now() - Date.parse(registeredAt)) / (24 * 60 * 60 * 1000)) : null;
-  const hasRedactedRegistrant = JSON.stringify(rdap || {}).toLowerCase().includes("redacted");
+  const ageDays = Number.isFinite(Date.parse(registeredAt || ""))
+    ? Math.floor((Date.now() - Date.parse(registeredAt)) / (24 * 60 * 60 * 1000))
+    : null;
+  const hasRedactedRegistrant = Boolean(rdapMetadata?.whoisPrivacyLikely);
 
   return {
     status: "completed",
@@ -817,6 +1141,12 @@ async function analyzeDnsAndDomain(hostname, runtimeConfig) {
     ageDays: Number.isFinite(ageDays) ? ageDays : null,
     whoisPrivacyLikely: hasRedactedRegistrant,
     rdap: {
+      domain: rdapSelectedDomain,
+      payloadDomain: rdapMetadata?.payloadDomain || null,
+      registrationEvidence: rdapMetadata?.registrationEvidence || "unknown",
+      domainStatus: Array.isArray(rdapMetadata?.domainStatus) ? rdapMetadata.domainStatus.slice(0, 10) : [],
+      dnssecSigned: typeof rdapMetadata?.dnssecSigned === "boolean" ? rdapMetadata.dnssecSigned : null,
+      abuseEmail: rdapMetadata?.abuseEmail || null,
       source: rdapSource,
       attempts: rdapAttempts
     },
@@ -1166,6 +1496,149 @@ function analyzeRedirects(redirects = []) {
   };
 }
 
+function parseProbePathname(value) {
+  try {
+    const parsed = new URL(value, "https://scanner.invalid");
+    return parsed.pathname.toLowerCase();
+  } catch {
+    return String(value || "")
+      .trim()
+      .toLowerCase();
+  }
+}
+
+function isLikelyHtmlResponse({ contentType, bodySnippet }) {
+  const normalizedContentType = String(contentType || "").toLowerCase();
+  if (normalizedContentType.includes("text/html") || normalizedContentType.includes("application/xhtml+xml")) {
+    return true;
+  }
+
+  const snippet = String(bodySnippet || "").slice(0, 1_500).toLowerCase();
+  return snippet.includes("<html") || snippet.includes("<body") || snippet.includes("<!doctype html");
+}
+
+function formatProbeEvidenceSummary(pathname, response) {
+  const location = String(response?.location || "").trim();
+  if (location) {
+    return `${pathname} -> ${location}`;
+  }
+
+  return pathname;
+}
+
+function assessDangerousProbe(probePathName, response) {
+  const pathname = parseProbePathname(probePathName);
+  const status = Number(response?.status) || 0;
+  const contentType = String(response?.contentType || "").trim();
+  const contentDisposition = String(response?.headers?.["content-disposition"] || "").trim();
+  const snippet = String(response?.bodySnippet || "");
+  const lowerSnippet = snippet.toLowerCase();
+  const likelyHtml = isLikelyHtmlResponse({
+    contentType,
+    bodySnippet: snippet
+  });
+
+  let confirmed = false;
+  let evidenceType = null;
+  let evidenceSummary = "";
+
+  if (status === 200) {
+    switch (pathname) {
+      case "/.env": {
+        const envAssignments = snippet.match(/(?:^|\n)\s*[A-Z][A-Z0-9_]{1,48}\s*=\s*.+/gm) || [];
+        const secretMarkers = /(?:secret|token|password|passwd|api[_-]?key|access[_-]?key|client[_-]?secret|database_url|redis_url|supabase|postgres|mysql|smtp)/i.test(
+          snippet
+        );
+        if (!likelyHtml && (envAssignments.length >= 2 || secretMarkers)) {
+          confirmed = true;
+          evidenceType = "dotenv";
+          evidenceSummary = envAssignments.slice(0, 3).join(", ") || "Environment-style key/value pairs detected";
+        }
+        break;
+      }
+      case "/.git/config":
+        if (!likelyHtml && /\[(?:core|remote|branch)\]/i.test(snippet)) {
+          confirmed = true;
+          evidenceType = "git_config";
+          evidenceSummary = "[core] / [remote] sections detected";
+        }
+        break;
+      case "/config.php":
+        if (!likelyHtml && /<\?php|define\s*\(\s*['"]DB_|(?:db_(?:host|name|user|pass|password)|database_(?:host|name|user|pass|password))/i.test(snippet)) {
+          confirmed = true;
+          evidenceType = "php_source";
+          evidenceSummary = "PHP source or database configuration markers detected";
+        }
+        break;
+      case "/backup.zip":
+        if (/application\/zip|application\/x-zip-compressed|application\/octet-stream/i.test(contentType) || /\.zip/i.test(contentDisposition) || snippet.startsWith("PK")) {
+          confirmed = true;
+          evidenceType = "archive";
+          evidenceSummary = contentDisposition || contentType || "ZIP archive signature detected";
+        }
+        break;
+      case "/phpinfo.php":
+        if (/phpinfo\(\)|php version|zend engine/i.test(lowerSnippet)) {
+          confirmed = true;
+          evidenceType = "phpinfo";
+          evidenceSummary = "phpinfo markers detected in response body";
+        }
+        break;
+      default:
+        break;
+    }
+  }
+
+  return {
+    path: pathname,
+    status,
+    reachable: confirmed,
+    confirmed,
+    evidenceType,
+    evidenceSummary: evidenceSummary || formatProbeEvidenceSummary(pathname, response),
+    contentType: contentType || null,
+    location: String(response?.location || "").trim() || null
+  };
+}
+
+function assessAdminProbe(probePathName, response) {
+  const pathname = parseProbePathname(probePathName);
+  const status = Number(response?.status) || 0;
+  const snippet = String(response?.bodySnippet || "");
+  const lowerSnippet = snippet.toLowerCase();
+  const location = String(response?.location || "").trim();
+  const locationPath = parseProbePathname(location);
+  const titleMatch = snippet.match(/<title[^>]*>([\s\S]*?)<\/title>/i);
+  const title = titleMatch ? String(titleMatch[1] || "").replace(/\s+/g, " ").trim() : "";
+  const looksAdminHtml =
+    /\b(admin|administrator|dashboard)\b/i.test(title) ||
+    /\b(log ?in|sign ?in|username|password|administrator)\b/i.test(lowerSnippet);
+
+  const confirmed =
+    status === 401 ||
+    status === 403 ||
+    (status === 200 && looksAdminHtml) ||
+    ((status === 301 || status === 302 || status === 303 || status === 307 || status === 308) &&
+      Boolean(locationPath) &&
+      (locationPath.startsWith(pathname) || /\b(log ?in|admin|administrator|wp-login)\b/i.test(locationPath)));
+
+  return {
+    path: pathname,
+    status,
+    reachable: confirmed,
+    confirmed,
+    evidenceType: confirmed
+      ? status === 401 || status === 403
+        ? "auth_gate"
+        : status === 200
+          ? "admin_html"
+          : "admin_redirect"
+      : null,
+    evidenceSummary: confirmed ? formatProbeEvidenceSummary(pathname, response) : pathname,
+    location: location || null
+  };
+}
+
 function detectTechnologies({ headers, html }) {
   const safeHtml = String(html || "");
   const lowerHtml = safeHtml.toLowerCase();
@@ -1233,8 +1706,23 @@ async function probePath(url, runtimeConfig) {
       }
     });
 
+    const bodyData =
+      Number(response.status) >= 200 && Number(response.status) < 500
+        ? await readBodySnippet(response, 24_000)
+        : {
+            bodySnippet: "",
+            byteLength: 0,
+            truncated: false
+          };
+
     return {
-      status: Number(response.status) || 0
+      status: Number(response.status) || 0,
+      headers: toPlainHeaders(response.headers),
+      contentType: response.headers.get("content-type") || "",
+      location: response.headers.get("location") || null,
+      bodySnippet: bodyData.bodySnippet,
+      byteLength: bodyData.byteLength,
+      truncated: bodyData.truncated
     };
   } catch (error) {
     return {
@@ -1266,30 +1754,22 @@ async function runBasicVulnerabilityChecks({ finalUrl, runtimeConfig }) {
       DANGEROUS_PROBE_PATHS.map(async (probePathName) => {
         const target = `${baseOrigin}${probePathName}`;
         const response = await probePath(target, runtimeConfig);
-        return {
-          path: probePathName,
-          status: response.status,
-          reachable: response.status > 0 && response.status < 400
-        };
+        return assessDangerousProbe(probePathName, response);
       })
     ),
     Promise.all(
       ADMIN_PROBE_PATHS.map(async (probePathName) => {
         const target = `${baseOrigin}${probePathName}`;
         const response = await probePath(target, runtimeConfig);
-        return {
-          path: probePathName,
-          status: response.status,
-          reachable: response.status > 0 && response.status < 400
-        };
+        return assessAdminProbe(probePathName, response);
       })
     )
   ]);
 
   return {
     status: "completed",
-    exposures: dangerousChecks.filter((entry) => entry.reachable),
-    adminEndpoints: adminChecks.filter((entry) => entry.reachable),
+    exposures: dangerousChecks.filter((entry) => entry.confirmed),
+    adminEndpoints: adminChecks.filter((entry) => entry.confirmed),
     probes: {
       dangerous: dangerousChecks,
       admin: adminChecks
@@ -1572,6 +2052,509 @@ function scoreWebsiteSafety({ findings, modules }) {
   return clampScore(score);
 }
 
+function sortWebsiteFindings(findings = []) {
+  return [...findings].sort((left, right) => {
+    const order = { critical: 5, high: 4, medium: 3, low: 2, info: 1 };
+    const severityDelta = (order[right.severity] || 0) - (order[left.severity] || 0);
+    if (severityDelta !== 0) {
+      return severityDelta;
+    }
+
+    return left.title.localeCompare(right.title);
+  });
+}
+
+function buildWebsiteFindings({ modules, finalUrl }) {
+  const findings = [];
+  const dnsDomain = modules?.dnsDomain || {};
+  const headers = modules?.headers || {};
+  const content = modules?.content || {};
+  const redirects = modules?.redirects || {};
+  const reputation = modules?.reputation || {};
+  const vulnerabilityChecks = modules?.vulnerabilityChecks || {};
+  const fetchModule = modules?.fetch || {};
+  const ssl = modules?.ssl || {};
+
+  let parsedFinal = null;
+  try {
+    parsedFinal = new URL(finalUrl || modules?.url?.final || modules?.url?.normalized || "https://example.invalid");
+  } catch {
+    parsedFinal = new URL("https://example.invalid");
+  }
+
+  const ageDaysRaw = dnsDomain?.ageDays;
+  const domainAgeDays = typeof ageDaysRaw === "number" ? ageDaysRaw : Number.NaN;
+  if (fetchModule.status === "blocked") {
+    findings.push(
+      createFinding(
+        "critical",
+        "website_fetch_blocked",
+        "Reachability",
+        "Target blocked during fetch",
+        "The website could not be fetched because the redirect or target violated safety rules.",
+        fetchModule.blockedReason || "blocked",
+        30
+      )
+    );
+  } else if (fetchModule.status === "error") {
+    findings.push(
+      createFinding(
+        "medium",
+        "website_fetch_error",
+        "Reachability",
+        "Website fetch failed",
+        "The scanner could not fetch content from the target website within policy limits.",
+        fetchModule.blockedReason || "fetch_failed",
+        12
+      )
+    );
+  }
+
+  if ((headers.missing || []).length > 0) {
+    findings.push(
+      createFinding(
+        "medium",
+        "website_headers_missing",
+        "Headers",
+        "Missing security headers",
+        "The target is missing one or more recommended HTTP security headers.",
+        headers.missing.join(", "),
+        Math.min(20, headers.missing.length * 4)
+      )
+    );
+  }
+
+  if (Number.isFinite(domainAgeDays) && domainAgeDays >= 0 && domainAgeDays < 30) {
+    findings.push(
+      createFinding(
+        "high",
+        "website_domain_new",
+        "Domain",
+        "Newly registered domain",
+        "The domain appears recently registered, which increases phishing risk.",
+        `${domainAgeDays} days old`,
+        15
+      )
+    );
+  }
+
+  if (dnsDomain.whoisPrivacyLikely) {
+    findings.push(
+      createFinding(
+        "low",
+        "website_whois_private",
+        "Domain",
+        "WHOIS registration appears privacy-protected",
+        "WHOIS registration details appear partially redacted.",
+        "Registrant details redacted",
+        4
+      )
+    );
+  }
+
+  if (ssl.status === "completed") {
+    if (ssl.certExpired) {
+      findings.push(
+        createFinding(
+          "high",
+          "website_ssl_expired",
+          "TLS",
+          "TLS certificate is expired",
+          "The TLS certificate has expired.",
+          ssl.certValidTo || "expired",
+          20
+        )
+      );
+    }
+
+    if (ssl.certSelfSigned) {
+      findings.push(
+        createFinding(
+          "high",
+          "website_ssl_self_signed",
+          "TLS",
+          "TLS certificate is self-signed",
+          "The TLS certificate is self-signed and may not be trustworthy.",
+          ssl.certIssuer || "self-signed",
+          15
+        )
+      );
+    }
+  } else if (parsedFinal.protocol === "http:") {
+    findings.push(
+      createFinding(
+        "medium",
+        "website_no_https",
+        "TLS",
+        "Website is served over HTTP",
+        "The website does not enforce HTTPS transport.",
+        finalUrl,
+        18
+      )
+    );
+  }
+
+  if ((redirects.count || 0) > 3) {
+    findings.push(
+      createFinding(
+        "medium",
+        "website_redirect_chain_long",
+        "Redirects",
+        "Long redirect chain",
+        "The target used multiple redirects before reaching the final destination.",
+        `${redirects.count} redirects`,
+        8
+      )
+    );
+  }
+
+  if ((redirects.crossDomainCount || 0) > 0) {
+    findings.push(
+      createFinding(
+        "medium",
+        "website_cross_domain_redirect",
+        "Redirects",
+        "Cross-domain redirect observed",
+        "The redirect chain changed domains, which can hide final destination intent.",
+        `${redirects.crossDomainCount} cross-domain redirect(s)`,
+        10
+      )
+    );
+  }
+
+  if ((content.phishingSignalScore || 0) >= 4) {
+    const suspiciousEvidence = [
+      ...(content.phishingPhrases || []).slice(0, 5),
+      ...(content.suspiciousKeywords || []).slice(0, 5)
+    ];
+
+    findings.push(
+      createFinding(
+        (content.phishingSignalScore || 0) >= 7 ? "high" : "medium",
+        "website_suspicious_content",
+        "Content",
+        "Suspicious language indicators detected",
+        "The page includes high-confidence phishing language patterns or risky combinations of signals.",
+        suspiciousEvidence.join(", "),
+        (content.phishingSignalScore || 0) >= 7 ? 10 : 5
+      )
+    );
+  }
+
+  if ((content.hiddenIframes || 0) > 0) {
+    findings.push(
+      createFinding(
+        "high",
+        "website_hidden_iframe",
+        "Content",
+        "Hidden iframe detected",
+        "The page contains hidden iframe markup, which can be used for deceptive or malicious behavior.",
+        `${content.hiddenIframes} hidden iframe(s)`,
+        10
+      )
+    );
+  }
+
+  if ((content.obfuscatedScriptIndicators || 0) > 0) {
+    findings.push(
+      createFinding(
+        "high",
+        "website_script_obfuscation",
+        "Content",
+        "Obfuscated script indicators detected",
+        "Script obfuscation markers were found in page content.",
+        `${content.obfuscatedScriptIndicators} indicator(s)`,
+        12
+      )
+    );
+  }
+
+  if ((content.suspiciousExternalLinkCount || 0) > 0) {
+    findings.push(
+      createFinding(
+        "medium",
+        "website_external_links_suspicious",
+        "Content",
+        "Suspicious outbound link targets detected",
+        "The page links to one or more external domains with high-risk top-level domains.",
+        (content.suspiciousExternalLinks || []).join(", "),
+        Math.min(8, Number(content.suspiciousExternalLinkCount) * 2)
+      )
+    );
+  }
+
+  if ((dnsDomain?.mailAuth?.mxCount || 0) > 0 && (!dnsDomain?.mailAuth?.spfPresent || !dnsDomain?.mailAuth?.dmarcPresent)) {
+    findings.push(
+      createFinding(
+        "low",
+        "website_mail_auth_missing",
+        "Domain",
+        "Email anti-spoofing controls are incomplete",
+        "SPF or DMARC protection appears missing for a domain that receives email.",
+        `SPF: ${dnsDomain?.mailAuth?.spfPresent ? "present" : "missing"}, DMARC: ${dnsDomain?.mailAuth?.dmarcPresent ? "present" : "missing"}`,
+        5
+      )
+    );
+  }
+
+  if (headers?.qualitySignals?.cspWeak) {
+    findings.push(
+      createFinding(
+        "low",
+        "website_csp_weak",
+        "Headers",
+        "Content-Security-Policy allows unsafe directives",
+        "The CSP includes unsafe directives that reduce script injection protection.",
+        headers?.values?.contentSecurityPolicy || "unsafe directives detected",
+        5
+      )
+    );
+  }
+
+  const confirmedExposures = Array.isArray(vulnerabilityChecks.exposures) ? vulnerabilityChecks.exposures.filter((entry) => entry?.confirmed) : [];
+  if (confirmedExposures.length > 0) {
+    findings.push(
+      createFinding(
+        "critical",
+        "website_sensitive_path_exposed",
+        "Exposure",
+        "Sensitive endpoint appears publicly reachable",
+        "One or more sensitive paths responded with evidence of exposed configuration or backup data.",
+        confirmedExposures.map((entry) => `${entry.path} (${entry.status}${entry.evidenceType ? `, ${entry.evidenceType}` : ""})`).join(", "),
+        Math.min(30, confirmedExposures.length * 10)
+      )
+    );
+  }
+
+  const confirmedAdminEndpoints = Array.isArray(vulnerabilityChecks.adminEndpoints)
+    ? vulnerabilityChecks.adminEndpoints.filter((entry) => entry?.confirmed)
+    : [];
+  if (confirmedAdminEndpoints.length > 0) {
+    findings.push(
+      createFinding(
+        "low",
+        "website_admin_paths_reachable",
+        "Exposure",
+        "Administrative paths are reachable",
+        "Administrative endpoints appear reachable from the public internet and should be protected with strong controls.",
+        confirmedAdminEndpoints.map((entry) => `${entry.path} (${entry.status})`).join(", "),
+        4
+      )
+    );
+  }
+
+  if (reputation.flagged) {
+    const flaggedProviderCount = Array.isArray(reputation.flaggedProviders) ? reputation.flaggedProviders.length : 0;
+    findings.push(
+      createFinding(
+        flaggedProviderCount >= 2 ? "critical" : "high",
+        "website_reputation_flagged",
+        "Threat Intel",
+        "Threat intelligence flagged this website",
+        "External threat intelligence providers identified this target as risky.",
+        (reputation.flaggedProviders || []).join(", "),
+        flaggedProviderCount >= 2 ? 50 : 25
+      )
+    );
+  }
+
+  return findings;
+}
+
+function summarizeWebsiteAssessment({ modules, findings }) {
+  const sortedFindings = sortWebsiteFindings(findings);
+  const safetyScore = scoreWebsiteSafety({
+    findings: sortedFindings,
+    modules
+  });
+  const safetyVerdict = verdictFromSafetyScore(safetyScore);
+  const reportVerdict = reportVerdictFromSafetyVerdict(safetyVerdict);
+  const riskScore = clampScore(100 - safetyScore);
+  const plainLanguageReasons = sortedFindings.length
+    ? sortedFindings.slice(0, 6).map((entry) => entry.description)
+    : ["No critical website-risk indicators were detected in this scan."];
+
+  return {
+    findings: sortedFindings,
+    safetyScore,
+    safetyVerdict,
+    reportVerdict,
+    riskScore,
+    plainLanguageReasons,
+    recommendations: buildRecommendations({
+      safetyVerdict,
+      findings: sortedFindings,
+      moduleStatus: {
+        fetchStatus: modules?.fetch?.status || "unknown",
+        ipHostingStatus: modules?.ipHosting?.status || "unknown"
+      }
+    })
+  };
+}
+
+function normalizeWebsiteModules(modules = {}) {
+  const normalized = structuredClone(modules || {});
+  const dnsDomain = normalized?.dnsDomain && typeof normalized.dnsDomain === "object" ? normalized.dnsDomain : {};
+  const registeredAtTimestamp = Date.parse(dnsDomain?.registeredAt || "");
+  const rawAgeDays = typeof dnsDomain?.ageDays === "number" ? dnsDomain.ageDays : Number.NaN;
+  const derivedAgeDays = Number.isFinite(registeredAtTimestamp)
+    ? Math.max(0, Math.floor((Date.now() - registeredAtTimestamp) / (24 * 60 * 60 * 1000)))
+    : null;
+
+  normalized.dnsDomain = {
+    ...dnsDomain,
+    ageDays: Number.isFinite(rawAgeDays) && rawAgeDays >= 0 ? Math.floor(rawAgeDays) : derivedAgeDays,
+    rdap:
+      dnsDomain?.rdap && typeof dnsDomain.rdap === "object"
+        ? {
+            ...dnsDomain.rdap,
+            domainStatus: Array.isArray(dnsDomain.rdap.domainStatus) ? dnsDomain.rdap.domainStatus.filter(Boolean).slice(0, 10) : [],
+            dnssecSigned: typeof dnsDomain.rdap.dnssecSigned === "boolean" ? dnsDomain.rdap.dnssecSigned : null,
+            abuseEmail: dnsDomain.rdap.abuseEmail || null
+          }
+        : {
+            domainStatus: [],
+            dnssecSigned: null,
+            abuseEmail: null,
+            source: null,
+            attempts: []
+          }
+  };
+
+  const vulnerabilityChecks =
+    normalized?.vulnerabilityChecks && typeof normalized.vulnerabilityChecks === "object" ? normalized.vulnerabilityChecks : {};
+  const exposures = Array.isArray(vulnerabilityChecks.exposures) ? vulnerabilityChecks.exposures : [];
+  const adminEndpoints = Array.isArray(vulnerabilityChecks.adminEndpoints) ? vulnerabilityChecks.adminEndpoints : [];
+
+  normalized.vulnerabilityChecks = {
+    ...vulnerabilityChecks,
+    exposures: exposures
+      .map((entry) => {
+        if (!entry || typeof entry !== "object") {
+          return null;
+        }
+
+        const hasEvidence = Boolean(entry.confirmed) || Boolean(entry.evidenceType) || Boolean(entry.evidenceSummary);
+        if (!hasEvidence) {
+          return null;
+        }
+
+        return {
+          path: parseProbePathname(entry.path),
+          status: Number(entry.status) || 0,
+          reachable: true,
+          confirmed: true,
+          kind: entry.kind || null,
+          evidenceType: entry.evidenceType || null,
+          evidenceSummary: entry.evidenceSummary || String(entry.path || "").trim(),
+          contentType: entry.contentType || null,
+          location: entry.location || null
+        };
+      })
+      .filter(Boolean),
+    adminEndpoints: adminEndpoints
+      .map((entry) => {
+        if (!entry || typeof entry !== "object") {
+          return null;
+        }
+
+        const status = Number(entry.status) || 0;
+        const hasEvidence = Boolean(entry.confirmed) || Boolean(entry.evidenceType) || Boolean(entry.evidenceSummary) || status === 401 || status === 403;
+        if (!hasEvidence) {
+          return null;
+        }
+
+        return {
+          path: parseProbePathname(entry.path),
+          status,
+          reachable: true,
+          confirmed: true,
+          evidenceType: entry.evidenceType || (status === 401 || status === 403 ? "auth_gate" : null),
+          evidenceSummary: entry.evidenceSummary || String(entry.path || "").trim(),
+          location: entry.location || null
+        };
+      })
+      .filter(Boolean)
+  };
+
+  return normalized;
+}
+
+export function normalizeWebsiteSafetyReport(report) {
+  if (!report || report.sourceType !== "website" || !report.websiteSafety || typeof report.websiteSafety !== "object") {
+    return report;
+  }
+
+  const normalizedReport = structuredClone(report);
+  const modules = normalizeWebsiteModules(normalizedReport.websiteSafety?.modules || {});
+  const finalUrl = normalizedReport?.url?.final || normalizedReport?.websiteSafety?.url?.final || normalizedReport?.file?.originalName || "";
+  const assessment = summarizeWebsiteAssessment({
+    modules,
+    findings: buildWebsiteFindings({
+      modules,
+      finalUrl
+    })
+  });
+  const threatType = summarizeReputationThreatType(modules?.reputation);
+
+  normalizedReport.verdict = assessment.reportVerdict;
+  normalizedReport.riskScore = assessment.riskScore;
+  normalizedReport.findings = assessment.findings;
+  normalizedReport.recommendations = assessment.recommendations;
+  normalizedReport.plainLanguageReasons = assessment.plainLanguageReasons;
+  normalizedReport.websiteSafety = {
+    ...normalizedReport.websiteSafety,
+    score: assessment.safetyScore,
+    verdict: assessment.safetyVerdict,
+    modules
+  };
+  normalizedReport.technicalIndicators = {
+    ...(normalizedReport.technicalIndicators || {}),
+    redirectCount: Number(modules?.redirects?.count) || 0,
+    crossDomainRedirects: Number(modules?.redirects?.crossDomainCount) || 0,
+    missingSecurityHeaders: Array.isArray(modules?.headers?.missing) ? modules.headers.missing : [],
+    fetchAttempts: Array.isArray(modules?.fetch?.attempts)
+      ? modules.fetch.attempts
+      : Array.isArray(normalizedReport?.technicalIndicators?.fetchAttempts)
+        ? normalizedReport.technicalIndicators.fetchAttempts
+        : [],
+    spfPresent: Boolean(modules?.dnsDomain?.mailAuth?.spfPresent),
+    dmarcPresent: Boolean(modules?.dnsDomain?.mailAuth?.dmarcPresent),
+    securityTxtPresent: Boolean(modules?.discovery?.securityTxt?.found),
+    robotsTxtPresent: Boolean(modules?.discovery?.robotsTxt?.found),
+    threatType
+  };
+  normalizedReport.engines = {
+    ...(normalizedReport.engines || {}),
+    dnsDomain: {
+      status: modules?.dnsDomain?.status || normalizedReport?.engines?.dnsDomain?.status || "completed"
+    },
+    ipHosting: {
+      status: modules?.ipHosting?.status || normalizedReport?.engines?.ipHosting?.status || "completed"
+    },
+    ssl: {
+      status: modules?.ssl?.status || normalizedReport?.engines?.ssl?.status || "completed"
+    },
+    headers: {
+      status: modules?.headers?.status || normalizedReport?.engines?.headers?.status || "completed"
+    },
+    content: {
+      status: modules?.content?.status || normalizedReport?.engines?.content?.status || "completed"
+    },
+    redirects: {
+      status: modules?.redirects?.status || normalizedReport?.engines?.redirects?.status || "completed"
+    },
+    reputation: {
+      status: normalizedReport?.engines?.reputation?.status || (modules?.reputation?.flagged ? "flagged" : "clean")
+    },
+    vulnerabilityChecks: {
+      status: modules?.vulnerabilityChecks?.status || normalizedReport?.engines?.vulnerabilityChecks?.status || "completed"
+    }
+  };
+
+  return normalizedReport;
+}
+
 function buildReportBase({ inputUrl, normalizedUrl, finalUrl, contentType = "", byteLength = 0 }) {
   const hashes = hashText(normalizedUrl);
   const parsedFinal = new URL(finalUrl || normalizedUrl);
@@ -1770,279 +2753,6 @@ export async function scanWebsiteSafetyTarget({ url, runtimeConfig = config }) {
     headers: fetchResult.headers || {},
     html: fetchResult.bodySnippet || ""
   });
-  const domainAgeDays = Number(dnsDomain?.ageDays);
-
-  const findings = [];
-  if (fetchResult.status === "blocked") {
-    findings.push(
-      createFinding(
-        "critical",
-        "website_fetch_blocked",
-        "Reachability",
-        "Target blocked during fetch",
-        "The website could not be fetched because the redirect or target violated safety rules.",
-        fetchResult.blockedReason || "blocked",
-        30
-      )
-    );
-  } else if (fetchResult.status === "error") {
-    findings.push(
-      createFinding(
-        "medium",
-        "website_fetch_error",
-        "Reachability",
-        "Website fetch failed",
-        "The scanner could not fetch content from the target website within policy limits.",
-        fetchResult.blockedReason || "fetch_failed",
-        12
-      )
-    );
-  }
-
-  if ((headers.missing || []).length > 0) {
-    findings.push(
-      createFinding(
-        "medium",
-        "website_headers_missing",
-        "Headers",
-        "Missing security headers",
-        "The target is missing one or more recommended HTTP security headers.",
-        headers.missing.join(", "),
-        Math.min(20, headers.missing.length * 4)
-      )
-    );
-  }
-
-  if (Number.isFinite(domainAgeDays) && domainAgeDays >= 0 && domainAgeDays < 30) {
-    findings.push(
-      createFinding(
-        "high",
-        "website_domain_new",
-        "Domain",
-        "Newly registered domain",
-        "The domain appears recently registered, which increases phishing risk.",
-        `${domainAgeDays} days old`,
-        15
-      )
-    );
-  }
-
-  if (dnsDomain.whoisPrivacyLikely) {
-    findings.push(
-      createFinding(
-        "low",
-        "website_whois_private",
-        "Domain",
-        "WHOIS registration appears privacy-protected",
-        "WHOIS registration details appear partially redacted.",
-        "Registrant details redacted",
-        4
-      )
-    );
-  }
-
-  if (ssl.status === "completed") {
-    if (ssl.certExpired) {
-      findings.push(
-        createFinding(
-          "high",
-          "website_ssl_expired",
-          "TLS",
-          "TLS certificate is expired",
-          "The TLS certificate has expired.",
-          ssl.certValidTo || "expired",
-          20
-        )
-      );
-    }
-
-    if (ssl.certSelfSigned) {
-      findings.push(
-        createFinding(
-          "high",
-          "website_ssl_self_signed",
-          "TLS",
-          "TLS certificate is self-signed",
-          "The TLS certificate is self-signed and may not be trustworthy.",
-          ssl.certIssuer || "self-signed",
-          15
-        )
-      );
-    }
-  } else if (finalParsed.protocol === "http:") {
-    findings.push(
-      createFinding(
-        "medium",
-        "website_no_https",
-        "TLS",
-        "Website is served over HTTP",
-        "The website does not enforce HTTPS transport.",
-        finalUrl,
-        18
-      )
-    );
-  }
-
-  if ((redirects.count || 0) > 3) {
-    findings.push(
-      createFinding(
-        "medium",
-        "website_redirect_chain_long",
-        "Redirects",
-        "Long redirect chain",
-        "The target used multiple redirects before reaching the final destination.",
-        `${redirects.count} redirects`,
-        8
-      )
-    );
-  }
-
-  if ((redirects.crossDomainCount || 0) > 0) {
-    findings.push(
-      createFinding(
-        "medium",
-        "website_cross_domain_redirect",
-        "Redirects",
-        "Cross-domain redirect observed",
-        "The redirect chain changed domains, which can hide final destination intent.",
-        `${redirects.crossDomainCount} cross-domain redirect(s)`,
-        10
-      )
-    );
-  }
-
-  if ((content.phishingSignalScore || 0) >= 4) {
-    const suspiciousEvidence = [
-      ...(content.phishingPhrases || []).slice(0, 5),
-      ...(content.suspiciousKeywords || []).slice(0, 5)
-    ];
-
-    findings.push(
-      createFinding(
-        (content.phishingSignalScore || 0) >= 7 ? "high" : "medium",
-        "website_suspicious_content",
-        "Content",
-        "Suspicious language indicators detected",
-        "The page includes high-confidence phishing language patterns or risky combinations of signals.",
-        suspiciousEvidence.join(", "),
-        (content.phishingSignalScore || 0) >= 7 ? 10 : 5
-      )
-    );
-  }
-
-  if ((content.hiddenIframes || 0) > 0) {
-    findings.push(
-      createFinding(
-        "high",
-        "website_hidden_iframe",
-        "Content",
-        "Hidden iframe detected",
-        "The page contains hidden iframe markup, which can be used for deceptive or malicious behavior.",
-        `${content.hiddenIframes} hidden iframe(s)`,
-        10
-      )
-    );
-  }
-
-  if ((content.obfuscatedScriptIndicators || 0) > 0) {
-    findings.push(
-      createFinding(
-        "high",
-        "website_script_obfuscation",
-        "Content",
-        "Obfuscated script indicators detected",
-        "Script obfuscation markers were found in page content.",
-        `${content.obfuscatedScriptIndicators} indicator(s)`,
-        12
-      )
-    );
-  }
-
-  if ((content.suspiciousExternalLinkCount || 0) > 0) {
-    findings.push(
-      createFinding(
-        "medium",
-        "website_external_links_suspicious",
-        "Content",
-        "Suspicious outbound link targets detected",
-        "The page links to one or more external domains with high-risk top-level domains.",
-        (content.suspiciousExternalLinks || []).join(", "),
-        Math.min(8, Number(content.suspiciousExternalLinkCount) * 2)
-      )
-    );
-  }
-
-  if ((dnsDomain?.mailAuth?.mxCount || 0) > 0 && (!dnsDomain?.mailAuth?.spfPresent || !dnsDomain?.mailAuth?.dmarcPresent)) {
-    findings.push(
-      createFinding(
-        "low",
-        "website_mail_auth_missing",
-        "Domain",
-        "Email anti-spoofing controls are incomplete",
-        "SPF or DMARC protection appears missing for a domain that receives email.",
-        `SPF: ${dnsDomain?.mailAuth?.spfPresent ? "present" : "missing"}, DMARC: ${dnsDomain?.mailAuth?.dmarcPresent ? "present" : "missing"}`,
-        5
-      )
-    );
-  }
-
-  if (headers?.qualitySignals?.cspWeak) {
-    findings.push(
-      createFinding(
-        "low",
-        "website_csp_weak",
-        "Headers",
-        "Content-Security-Policy allows unsafe directives",
-        "The CSP includes unsafe directives that reduce script injection protection.",
-        headers?.values?.contentSecurityPolicy || "unsafe directives detected",
-        5
-      )
-    );
-  }
-
-  if ((vulnerabilityChecks.exposures || []).length > 0) {
-    findings.push(
-      createFinding(
-        "critical",
-        "website_sensitive_path_exposed",
-        "Exposure",
-        "Sensitive endpoint appears publicly reachable",
-        "One or more sensitive paths responded successfully and may expose confidential data.",
-        (vulnerabilityChecks.exposures || []).map((entry) => `${entry.path} (${entry.status})`).join(", "),
-        Math.min(30, vulnerabilityChecks.exposures.length * 10)
-      )
-    );
-  }
-
-  if ((vulnerabilityChecks.adminEndpoints || []).length > 0) {
-    findings.push(
-      createFinding(
-        "low",
-        "website_admin_paths_reachable",
-        "Exposure",
-        "Administrative paths are reachable",
-        "Administrative endpoints are reachable from public internet and should be protected with strong controls.",
-        (vulnerabilityChecks.adminEndpoints || []).map((entry) => `${entry.path} (${entry.status})`).join(", "),
-        4
-      )
-    );
-  }
-
-  if (reputation.flagged) {
-    const flaggedProviderCount = Array.isArray(reputation.flaggedProviders) ? reputation.flaggedProviders.length : 0;
-    findings.push(
-      createFinding(
-        flaggedProviderCount >= 2 ? "critical" : "high",
-        "website_reputation_flagged",
-        "Threat Intel",
-        "Threat intelligence flagged this website",
-        "External threat intelligence providers identified this target as risky.",
-        (reputation.flaggedProviders || []).join(", "),
-        flaggedProviderCount >= 2 ? 50 : 25
-      )
-    );
-  }
-
   const modules = {
     normalization: {
       input: normalizedInput.inputUrl,
@@ -2076,23 +2786,12 @@ export async function scanWebsiteSafetyTarget({ url, runtimeConfig = config }) {
       hostname: finalParsed.hostname
     }
   };
-
-  const safetyScore = scoreWebsiteSafety({
-    findings,
-    modules
-  });
-  const safetyVerdict = verdictFromSafetyScore(safetyScore);
-  const reportVerdict = reportVerdictFromSafetyVerdict(safetyVerdict);
-  const riskScore = clampScore(100 - safetyScore);
-
-  const sortedFindings = findings.sort((left, right) => {
-    const order = { critical: 5, high: 4, medium: 3, low: 2, info: 1 };
-    const severityDelta = (order[right.severity] || 0) - (order[left.severity] || 0);
-    if (severityDelta !== 0) {
-      return severityDelta;
-    }
-
-    return left.title.localeCompare(right.title);
+  const assessment = summarizeWebsiteAssessment({
+    modules,
+    findings: buildWebsiteFindings({
+      modules,
+      finalUrl
+    })
   });
 
   const reportBase = buildReportBase({
@@ -2103,26 +2802,15 @@ export async function scanWebsiteSafetyTarget({ url, runtimeConfig = config }) {
     byteLength: Number(fetchResult.byteLength) || 0
   });
 
-  const plainLanguageReasons = sortedFindings.length
-    ? sortedFindings.slice(0, 6).map((entry) => entry.description)
-    : ["No critical website-risk indicators were detected in this scan."];
-
   const threatType = summarizeReputationThreatType(reputation);
 
   return {
     ...reportBase,
-    verdict: reportVerdict,
-    riskScore,
-    findings: sortedFindings,
-    recommendations: buildRecommendations({
-      safetyVerdict,
-      findings: sortedFindings,
-      moduleStatus: {
-        fetchStatus: fetchResult.status,
-        ipHostingStatus: modules?.ipHosting?.status || "unknown"
-      }
-    }),
-    plainLanguageReasons,
+    verdict: assessment.reportVerdict,
+    riskScore: assessment.riskScore,
+    findings: assessment.findings,
+    recommendations: assessment.recommendations,
+    plainLanguageReasons: assessment.plainLanguageReasons,
     technicalIndicators: {
       redirectCount: redirects.count,
       crossDomainRedirects: redirects.crossDomainCount,
@@ -2154,8 +2842,8 @@ export async function scanWebsiteSafetyTarget({ url, runtimeConfig = config }) {
       discovery: { status: discovery.status || "completed" }
     },
     websiteSafety: {
-      score: safetyScore,
-      verdict: safetyVerdict,
+      score: assessment.safetyScore,
+      verdict: assessment.safetyVerdict,
       checkedAt: new Date().toISOString(),
       url: modules.url,
       modules

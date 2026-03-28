@@ -86,6 +86,8 @@ Recommended production topology:
 4. Redis only when `QUEUE_PROVIDER=bullmq`
 5. S3-compatible object storage when API and workers are separated
 
+BullMQ defaults to a single shared queue and worker path to keep Redis command usage low. Only switch to `BULLMQ_QUEUE_TOPOLOGY=split` when you intentionally want dedicated file and link workers.
+
 ## Storage And Migrations
 
 The platform supports:

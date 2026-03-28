@@ -98,6 +98,35 @@ function findingSeverityBadgeClass(severity) {
   return "bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-200";
 }
 
+function pluralize(count, singular) {
+  return `${count} ${singular}${count === 1 ? "" : "s"}`;
+}
+
+function formatDomainAge(ageDays, { includeDays = false } = {}) {
+  const normalizedAgeDays = Number(ageDays);
+  if (!Number.isFinite(normalizedAgeDays) || normalizedAgeDays < 0) {
+    return "Unknown";
+  }
+
+  const totalDays = Math.max(0, Math.round(normalizedAgeDays));
+  if (totalDays < 45) {
+    return pluralize(totalDays, "day");
+  }
+
+  const totalMonths = Math.max(1, Math.floor(totalDays / 30.4375));
+  if (totalDays < 548) {
+    const monthLabel = pluralize(totalMonths, "month");
+    return includeDays ? `${monthLabel} (${pluralize(totalDays, "day")})` : monthLabel;
+  }
+
+  const totalYears = Math.max(1, Math.floor(totalDays / 365.25));
+  const remainingDays = totalDays - Math.floor(totalYears * 365.25);
+  const remainingMonths = Math.max(0, Math.floor(remainingDays / 30.4375));
+  const yearLabel = pluralize(totalYears, "year");
+  const ageLabel = remainingMonths > 0 ? `${yearLabel}, ${pluralize(remainingMonths, "month")}` : yearLabel;
+  return includeDays ? `${ageLabel} (${pluralize(totalDays, "day")})` : ageLabel;
+}
+
 function summarizeSeverityCounts(findings) {
   const summary = {
     critical: 0,
@@ -368,6 +397,19 @@ export function WebsiteSafetyView({
   const isReportDetailsLoading = Boolean(pendingSelectedReportId) && pendingSelectedReportId !== selectedWebsiteReport?.id;
   const hasSelectedOrPendingReport = Boolean(selectedWebsiteReport || pendingSelectedReportSummary);
   const selectedWebsiteModules = selectedWebsiteReport?.websiteSafety?.modules || {};
+  const selectedDnsDomain = selectedWebsiteModules?.dnsDomain || {};
+  const selectedLookupDomain = String(selectedDnsDomain?.rdap?.domain || selectedDnsDomain?.rdap?.payloadDomain || "").trim();
+  const selectedWebsiteHostname = String(selectedWebsiteReport?.url?.hostname || selectedWebsiteModules?.url?.hostname || "").trim();
+  const selectedAgeUsesParentDomain = Boolean(selectedLookupDomain && selectedWebsiteHostname && selectedLookupDomain !== selectedWebsiteHostname);
+  const domainAgeLabel = selectedAgeUsesParentDomain ? "Parent domain age" : "Domain age";
+  const formattedDomainAge = formatDomainAge(selectedDnsDomain?.ageDays);
+  const formattedDomainAgeWithDays = formatDomainAge(selectedDnsDomain?.ageDays, { includeDays: true });
+  const registrationEvidenceLabel =
+    selectedDnsDomain?.rdap?.registrationEvidence === "explicit_rdap_event"
+      ? "Verified registry registration date"
+      : selectedDnsDomain?.registeredAt
+        ? "Derived from registry registration date"
+        : "Registration date unavailable";
   const selectedSafetyVerdict = resolveSafetyVerdict(selectedWebsiteReport);
   const selectedSafetyScore = resolveSafetyScore(selectedWebsiteReport);
   const selectedFindings = Array.isArray(selectedWebsiteReport?.findings) ? selectedWebsiteReport.findings : [];
@@ -678,9 +720,9 @@ export function WebsiteSafetyView({
 
                 <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
                   <div className="rounded-2xl border border-slate-200/80 px-3 py-3 dark:border-slate-800/80">
-                    <p className="dashboard-label">Domain age</p>
+                    <p className="dashboard-label">{domainAgeLabel}</p>
                     <p className="mt-1 text-sm font-semibold text-slate-950 dark:text-white">
-                      {selectedWebsiteModules?.dnsDomain?.ageDays != null ? `${selectedWebsiteModules.dnsDomain.ageDays} days` : "Unknown"}
+                      {formattedDomainAge}
                     </p>
                   </div>
                   <div className="rounded-2xl border border-slate-200/80 px-3 py-3 dark:border-slate-800/80">
@@ -743,12 +785,21 @@ export function WebsiteSafetyView({
                 <div className="rounded-2xl border border-slate-200/80 px-4 py-4 dark:border-slate-800/80">
                   <p className="font-semibold text-slate-900 dark:text-slate-100">Domain and infrastructure</p>
                   <div className="mt-2 grid gap-2 text-sm sm:grid-cols-2">
-                    <p>Registrar: {selectedWebsiteModules?.dnsDomain?.registrar || "Unknown"}</p>
-                    <p>Domain age: {selectedWebsiteModules?.dnsDomain?.ageDays != null ? `${selectedWebsiteModules.dnsDomain.ageDays} days` : "Unknown"}</p>
+                    <p>Registrar: {selectedDnsDomain?.registrar || "Unknown"}</p>
+                    <p>{domainAgeLabel}: {formattedDomainAgeWithDays}</p>
+                    <p>Registration evidence: {registrationEvidenceLabel}</p>
+                    <p>Lookup domain: {selectedLookupDomain || selectedWebsiteHostname || "Unavailable"}</p>
+                    <p>Registered at: {selectedDnsDomain?.registeredAt ? formatDateTime(selectedDnsDomain.registeredAt) : "Unknown"}</p>
+                    <p>Expires at: {selectedDnsDomain?.expiresAt ? formatDateTime(selectedDnsDomain.expiresAt) : "Unknown"}</p>
                     <p>Primary IP: {selectedWebsiteModules?.ipHosting?.primaryIp || "Unavailable"}</p>
                     <p>ASN: {selectedWebsiteModules?.ipHosting?.asn || "Unavailable"}</p>
+                    <p>DNSSEC: {selectedDnsDomain?.rdap?.dnssecSigned === true ? "Signed" : selectedDnsDomain?.rdap?.dnssecSigned === false ? "Not signed" : "Unknown"}</p>
+                    <p>RDAP abuse contact: {selectedDnsDomain?.rdap?.abuseEmail || "Unavailable"}</p>
                     <p className="sm:col-span-2">
-                      Nameservers: {(selectedWebsiteModules?.dnsDomain?.nameservers || []).slice(0, 6).join(", ") || "Unavailable"}
+                      Nameservers: {(selectedDnsDomain?.nameservers || []).slice(0, 6).join(", ") || "Unavailable"}
+                    </p>
+                    <p className="sm:col-span-2">
+                      RDAP status: {(selectedDnsDomain?.rdap?.domainStatus || []).slice(0, 6).join(", ") || "Unavailable"}
                     </p>
                     <p>SPF: {spfPresent ? "Present" : "Missing"}</p>
                     <p>DMARC: {dmarcPresent ? "Present" : "Missing"}</p>
