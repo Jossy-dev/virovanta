@@ -635,6 +635,18 @@ export class ScanQueueService {
     return nextJob;
   }
 
+  #requireAuthenticatedQueueUserId(userId) {
+    const normalizedUserId = String(userId || "").trim();
+
+    if (!normalizedUserId) {
+      throw new HttpError(401, "Authentication is required for queued scans.", {
+        code: "SCAN_AUTH_REQUIRED"
+      });
+    }
+
+    return normalizedUserId;
+  }
+
   async #markEnqueueFailed(jobId, reason = "Could not enqueue scan job.") {
     await this.store.markJobFailed({
       jobId,
@@ -644,8 +656,9 @@ export class ScanQueueService {
   }
 
   async enqueueScan({ userId, filePath, originalName, mimeType, fileSize }) {
+    const queueUserId = this.#requireAuthenticatedQueueUserId(userId);
     const job = await this.#createQueuedJob({
-      userId,
+      userId: queueUserId,
       sourceType: "file",
       originalName,
       mimeType,
@@ -655,7 +668,7 @@ export class ScanQueueService {
 
     const queueItem = {
       jobId: job.id,
-      userId,
+      userId: queueUserId,
       sourceType: "file",
       targetUrl: null,
       filePath: null,
@@ -683,14 +696,14 @@ export class ScanQueueService {
             this.objectStorageService.uploadFileFromPath({
               localPath: filePath,
               key: this.objectStorageService.buildQueueUploadKey({
-                userId,
+                userId: queueUserId,
                 jobId: job.id,
                 originalName
               }),
               contentType: mimeType || "application/octet-stream",
               metadata: {
                 service: this.config.serviceName,
-                user_id: userId,
+                user_id: queueUserId,
                 job_id: job.id,
                 purpose: "queue-ingress"
               }
@@ -710,7 +723,7 @@ export class ScanQueueService {
       this.logger?.error?.(
         {
           err: error,
-          userId,
+          userId: queueUserId,
           jobId: job.id
         },
         "Could not enqueue scan job."
@@ -742,6 +755,7 @@ export class ScanQueueService {
   }
 
   async enqueueUrlScan({ userId, url }) {
+    const queueUserId = this.#requireAuthenticatedQueueUserId(userId);
     if (typeof this.urlScanner !== "function") {
       throw new HttpError(503, "URL scanner is unavailable.", {
         code: "URL_SCANNER_UNAVAILABLE"
@@ -750,7 +764,7 @@ export class ScanQueueService {
 
     const targetUrl = String(url || "").trim();
     const job = await this.#createQueuedJob({
-      userId,
+      userId: queueUserId,
       sourceType: "url",
       originalName: targetUrl,
       mimeType: "text/url",
@@ -760,7 +774,7 @@ export class ScanQueueService {
 
     const queueItem = {
       jobId: job.id,
-      userId,
+      userId: queueUserId,
       sourceType: "url",
       targetUrl,
       filePath: null,
@@ -791,6 +805,7 @@ export class ScanQueueService {
   }
 
   async enqueueWebsiteSafetyScan({ userId, url }) {
+    const queueUserId = this.#requireAuthenticatedQueueUserId(userId);
     if (typeof this.websiteSafetyScanner !== "function") {
       throw new HttpError(503, "Website safety scanner is unavailable.", {
         code: "WEBSITE_SAFETY_SCANNER_UNAVAILABLE"
@@ -799,7 +814,7 @@ export class ScanQueueService {
 
     const targetUrl = String(url || "").trim();
     const job = await this.#createQueuedJob({
-      userId,
+      userId: queueUserId,
       sourceType: "website",
       originalName: targetUrl,
       mimeType: "text/url",
@@ -809,7 +824,7 @@ export class ScanQueueService {
 
     const queueItem = {
       jobId: job.id,
-      userId,
+      userId: queueUserId,
       sourceType: "website",
       targetUrl,
       filePath: null,

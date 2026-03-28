@@ -40,7 +40,6 @@
     "pino": "^10.3.1",
     "pino-http": "^11.0.0",
     "puppeteer-core": "^24.39.1",
-    "rate-limit-redis": "^4.3.1",
     "zod": "^4.3.6"
   },
   "devDependencies": {

@@ -11,7 +11,6 @@ async function start() {
     logger.info({ signal }, "Shutting down service.");
     await services.scanQueueService?.stop?.().catch(() => {});
     await services.store?.close?.().catch(() => {});
-    await services.rateLimitRedisClient?.quit?.().catch(() => {});
     process.exit(0);
   }
 

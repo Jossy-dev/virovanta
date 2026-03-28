@@ -5,9 +5,7 @@ import fs from "fs/promises";
 import helmet from "helmet";
 import pino from "pino";
 import pinoHttp from "pino-http";
-import { RedisStore } from "rate-limit-redis";
-import { config, isCorsOriginAllowed, resolveServiceMode } from "../config.js";
-import { createRedisClient } from "../infrastructure/redis/createRedisClient.js";
+import { config, isCorsOriginAllowed, mergeRuntimeConfig, resolveServiceMode, validateRuntimeConfig } from "../config.js";
 import {
   createAuthMiddleware,
   preventSensitiveCaching,
@@ -61,10 +59,7 @@ function buildOpenApiSpec(runtimeConfig) {
 
 export async function createApp(options = {}) {
   const scanner = options.scanner || scanUploadedFile;
-  const runtimeConfig = {
-    ...config,
-    ...(options.configOverrides || {})
-  };
+  const runtimeConfig = validateRuntimeConfig(mergeRuntimeConfig(config, options.configOverrides || {}));
   const urlScanner =
     options.urlScanner ||
     (async ({ url }) =>
@@ -101,18 +96,6 @@ export async function createApp(options = {}) {
     config: runtimeConfig,
     logger
   });
-
-  const rateLimitRedisClient =
-    runtimeConfig.rateLimitStore === "redis" ? createRedisClient(runtimeConfig, { purpose: "rate-limit" }) : null;
-
-  const createRateLimitStore =
-    rateLimitRedisClient != null
-      ? (prefix) =>
-          new RedisStore({
-            prefix: `${runtimeConfig.serviceName}:${prefix}:`,
-            sendCommand: (...args) => rateLimitRedisClient.call(...args)
-          })
-      : null;
 
   const authService = new AuthService({
     store,
@@ -172,32 +155,14 @@ export async function createApp(options = {}) {
       Promise.resolve(scanQueueService.getOperationalStatus())
     ]);
     const objectStorageStatus = objectStorageService.getOperationalStatus();
-    const rateLimitStatus =
-      runtimeConfig.rateLimitStore === "redis"
-        ? {
-            status: rateLimitRedisClient?.status === "ready" ? "ok" : "degraded",
-            ready: rateLimitRedisClient?.status === "ready",
-            store: "redis",
-            connectionState: rateLimitRedisClient?.status || "uninitialized"
-          }
-        : {
-            status: "ok",
-            ready: true,
-            store: "memory",
-            connectionState: "memory"
-          };
+    const rateLimitStatus = {
+      status: "ok",
+      ready: true,
+      store: "memory",
+      connectionState: "memory"
+    };
 
     const alerts = [...(storeStatus.alerts || []), ...(queueStatus.alerts || [])];
-
-    if (!rateLimitStatus.ready) {
-      alerts.push({
-        component: "rate-limit",
-        severity: "error",
-        message: "Redis-backed rate limiting is not ready.",
-        code: null,
-        occurredAt: new Date().toISOString()
-      });
-    }
 
     const ready = Boolean(storeStatus.ready) && Boolean(queueStatus.ready) && Boolean(rateLimitStatus.ready);
 
@@ -219,11 +184,10 @@ export async function createApp(options = {}) {
   }
 
   const requireAuth = createAuthMiddleware(authService);
-  const buildRateLimiter = ({ prefix, limit, windowMinutes }) =>
+  const buildRateLimiter = ({ limit, windowMinutes }) =>
     rateLimit({
       windowMs: windowMinutes * 60 * 1000,
       limit,
-      ...(createRateLimitStore ? { store: createRateLimitStore(prefix) } : {}),
       standardHeaders: true,
       legacyHeaders: false
     });
@@ -288,18 +252,6 @@ export async function createApp(options = {}) {
     })
   );
 
-  app.use(
-    rateLimit({
-      windowMs: runtimeConfig.requestWindowMinutes * 60 * 1000,
-      limit: runtimeConfig.requestsPerWindow,
-      ...(createRateLimitStore ? { store: createRateLimitStore("global") } : {}),
-      standardHeaders: true,
-      legacyHeaders: false
-    })
-  );
-
-  app.use(express.json({ limit: "256kb" }));
-
   const sendPingResponse = (res) => {
     res.set("Cache-Control", "no-store, no-cache, must-revalidate, private");
     res.type("text/plain").status(200).send("pong");
@@ -312,6 +264,17 @@ export async function createApp(options = {}) {
   app.get("/api/ping", (_req, res) => {
     sendPingResponse(res);
   });
+
+  app.use(
+    rateLimit({
+      windowMs: runtimeConfig.requestWindowMinutes * 60 * 1000,
+      limit: runtimeConfig.requestsPerWindow,
+      standardHeaders: true,
+      legacyHeaders: false
+    })
+  );
+
+  app.use(express.json({ limit: "256kb" }));
 
   app.get("/api/health", async (_req, res) => {
     res.json({
@@ -347,7 +310,6 @@ export async function createApp(options = {}) {
       scanner,
       config: runtimeConfig,
       scanQueueService,
-      createRateLimitStore,
       preventSensitiveCaching
     })
   );
@@ -395,7 +357,6 @@ export async function createApp(options = {}) {
     notificationService: authService.notificationService,
     scanQueueService,
     objectStorageService,
-    rateLimitRedisClient,
     config: runtimeConfig,
     runtimeInfoProvider: collectRuntimeState
   };

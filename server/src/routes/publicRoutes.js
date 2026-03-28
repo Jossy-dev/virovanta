@@ -47,7 +47,7 @@ function toPublicReport(report, findingsLimit = 8) {
   };
 }
 
-export function createPublicRouter({ scanner, config, scanQueueService, createRateLimitStore = null, preventSensitiveCaching }) {
+export function createPublicRouter({ scanner, config, scanQueueService, preventSensitiveCaching }) {
   const publicRouter = Router();
 
   const uploadStorage = multer.diskStorage({
@@ -71,7 +71,6 @@ export function createPublicRouter({ scanner, config, scanQueueService, createRa
   const publicLimiter = rateLimit({
     windowMs: config.publicQuickScanWindowMinutes * 60 * 1000,
     limit: config.publicQuickScanRequestsPerWindow,
-    ...(createRateLimitStore ? { store: createRateLimitStore("public-quick-scan") } : {}),
     standardHeaders: true,
     legacyHeaders: false
   });

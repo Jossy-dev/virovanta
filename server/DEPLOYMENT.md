@@ -27,8 +27,8 @@ Required shape:
 - `RUN_SCAN_WORKER=false`
 - `DATA_STORE_DRIVER=postgres`
 - `QUEUE_PROVIDER=bullmq`
-- `RATE_LIMIT_STORE=redis`
 - `OBJECT_STORAGE_PROVIDER=s3`
+- `RATE_LIMIT_STORE=memory`
 
 Recommended start command:
 
@@ -73,7 +73,13 @@ Database and queue:
 - `DATABASE_SSL=true`
 - `QUEUE_PROVIDER=bullmq`
 - `REDIS_URL=...`
-- `RATE_LIMIT_STORE=redis`
+- `RATE_LIMIT_STORE=memory`
+
+Important boundary:
+
+- Redis is reserved for BullMQ queue and worker traffic only
+- login, auth, public status, health checks, and request rate limiting must not depend on Redis
+- guest quick scan stays in-process and does not touch BullMQ or Redis
 
 Object storage:
 
@@ -101,7 +107,7 @@ Use these endpoints operationally:
 - `/api/health/live`
   process liveness
 - `/api/health/ready`
-  store, queue, object storage, and rate-limit readiness
+  store, queue, object storage, and in-process rate-limit readiness
 - `/api/admin/metrics`
   admin business metrics plus runtime details
 
@@ -110,7 +116,6 @@ Trigger alerts when:
 1. `/api/health/ready` returns `503`
 2. queue runtime status becomes `degraded`
 3. store readiness is false
-4. rate-limit Redis is not ready
 
 Use `/ping` when you want a monitor that only verifies the process is awake and reachable.
 Use `/api/health/ready` when you want a monitor that verifies the service is actually ready to handle production traffic.

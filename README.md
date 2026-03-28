@@ -6,7 +6,7 @@ ViroVanta is a multi-user malware and threat analysis platform with guest quick 
 
 - React + Vite frontend
 - Node.js + Express API
-- Async scan orchestration with local queue or BullMQ
+- Async scan orchestration with local queue or BullMQ for authenticated scan jobs
 - Normalized Postgres persistence for users, jobs, reports, notifications, tokens, API keys, and audit events
 - Guest quick scans plus authenticated file, URL, and website safety workflows
 - Signed report integrity, PDF export, notifications, analytics, and admin metrics
@@ -83,7 +83,7 @@ Recommended production topology:
 1. API-only web service
 2. Worker-only background service
 3. Postgres
-4. Redis when `QUEUE_PROVIDER=bullmq`
+4. Redis only when `QUEUE_PROVIDER=bullmq`
 5. S3-compatible object storage when API and workers are separated
 
 ## Storage And Migrations
@@ -120,11 +120,13 @@ Queue modes:
 - `QUEUE_PROVIDER=local`
   in-process queue, best for local development
 - `QUEUE_PROVIDER=bullmq`
-  Redis-backed async queue for production and split deployments
+  Redis-backed async queue for authenticated scan jobs in production and split deployments
 
 Production rule enforced by config:
 
 - remote BullMQ workers require `OBJECT_STORAGE_PROVIDER=s3`
+- `RATE_LIMIT_STORE=redis` is rejected at startup so Redis stays queue-only
+- guest quick scan never uses BullMQ or Redis
 
 ## Health And Monitoring
 
@@ -135,7 +137,7 @@ Health endpoints:
 - `GET /api/health/live`
   liveness view with runtime mode
 - `GET /api/health/ready`
-  readiness view including store, queue, object storage, and rate-limit status
+  readiness view including store, queue, object storage, and in-memory rate-limit status
 
 Admin operational visibility:
 
@@ -151,7 +153,8 @@ The backend now enforces or supports:
 - strict startup validation for production secrets and runtime topology
 - Supabase publishable-key validation when `AUTH_PROVIDER=supabase`
 - signed report integrity payloads
-- rate limiting with memory or Redis store
+- in-memory request rate limiting that does not depend on Redis
+- Redis reserved for BullMQ-backed authenticated scan queues only
 - Helmet, CORS allow-listing, request IDs, structured logging, and input validation
 - backend-owned authorization for application tables
 
@@ -184,7 +187,7 @@ Client scripts:
 
 1. Add the readiness endpoint to your deployment health checks
 2. Deploy the API and worker as separate services in production
-3. Use Postgres, Redis, and S3-compatible object storage in production
+3. Use Postgres, BullMQ Redis, and S3-compatible object storage in production
 4. Lock down database grants so only the backend role can access app tables
 5. Add external alerting on `/api/health/ready` and queue degradation signals
 

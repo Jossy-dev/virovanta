@@ -18,6 +18,7 @@ describe("runtime modes and readiness", () => {
     expect(readiness.body.components.queue.provider).toBe("local");
     expect(readiness.body.components.queue.ready).toBe(true);
     expect(readiness.body.components.store.driver).toBe("file");
+    expect(readiness.body.components.rateLimit.store).toBe("memory");
   });
 
   it("reports worker-only readiness when running without the API server role", async () => {
@@ -56,6 +57,17 @@ describe("runtime modes and readiness", () => {
     expect(readiness.body.components.queue.provider).toBe("bullmq");
     expect(readiness.body.components.queue.status).toBe("degraded");
     expect(readiness.body.alerts.some((alert) => alert.component === "queue")).toBe(true);
+  });
+
+  it("rejects Redis-backed rate limiting so Redis stays queue-only", async () => {
+    await expect(
+      setupTestApp({
+        configOverrides: {
+          rateLimitStore: "redis",
+          redisUrl: "redis://localhost:6379"
+        }
+      })
+    ).rejects.toThrow(/Redis is reserved for BullMQ scan queue traffic only/i);
   });
 
   it("includes runtime details in admin metrics for operational monitoring", async () => {

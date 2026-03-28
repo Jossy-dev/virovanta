@@ -33,7 +33,7 @@ async function setupSupabaseApp({ supabaseJwtSecret = "supabase-test-secret" } =
       dataFilePath,
       authProvider: "supabase",
       supabaseUrl: "https://example.supabase.co",
-      supabaseAnonKey: "anon-test-key",
+      supabaseAnonKey: "sb_publishable_test_key",
       supabaseJwtSecret,
       supabaseJwtIssuer,
       supabaseJwtAudience,

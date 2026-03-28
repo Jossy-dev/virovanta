@@ -14,7 +14,8 @@ async function setupTestApp({
   freeTierDailyScanLimit = 40,
   scanner = null,
   urlScanner = null,
-  websiteSafetyScanner = null
+  websiteSafetyScanner = null,
+  configOverrides = {}
 } = {}) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "virovanta-test-"));
   const uploadDir = path.join(root, "uploads");
@@ -255,7 +256,8 @@ async function setupTestApp({
       requestsPerWindow: 5000,
       requestWindowMinutes: 15,
       jwtAccessSecret: "test-secret",
-      logLevel: "silent"
+      logLevel: "silent",
+      ...configOverrides
     }
   });
 
@@ -389,6 +391,27 @@ describe("ViroVanta API", () => {
     expect(apiPing.status).toBe(200);
     expect(apiPing.text).toBe("pong");
     expect(apiPing.headers["content-type"]).toContain("text/plain");
+  });
+
+  it("does not count ping traffic against the global request limiter", async () => {
+    const app = await setupTestApp({
+      configOverrides: {
+        requestsPerWindow: 1,
+        requestWindowMinutes: 15
+      }
+    });
+
+    const pingOne = await request(app).get("/ping");
+    const pingTwo = await request(app).get("/ping");
+    const apiPing = await request(app).get("/api/ping");
+    const health = await request(app).get("/api/health");
+    const limited = await request(app).get("/api/health");
+
+    expect(pingOne.status).toBe(200);
+    expect(pingTwo.status).toBe(200);
+    expect(apiPing.status).toBe(200);
+    expect(health.status).toBe(200);
+    expect(limited.status).toBe(429);
   });
 
   it("returns reliability and limits metadata from the public status endpoint", async () => {

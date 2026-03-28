@@ -83,6 +83,10 @@ export function resolveServiceMode(runtimeConfig) {
   return "worker";
 }
 
+function hasOwnConfigOverride(overrides, key) {
+  return Object.prototype.hasOwnProperty.call(overrides, key);
+}
+
 const srcDir = path.dirname(fileURLToPath(import.meta.url));
 const serverDir = path.resolve(srcDir, "..");
 const dataDir = path.resolve(serverDir, "data");
@@ -119,7 +123,7 @@ const supabasePublishableKey = envString("SUPABASE_PUBLISHABLE_KEY", "");
 const supabaseLegacyAnonKey = envString("SUPABASE_ANON_KEY", "");
 const supabasePublicAuthKey = supabasePublishableKey || supabaseLegacyAnonKey;
 
-function resolveSupabaseKeyMode(rawKey) {
+export function resolveSupabaseKeyMode(rawKey) {
   const key = String(rawKey || "").trim();
   if (!key) {
     return "missing";
@@ -138,6 +142,34 @@ function resolveSupabaseKeyMode(rawKey) {
   }
 
   return "unknown";
+}
+
+export function mergeRuntimeConfig(baseConfig, overrides = {}) {
+  const mergedConfig = {
+    ...baseConfig,
+    ...overrides
+  };
+  const supabaseUrl =
+    hasOwnConfigOverride(overrides, "supabaseUrl") ? overrides.supabaseUrl : mergedConfig.supabaseUrl;
+  const supabaseAnonKey =
+    hasOwnConfigOverride(overrides, "supabaseAnonKey") ? overrides.supabaseAnonKey : mergedConfig.supabaseAnonKey;
+
+  return {
+    ...mergedConfig,
+    supabaseKeyMode: hasOwnConfigOverride(overrides, "supabaseKeyMode")
+      ? overrides.supabaseKeyMode
+      : resolveSupabaseKeyMode(supabaseAnonKey),
+    supabaseJwtIssuer: hasOwnConfigOverride(overrides, "supabaseJwtIssuer")
+      ? overrides.supabaseJwtIssuer
+      : supabaseUrl
+        ? `${supabaseUrl}/auth/v1`
+        : "",
+    supabaseJwksUrl: hasOwnConfigOverride(overrides, "supabaseJwksUrl")
+      ? overrides.supabaseJwksUrl
+      : supabaseUrl
+        ? `${supabaseUrl}/auth/v1/.well-known/jwks.json`
+        : ""
+  };
 }
 
 const resolvedConfig = {
@@ -264,6 +296,12 @@ function assertRuntimeTopology(runtimeConfig) {
     issues.push("At least one of RUN_API_SERVER or RUN_SCAN_WORKER must be true.");
   }
 
+  if (runtimeConfig.rateLimitStore === "redis") {
+    issues.push(
+      "RATE_LIMIT_STORE=redis is no longer supported. Redis is reserved for BullMQ scan queue traffic only. Use RATE_LIMIT_STORE=memory."
+    );
+  }
+
   if (runtimeConfig.queueProvider === "local" && !runtimeConfig.runScanWorker) {
     issues.push("RUN_SCAN_WORKER must be true when QUEUE_PROVIDER=local.");
   }
@@ -312,10 +350,6 @@ function assertProductionSecurity(runtimeConfig) {
 
   if (runtimeConfig.queueProvider === "bullmq" && runtimeConfig.objectStorageProvider !== "s3") {
     issues.push("OBJECT_STORAGE_PROVIDER must be s3 when QUEUE_PROVIDER=bullmq.");
-  }
-
-  if (runtimeConfig.rateLimitStore === "redis" && !runtimeConfig.redisUrl) {
-    issues.push("REDIS_URL is required when RATE_LIMIT_STORE=redis.");
   }
 
   if (runtimeConfig.objectStorageProvider === "s3") {
@@ -377,9 +411,14 @@ function assertSupabaseAuthKeyMode(runtimeConfig) {
   throw new Error("Invalid Supabase key format. Set SUPABASE_PUBLISHABLE_KEY to an sb_publishable_ key.");
 }
 
-assertRuntimeTopology(resolvedConfig);
-assertSupabaseAuthKeyMode(resolvedConfig);
-assertProductionSecurity(resolvedConfig);
+export function validateRuntimeConfig(runtimeConfig) {
+  assertRuntimeTopology(runtimeConfig);
+  assertSupabaseAuthKeyMode(runtimeConfig);
+  assertProductionSecurity(runtimeConfig);
+  return runtimeConfig;
+}
+
+validateRuntimeConfig(resolvedConfig);
 
 export const config = Object.freeze(resolvedConfig);
 
