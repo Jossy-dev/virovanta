@@ -3,6 +3,7 @@ import { Download, Globe2, ShieldCheck, ShieldX, TerminalSquare } from "lucide-r
 import { WidgetCard } from "../components/WidgetCard";
 import { filterCollection } from "../dashboardUtils";
 import { SkeletonBlock } from "../../ui/Skeleton";
+import ButtonSpinner from "../../ui/ButtonSpinner";
 
 const REPORTS_PAGE_SIZE = 12;
 const MAX_INDICATOR_ROWS = 28;
@@ -771,9 +772,10 @@ export function WebsiteSafetyView({
                   type="button"
                   onClick={handleDownloadPdf}
                   disabled={isDownloadingPdf}
-                  className="dashboard-brand-outline inline-flex w-full cursor-pointer items-center justify-center gap-2"
+                  aria-busy={isDownloadingPdf}
+                  className="dashboard-brand-outline inline-flex w-full items-center justify-center gap-2 disabled:cursor-progress disabled:opacity-55"
                 >
-                  <Download size={14} />
+                  {isDownloadingPdf ? <ButtonSpinner className="text-current" /> : <Download size={14} />}
                   {isDownloadingPdf ? "Preparing PDF..." : "Download PDF report"}
                 </button>
                 {downloadError ? <p className="text-sm text-rose-600 dark:text-rose-300">{downloadError}</p> : null}

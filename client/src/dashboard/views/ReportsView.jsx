@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { motion, useReducedMotion } from "framer-motion";
-import { ArrowUpRight, Share2, Trash2 } from "lucide-react";
+import { ArrowUpRight, Download, MessageSquareText, Share2, Trash2 } from "lucide-react";
 import { WidgetCard } from "../components/WidgetCard";
 import { filterCollection } from "../dashboardUtils";
 import { createStaggerContainerVariants, createStaggerItemVariants } from "../../ui/motionSystem";
@@ -27,18 +27,30 @@ function SkeletonBar({ className = "" }) {
 export function ReportsView({
   reports,
   activeReport,
+  reportWorkflow,
+  reportComments,
+  reportShares,
   searchQuery,
   verdictFilter = "",
   onClearVerdictFilter = () => {},
   onOpenReport,
   onCreateShare,
+  onRevokeShare = () => {},
   onDeleteReport,
   shareState,
+  shareDraft,
+  setShareDraft = () => {},
   shareError,
   isCreatingShare,
   isDeletingReport,
+  isUpdatingReportWorkflow = false,
+  isPostingReportComment = false,
   shareCopied,
   onCopyShare,
+  onUpdateReportWorkflow = async () => {},
+  onAddReportComment = async () => {},
+  onDownloadReportPdf = async () => {},
+  onDownloadReportExport = async () => {},
   activeRiskMeta,
   formatDateTime,
   formatBytes,
@@ -79,6 +91,15 @@ export function ReportsView({
   const selectedSourceType = pendingReportSummary?.sourceType || selectedReport?.sourceType || "file";
   const isWebTargetReport = selectedSourceType === "url" || selectedSourceType === "website";
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const [commentDraft, setCommentDraft] = useState("");
+  const [workflowDraft, setWorkflowDraft] = useState({
+    caseStatus: "new",
+    severity: "medium",
+    assigneeLabel: "",
+    clientLabel: "",
+    recommendedAction: "",
+    notesSummary: ""
+  });
   const [visibleReportCount, setVisibleReportCount] = useState(REPORTS_PAGE_SIZE);
   const visibleReports = useMemo(
     () => filteredReports.slice(0, visibleReportCount),
@@ -107,6 +128,18 @@ export function ReportsView({
   useEffect(() => {
     setConfirmDelete(false);
   }, [selectedReport?.id]);
+
+  useEffect(() => {
+    setCommentDraft("");
+    setWorkflowDraft({
+      caseStatus: reportWorkflow?.caseStatus || "new",
+      severity: reportWorkflow?.severity || "medium",
+      assigneeLabel: reportWorkflow?.assigneeLabel || "",
+      clientLabel: reportWorkflow?.clientLabel || "",
+      recommendedAction: reportWorkflow?.recommendedAction || "",
+      notesSummary: reportWorkflow?.notesSummary || ""
+    });
+  }, [reportWorkflow?.reportId, reportWorkflow?.updatedAt]);
 
   useEffect(() => {
     if (!pendingSelectedReportId) {
@@ -356,15 +389,6 @@ export function ReportsView({
                   </span>
                   <button
                     type="button"
-                    onClick={onCreateShare}
-                    disabled={isCreatingShare}
-                    className="dashboard-brand-outline inline-flex w-full items-center justify-center gap-2 px-4 py-2.5 disabled:cursor-not-allowed disabled:opacity-45 sm:w-auto"
-                  >
-                    <Share2 size={16} />
-                    {isCreatingShare ? "Generating..." : "Create share link"}
-                  </button>
-                  <button
-                    type="button"
                     onClick={() => {
                       if (!confirmDelete) {
                         setConfirmDelete(true);
@@ -430,34 +454,233 @@ export function ReportsView({
               ) : null}
             </section>
 
-            {shareState.url ? (
-              <WidgetCard title="Share Link" subtitle="External access">
-                <div className="space-y-3">
-                  <code className="block overflow-x-auto rounded-2xl border border-slate-200/80 bg-slate-50 px-4 py-3 text-xs text-slate-700 dark:border-slate-800/80 dark:bg-slate-900 dark:text-slate-300">
-                    {shareState.url}
-                  </code>
+            <div className="grid gap-6 xl:grid-cols-[1fr_1fr]">
+              <WidgetCard title="Share control" subtitle="External report access">
+                <div className="space-y-4">
+                  <div className="grid gap-3 sm:grid-cols-2">
+                    <label className="grid gap-2 text-sm text-slate-600 dark:text-slate-300">
+                      <span>Share label</span>
+                      <input
+                        type="text"
+                        value={shareDraft?.label || ""}
+                        onChange={(event) => setShareDraft((current) => ({ ...current, label: event.target.value }))}
+                        className="rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-950 outline-none transition focus:border-viro-400 dark:border-slate-800 dark:bg-slate-950 dark:text-white"
+                        placeholder="Client-safe link"
+                      />
+                    </label>
+                    <label className="grid gap-2 text-sm text-slate-600 dark:text-slate-300">
+                      <span>Duration</span>
+                      <select
+                        value={String(shareDraft?.ttlHours || 72)}
+                        onChange={(event) => setShareDraft((current) => ({ ...current, ttlHours: Number(event.target.value) }))}
+                        className="rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-950 outline-none transition focus:border-viro-400 dark:border-slate-800 dark:bg-slate-950 dark:text-white"
+                      >
+                        <option value="24">24 hours</option>
+                        <option value="72">72 hours</option>
+                        <option value="168">7 days</option>
+                        <option value="336">14 days</option>
+                      </select>
+                    </label>
+                  </div>
                   <div className="flex flex-wrap gap-3">
                     <button
                       type="button"
-                      onClick={onCopyShare}
-                      className="dashboard-brand-outline w-full justify-center sm:w-auto"
+                      onClick={() => onCreateShare(shareDraft)}
+                      disabled={isCreatingShare}
+                      className="dashboard-brand-outline inline-flex w-full items-center justify-center gap-2 px-4 py-2.5 disabled:cursor-not-allowed disabled:opacity-45 sm:w-auto"
                     >
-                      {shareCopied ? "Copied" : "Copy link"}
+                      <Share2 size={16} />
+                      {isCreatingShare ? "Generating..." : "Create share link"}
                     </button>
-                    <a
-                      href={shareState.url}
-                      target="_blank"
-                      rel="noreferrer"
+                    <button
+                      type="button"
+                      onClick={() => {
+                        void onDownloadReportPdf(selectedReport.id);
+                      }}
                       className="dashboard-brand-outline inline-flex w-full items-center justify-center gap-2 sm:w-auto"
                     >
-                      Open
-                      <ArrowUpRight size={14} />
-                    </a>
+                      <Download size={14} />
+                      PDF
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        void onDownloadReportExport(selectedReport.id, "json");
+                      }}
+                      className="dashboard-brand-outline inline-flex w-full items-center justify-center gap-2 sm:w-auto"
+                    >
+                      <Download size={14} />
+                      JSON
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        void onDownloadReportExport(selectedReport.id, "csv");
+                      }}
+                      className="dashboard-brand-outline inline-flex w-full items-center justify-center gap-2 sm:w-auto"
+                    >
+                      <Download size={14} />
+                      CSV
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        void onDownloadReportExport(selectedReport.id, "stix");
+                      }}
+                      className="dashboard-brand-outline inline-flex w-full items-center justify-center gap-2 sm:w-auto"
+                    >
+                      <Download size={14} />
+                      STIX
+                    </button>
                   </div>
-                  <p className="text-sm text-slate-500 dark:text-slate-400">Expires {formatDateTime(shareState.expiresAt)}</p>
+
+                  {shareState.url ? (
+                    <div className="rounded-2xl border border-slate-200/80 bg-slate-50/70 px-4 py-4 dark:border-slate-800/80 dark:bg-slate-900/50">
+                      <code className="block overflow-x-auto text-xs text-slate-700 dark:text-slate-300">{shareState.url}</code>
+                      <div className="mt-3 flex flex-wrap gap-3">
+                        <button type="button" onClick={onCopyShare} className="dashboard-brand-outline w-full justify-center sm:w-auto">
+                          {shareCopied ? "Copied" : "Copy link"}
+                        </button>
+                        <a
+                          href={shareState.url}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="dashboard-brand-outline inline-flex w-full items-center justify-center gap-2 sm:w-auto"
+                        >
+                          Open
+                          <ArrowUpRight size={14} />
+                        </a>
+                      </div>
+                      <p className="mt-3 text-sm text-slate-500 dark:text-slate-400">Expires {formatDateTime(shareState.expiresAt)}</p>
+                    </div>
+                  ) : null}
+
+                  {reportShares?.length ? (
+                    <div className="space-y-3">
+                      <p className="dashboard-label">Recent share links</p>
+                      {reportShares.map((share) => (
+                        <div key={share.id} className="rounded-2xl border border-slate-200/80 px-4 py-4 dark:border-slate-800/80">
+                          <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                            <div>
+                              <p className="text-sm font-semibold text-slate-950 dark:text-white">{share.label || "Untitled share link"}</p>
+                              <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
+                                Created {formatDateTime(share.createdAt)}. Expires {formatDateTime(share.expiresAt)}.
+                              </p>
+                              <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
+                                Accesses {share.accessCount || 0}{share.lastAccessedAt ? `, last opened ${formatDateTime(share.lastAccessedAt)}` : ""}
+                              </p>
+                            </div>
+                            {share.revokedAt ? (
+                              <span className="rounded-full border border-slate-300 px-2.5 py-1 text-xs text-slate-600 dark:border-slate-700 dark:text-slate-300">
+                                Revoked
+                              </span>
+                            ) : (
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  void onRevokeShare(share.id);
+                                }}
+                                className="rounded-full border border-slate-200 px-3 py-1.5 text-xs text-slate-700 transition hover:border-rose-300 hover:text-rose-700 dark:border-slate-800 dark:text-slate-300 dark:hover:border-rose-700 dark:hover:text-rose-200"
+                              >
+                                Revoke
+                              </button>
+                            )}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  ) : null}
                 </div>
               </WidgetCard>
-            ) : null}
+
+              <WidgetCard title="Case workflow" subtitle="Analyst-ready triage state">
+                <div className="grid gap-4">
+                  <div className="grid gap-3 sm:grid-cols-2">
+                    <label className="grid gap-2 text-sm text-slate-600 dark:text-slate-300">
+                      <span>Status</span>
+                      <select
+                        value={workflowDraft.caseStatus}
+                        onChange={(event) => setWorkflowDraft((current) => ({ ...current, caseStatus: event.target.value }))}
+                        className="rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-950 outline-none transition focus:border-viro-400 dark:border-slate-800 dark:bg-slate-950 dark:text-white"
+                      >
+                        <option value="new">New</option>
+                        <option value="triage">Triage</option>
+                        <option value="investigating">Investigating</option>
+                        <option value="closed">Closed</option>
+                      </select>
+                    </label>
+                    <label className="grid gap-2 text-sm text-slate-600 dark:text-slate-300">
+                      <span>Severity</span>
+                      <select
+                        value={workflowDraft.severity}
+                        onChange={(event) => setWorkflowDraft((current) => ({ ...current, severity: event.target.value }))}
+                        className="rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-950 outline-none transition focus:border-viro-400 dark:border-slate-800 dark:bg-slate-950 dark:text-white"
+                      >
+                        <option value="low">Low</option>
+                        <option value="medium">Medium</option>
+                        <option value="high">High</option>
+                        <option value="critical">Critical</option>
+                      </select>
+                    </label>
+                  </div>
+
+                  <div className="grid gap-3 sm:grid-cols-2">
+                    <label className="grid gap-2 text-sm text-slate-600 dark:text-slate-300">
+                      <span>Assignee</span>
+                      <input
+                        type="text"
+                        value={workflowDraft.assigneeLabel}
+                        onChange={(event) => setWorkflowDraft((current) => ({ ...current, assigneeLabel: event.target.value }))}
+                        className="rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-950 outline-none transition focus:border-viro-400 dark:border-slate-800 dark:bg-slate-950 dark:text-white"
+                        placeholder="Analyst or queue owner"
+                      />
+                    </label>
+                    <label className="grid gap-2 text-sm text-slate-600 dark:text-slate-300">
+                      <span>Client / queue label</span>
+                      <input
+                        type="text"
+                        value={workflowDraft.clientLabel}
+                        onChange={(event) => setWorkflowDraft((current) => ({ ...current, clientLabel: event.target.value }))}
+                        className="rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-950 outline-none transition focus:border-viro-400 dark:border-slate-800 dark:bg-slate-950 dark:text-white"
+                        placeholder="Finance escalation"
+                      />
+                    </label>
+                  </div>
+
+                  <label className="grid gap-2 text-sm text-slate-600 dark:text-slate-300">
+                    <span>Recommended action</span>
+                    <input
+                      type="text"
+                      value={workflowDraft.recommendedAction}
+                      onChange={(event) => setWorkflowDraft((current) => ({ ...current, recommendedAction: event.target.value }))}
+                      className="rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-950 outline-none transition focus:border-viro-400 dark:border-slate-800 dark:bg-slate-950 dark:text-white"
+                      placeholder="Block, escalate, or continue monitoring"
+                    />
+                  </label>
+
+                  <label className="grid gap-2 text-sm text-slate-600 dark:text-slate-300">
+                    <span>Summary notes</span>
+                    <textarea
+                      value={workflowDraft.notesSummary}
+                      onChange={(event) => setWorkflowDraft((current) => ({ ...current, notesSummary: event.target.value }))}
+                      className="min-h-[116px] rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-950 outline-none transition focus:border-viro-400 dark:border-slate-800 dark:bg-slate-950 dark:text-white"
+                      placeholder="Document why the verdict matters and what should happen next."
+                    />
+                  </label>
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      void onUpdateReportWorkflow(workflowDraft);
+                    }}
+                    disabled={isUpdatingReportWorkflow}
+                    className="dashboard-brand-outline inline-flex w-full items-center justify-center gap-2 sm:w-auto"
+                  >
+                    {isUpdatingReportWorkflow ? "Saving..." : "Save workflow"}
+                  </button>
+                </div>
+              </WidgetCard>
+            </div>
 
             {shareError ? <p className="text-sm text-rose-600 dark:text-rose-300">{shareError}</p> : null}
 
@@ -503,6 +726,59 @@ export function ReportsView({
                 </pre>
               </WidgetCard>
             ) : null}
+
+            <WidgetCard title="Analyst comments" subtitle="Case notes and customer-facing rationale">
+              <div className="space-y-4">
+                <div className="space-y-3">
+                  {(reportComments || []).length === 0 ? (
+                    <div className="rounded-2xl border border-dashed border-slate-300/80 px-4 py-5 text-sm text-slate-500 dark:border-slate-800 dark:text-slate-400">
+                      No comments yet. Use this thread for analyst notes, escalation context, or client-ready wording.
+                    </div>
+                  ) : (
+                    reportComments.map((comment) => (
+                      <div key={comment.id} className="rounded-2xl border border-slate-200/80 px-4 py-4 dark:border-slate-800/80">
+                        <div className="flex items-center justify-between gap-3">
+                          <div className="inline-flex items-center gap-2 text-sm font-semibold text-slate-950 dark:text-white">
+                            <MessageSquareText size={15} className="text-slate-400" />
+                            {comment.authorName}
+                          </div>
+                          <span className="text-xs text-slate-500 dark:text-slate-400">{formatDateTime(comment.createdAt)}</span>
+                        </div>
+                        <p className="mt-3 text-sm leading-7 text-slate-600 dark:text-slate-300">{comment.body}</p>
+                      </div>
+                    ))
+                  )}
+                </div>
+
+                <div className="rounded-2xl border border-slate-200/80 px-4 py-4 dark:border-slate-800/80">
+                  <label className="grid gap-2 text-sm text-slate-600 dark:text-slate-300">
+                    <span>Add comment</span>
+                    <textarea
+                      value={commentDraft}
+                      onChange={(event) => setCommentDraft(event.target.value)}
+                      className="min-h-[110px] rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-950 outline-none transition focus:border-viro-400 dark:border-slate-800 dark:bg-slate-950 dark:text-white"
+                      placeholder="Explain why this report matters, what you verified, and what should happen next."
+                    />
+                  </label>
+                  <div className="mt-3 flex flex-wrap gap-3">
+                    <button
+                      type="button"
+                      onClick={async () => {
+                        if (!commentDraft.trim()) {
+                          return;
+                        }
+                        await onAddReportComment(commentDraft.trim());
+                        setCommentDraft("");
+                      }}
+                      disabled={isPostingReportComment}
+                      className="dashboard-brand-outline inline-flex w-full items-center justify-center gap-2 sm:w-auto"
+                    >
+                      {isPostingReportComment ? "Posting..." : "Add comment"}
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </WidgetCard>
           </>
         ) : null}
       </div>

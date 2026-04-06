@@ -29,7 +29,12 @@ describe("core workflow smoke coverage", () => {
     const urlSubmit = await request(app)
       .post("/api/scans/links/jobs")
       .set("Authorization", `Bearer ${session.accessToken}`)
-      .send({ url: "https://example.com/phish-check" });
+      .send({
+        message: `
+          We need you to validate your account.
+          Go to https://example.com/phish-check to review the request.
+        `
+      });
 
     expect(urlSubmit.status).toBe(202);
 

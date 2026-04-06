@@ -19,12 +19,14 @@ import { createAdminRouter } from "../routes/adminRoutes.js";
 import { createAuthRouter } from "../routes/authRoutes.js";
 import { createPublicRouter } from "../routes/publicRoutes.js";
 import { createScanRouter } from "../routes/scanRoutes.js";
+import { createWorkspaceRouter } from "../routes/workspaceRoutes.js";
 import { scanUploadedFile } from "../scanner/fileScanner.js";
 import { scanTargetUrl } from "../scanner/urlScanner.js";
 import { scanWebsiteSafetyTarget } from "../scanner/websiteSafetyScanner.js";
 import { AuthService } from "../services/authService.js";
 import { NotificationService } from "../services/notificationService.js";
 import { ScanQueueService } from "../services/scanQueueService.js";
+import { WorkspaceService } from "../services/workspaceService.js";
 import { ObjectStorageService } from "../services/storage/objectStorageService.js";
 import { PersistentStore } from "../store/persistentStore.js";
 
@@ -107,6 +109,13 @@ export async function createApp(options = {}) {
     })
   });
 
+  const workspaceService = new WorkspaceService({
+    store,
+    config: runtimeConfig,
+    logger,
+    notificationService: authService.notificationService
+  });
+
   const scanQueueService = new ScanQueueService({
     store,
     scanner,
@@ -115,7 +124,8 @@ export async function createApp(options = {}) {
     config: runtimeConfig,
     logger,
     objectStorageService,
-    notificationService: authService.notificationService
+    notificationService: authService.notificationService,
+    workspaceService
   });
 
   const startQueueService = async () => scanQueueService.start();
@@ -310,6 +320,7 @@ export async function createApp(options = {}) {
       scanner,
       config: runtimeConfig,
       scanQueueService,
+      store,
       preventSensitiveCaching
     })
   );
@@ -317,6 +328,7 @@ export async function createApp(options = {}) {
     "/api/auth",
     createAuthRouter({
       authService,
+      workspaceService,
       requireAuth,
       requireAuthMethod,
       preventSensitiveCaching,
@@ -331,9 +343,20 @@ export async function createApp(options = {}) {
       requireApiKeyScopes,
       scanQueueService,
       authService,
+      workspaceService,
       notificationService: authService.notificationService,
       preventSensitiveCaching,
       config: runtimeConfig
+    })
+  );
+  app.use(
+    "/api/workspace",
+    createWorkspaceRouter({
+      workspaceService,
+      requireAuth,
+      requireAuthMethod,
+      preventSensitiveCaching,
+      scanQueueService
     })
   );
   app.use(
@@ -356,6 +379,7 @@ export async function createApp(options = {}) {
     authService,
     notificationService: authService.notificationService,
     scanQueueService,
+    workspaceService,
     objectStorageService,
     config: runtimeConfig,
     runtimeInfoProvider: collectRuntimeState

@@ -226,6 +226,8 @@ const resolvedConfig = {
   }),
   bullmqRemoveOnCompleteCount: envNumber("BULLMQ_REMOVE_ON_COMPLETE_COUNT", 10, { min: 1, max: 1000 }),
   bullmqRemoveOnFailCount: envNumber("BULLMQ_REMOVE_ON_FAIL_COUNT", 50, { min: 1, max: 5000 }),
+  monitorPollIntervalSeconds: envNumber("MONITOR_POLL_INTERVAL_SECONDS", 300, { min: 30, max: 3600 }),
+  monitorPollBatchSize: envNumber("MONITOR_POLL_BATCH_SIZE", 10, { min: 1, max: 100 }),
   objectStorageEndpoint: envString("OBJECT_STORAGE_ENDPOINT", ""),
   objectStorageRegion: envString("OBJECT_STORAGE_REGION", "us-west-000"),
   objectStorageBucket: envString("OBJECT_STORAGE_BUCKET", serviceName),

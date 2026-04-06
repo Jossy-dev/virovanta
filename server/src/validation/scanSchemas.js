@@ -9,13 +9,43 @@ export const paginationSchema = z.object({
   sourceType: scanSourceTypeSchema.optional()
 });
 
-export const linkScanJobSchema = z.object({
-  url: z
-    .string()
-    .trim()
-    .min(4, "URL is required.")
-    .max(2048, "URL is too long.")
-});
+export const linkScanResolveSchema = z
+  .object({
+    url: z.string().trim().max(2048, "URL is too long.").optional(),
+    message: z.string().trim().max(50_000, "Message is too long.").optional()
+  })
+  .superRefine((value, ctx) => {
+    const hasUrl = typeof value.url === "string" && value.url.trim().length > 0;
+    const hasMessage = typeof value.message === "string" && value.message.trim().length > 0;
+
+    if (!hasUrl && !hasMessage) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["url"],
+        message: "Paste a URL or a suspicious message to scan."
+      });
+    }
+  });
+
+export const linkScanJobSchema = z
+  .object({
+    url: z.string().trim().max(2048, "URL is too long.").optional(),
+    urls: z.array(z.string().trim().max(2048, "URL is too long.")).max(25, "Too many links selected.").optional(),
+    message: z.string().trim().max(50_000, "Message is too long.").optional()
+  })
+  .superRefine((value, ctx) => {
+    const hasUrl = typeof value.url === "string" && value.url.trim().length > 0;
+    const hasUrls = Array.isArray(value.urls) && value.urls.some((entry) => String(entry || "").trim().length > 0);
+    const hasMessage = typeof value.message === "string" && value.message.trim().length > 0;
+
+    if (!hasUrl && !hasUrls && !hasMessage) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["url"],
+        message: "Paste a URL or a suspicious message to scan."
+      });
+    }
+  });
 
 export const websiteSafetyScanJobSchema = z.object({
   url: z
@@ -23,6 +53,24 @@ export const websiteSafetyScanJobSchema = z.object({
     .trim()
     .min(4, "URL is required.")
     .max(2048, "URL is too long.")
+});
+
+export const reportWorkflowUpdateSchema = z.object({
+  caseStatus: z.enum(["new", "triage", "investigating", "closed"]).optional(),
+  severity: z.enum(["low", "medium", "high", "critical"]).optional(),
+  assigneeLabel: z.string().trim().max(120).optional(),
+  clientLabel: z.string().trim().max(120).optional(),
+  recommendedAction: z.string().trim().max(240).optional(),
+  notesSummary: z.string().trim().max(1200).optional()
+});
+
+export const reportCommentCreateSchema = z.object({
+  body: z.string().trim().min(2).max(4_000)
+});
+
+export const reportShareCreateSchema = z.object({
+  label: z.string().trim().max(120).optional().default(""),
+  ttlHours: z.number().int().min(1).max(24 * 30).optional().default(72)
 });
 
 const findingSchema = z.object({

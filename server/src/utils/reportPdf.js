@@ -16,6 +16,17 @@ const BODY_COLOR = rgb(0.12, 0.15, 0.18);
 const MUTED_COLOR = rgb(0.34, 0.39, 0.45);
 const BORDER_COLOR = rgb(0.84, 0.88, 0.93);
 const ACCENT_BG = rgb(0.08, 0.28, 0.18);
+const ACCENT_BG_SECONDARY = rgb(0.12, 0.24, 0.44);
+const SURFACE_BG = rgb(0.97, 0.98, 0.99);
+const BRAND_PANEL_BG = rgb(0.95, 0.97, 1);
+const BRAND_PANEL_BORDER = rgb(0.82, 0.88, 0.97);
+const SUCCESS_BG = rgb(0.92, 0.98, 0.94);
+const SUCCESS_BORDER = rgb(0.67, 0.86, 0.74);
+const WARNING_BG = rgb(1, 0.97, 0.91);
+const WARNING_BORDER = rgb(0.95, 0.79, 0.47);
+const DANGER_BG = rgb(1, 0.93, 0.95);
+const DANGER_BORDER = rgb(0.94, 0.69, 0.75);
+const INK_DARK = rgb(0.05, 0.09, 0.14);
 const MAX_FLAT_ENTRIES = 180;
 const MAX_FLAT_DEPTH = 4;
 
@@ -140,6 +151,125 @@ function summarizeFindingsBySeverity(findings) {
   }
 
   return summary;
+}
+
+function normalizeTargetLabel(report) {
+  return (
+    report?.url?.hostname ||
+    report?.url?.final ||
+    report?.url?.normalized ||
+    report?.websiteSafety?.url?.hostname ||
+    report?.file?.originalName ||
+    "Not collected"
+  );
+}
+
+function rankSeverity(severity) {
+  const normalized = String(severity || "").toLowerCase();
+  if (normalized === "critical") {
+    return 4;
+  }
+  if (normalized === "high") {
+    return 3;
+  }
+  if (normalized === "medium") {
+    return 2;
+  }
+  if (normalized === "low") {
+    return 1;
+  }
+  return 0;
+}
+
+function toneForVerdict(verdict) {
+  const normalized = String(verdict || "").toLowerCase();
+  if (normalized === "clean" || normalized === "safe") {
+    return {
+      background: SUCCESS_BG,
+      border: SUCCESS_BORDER,
+      text: rgb(0.06, 0.43, 0.22),
+      label: "Safe"
+    };
+  }
+
+  if (normalized === "malicious" || normalized === "dangerous") {
+    return {
+      background: DANGER_BG,
+      border: DANGER_BORDER,
+      text: rgb(0.7, 0.12, 0.23),
+      label: "Dangerous"
+    };
+  }
+
+  return {
+    background: WARNING_BG,
+    border: WARNING_BORDER,
+    text: rgb(0.65, 0.42, 0.02),
+    label: "Suspicious"
+  };
+}
+
+function buildLegacySignalCards(report) {
+  const modules = report?.websiteSafety?.modules || {};
+  const severity = summarizeFindingsBySeverity(report?.findings || []);
+  const riskScore = clampScore(report?.riskScore);
+  const safetyScore = report?.websiteSafety?.score != null ? clampScore(report.websiteSafety.score) : clampScore(100 - riskScore);
+  const missingHeaders = Array.isArray(modules?.headers?.missing) ? modules.headers.missing.length : 0;
+  const exposures = Array.isArray(modules?.vulnerabilityChecks?.exposures) ? modules.vulnerabilityChecks.exposures.length : 0;
+  const domainAge = formatDomainAge(modules?.dnsDomain?.ageDays);
+
+  const cards = [
+    {
+      label: "Verdict",
+      value: toneForVerdict(report?.websiteSafety?.verdict || report?.verdict).label,
+      detail: `Risk ${riskScore}/100`,
+      background: BRAND_PANEL_BG,
+      border: BRAND_PANEL_BORDER
+    },
+    {
+      label: "Safety Score",
+      value: `${safetyScore}/100`,
+      detail: "Overall confidence",
+      background: SURFACE_BG,
+      border: BORDER_COLOR
+    },
+    {
+      label: "Findings",
+      value: String(Array.isArray(report?.findings) ? report.findings.length : 0),
+      detail: `High ${severity.high + severity.critical} • Medium ${severity.medium}`,
+      background: WARNING_BG,
+      border: WARNING_BORDER
+    }
+  ];
+
+  if (String(report?.sourceType || "").toLowerCase() === "website") {
+    cards.push({
+      label: "Domain Age",
+      value: domainAge,
+      detail: exposures > 0 ? `${pluralize(exposures, "exposure")} observed` : `${missingHeaders} missing headers`,
+      background: exposures > 0 ? DANGER_BG : SURFACE_BG,
+      border: exposures > 0 ? DANGER_BORDER : BORDER_COLOR
+    });
+  } else {
+    cards.push({
+      label: "Target",
+      value: report?.file?.detectedFileType || report?.file?.magicType || "Artifact",
+      detail: report?.file?.sizeDisplay || formatValue(report?.file?.size),
+      background: SURFACE_BG,
+      border: BORDER_COLOR
+    });
+  }
+
+  return cards;
+}
+
+function buildPriorityFindingSummary(report) {
+  const findings = Array.isArray(report?.findings) ? report.findings : [];
+  return findings
+    .slice()
+    .sort((left, right) => rankSeverity(right?.severity) - rankSeverity(left?.severity))
+    .slice(0, 3)
+    .map((finding) => `${toTitleCase(finding?.severity || "info")}: ${finding?.title || "Finding"}`);
 }
 
 function flattenObject(input, { prefix = "", depth = 0, maxDepth = MAX_FLAT_DEPTH, rows = [] } = {}) {
@@ -293,6 +423,40 @@ class PdfLayout {
     this.cursorY -= this.lineHeight(size);
   }
 
+  drawCard({ x, y, width, height, background = SURFACE_BG, border = BORDER_COLOR } = {}) {
+    this.currentPage.drawRectangle({
+      x,
+      y,
+      width,
+      height,
+      color: background,
+      borderColor: border,
+      borderWidth: 1
+    });
+  }
+
+  drawInlinePill(text, { x, y, background = SURFACE_BG, border = BORDER_COLOR, color = BODY_COLOR, fontSize = 10 } = {}) {
+    const label = String(text || "");
+    const width = this.fontBold.widthOfTextAtSize(label, fontSize) + 18;
+    this.currentPage.drawRectangle({
+      x,
+      y,
+      width,
+      height: 22,
+      color: background,
+      borderColor: border,
+      borderWidth: 1
+    });
+    this.currentPage.drawText(label, {
+      x: x + 9,
+      y: y + 7,
+      size: fontSize,
+      font: this.fontBold,
+      color
+    });
+    return width;
+  }
+
   wrapText(text, { size = 11, width = PAGE_WIDTH - PAGE_MARGIN_X * 2, font = this.fontRegular } = {}) {
     const normalized = String(text || "").replace(/\s+/g, " ").trim();
     if (!normalized) {
@@ -413,7 +577,7 @@ class PdfLayout {
   }
 
   drawTopBanner(report) {
-    const bannerHeight = 66;
+    const bannerHeight = 84;
     const y = PAGE_HEIGHT - bannerHeight;
     this.currentPage.drawRectangle({
       x: 0,
@@ -422,21 +586,37 @@ class PdfLayout {
       height: bannerHeight,
       color: ACCENT_BG
     });
+    this.currentPage.drawRectangle({
+      x: PAGE_WIDTH * 0.58,
+      y,
+      width: PAGE_WIDTH * 0.42,
+      height: bannerHeight,
+      color: ACCENT_BG_SECONDARY,
+      opacity: 0.9
+    });
 
     this.currentPage.drawText("ViroVanta Security Report", {
       x: PAGE_MARGIN_X,
-      y: PAGE_HEIGHT - 28,
-      size: 18,
+      y: PAGE_HEIGHT - 31,
+      size: 20,
       color: rgb(1, 1, 1),
       font: this.fontBold
     });
 
     this.currentPage.drawText(getSourceLabel(report?.sourceType), {
       x: PAGE_MARGIN_X,
-      y: PAGE_HEIGHT - 46,
+      y: PAGE_HEIGHT - 50,
       size: 11,
       color: rgb(0.88, 0.95, 0.91),
       font: this.fontRegular
+    });
+
+    this.currentPage.drawText("Analyst-ready risk report", {
+      x: PAGE_WIDTH - PAGE_MARGIN_X - 122,
+      y: PAGE_HEIGHT - 39,
+      size: 9.5,
+      color: rgb(0.9, 0.95, 1),
+      font: this.fontBold
     });
 
     this.cursorY = PAGE_HEIGHT - bannerHeight - 18;
@@ -477,6 +657,112 @@ function addExecutiveSummary(layout, report) {
   const riskScore = clampScore(report?.riskScore);
   const safetyScore = report?.websiteSafety?.score != null ? clampScore(report.websiteSafety.score) : clampScore(100 - riskScore);
   const severity = summarizeFindingsBySeverity(report?.findings || []);
+  const tone = toneForVerdict(report?.websiteSafety?.verdict || report?.verdict);
+  const priorityFindings = buildPriorityFindingSummary(report);
+  const cards = buildLegacySignalCards(report);
+  const summaryTitle = normalizeTargetLabel(report);
+  const summaryReason =
+    (Array.isArray(report?.plainLanguageReasons) ? report.plainLanguageReasons.find((item) => String(item || "").trim()) : "") ||
+    "Use this report to review overall posture, high-priority findings, and recommended next steps.";
+
+  layout.ensureSpace(13, 12);
+  const heroTop = layout.cursorY;
+  const heroHeight = 108;
+  layout.drawCard({
+    x: PAGE_MARGIN_X,
+    y: heroTop - heroHeight,
+    width: PAGE_WIDTH - PAGE_MARGIN_X * 2,
+    height: heroHeight,
+    background: SURFACE_BG,
+    border: BORDER_COLOR
+  });
+  layout.currentPage.drawText("Executive Snapshot", {
+    x: PAGE_MARGIN_X + 16,
+    y: heroTop - 20,
+    size: 10,
+    font: layout.fontBold,
+    color: MUTED_COLOR
+  });
+  layout.currentPage.drawText(summaryTitle, {
+    x: PAGE_MARGIN_X + 16,
+    y: heroTop - 45,
+    size: 21,
+    font: layout.fontBold,
+    color: INK_DARK
+  });
+  layout.currentPage.drawText(summaryReason, {
+    x: PAGE_MARGIN_X + 16,
+    y: heroTop - 66,
+    size: 10.5,
+    font: layout.fontRegular,
+    color: BODY_COLOR,
+    maxWidth: PAGE_WIDTH - PAGE_MARGIN_X * 2 - 170
+  });
+  layout.drawInlinePill(tone.label, {
+    x: PAGE_WIDTH - PAGE_MARGIN_X - 108,
+    y: heroTop - 30,
+    background: tone.background,
+    border: tone.border,
+    color: tone.text,
+    fontSize: 9.5
+  });
+  layout.currentPage.drawText(`${safetyScore}/100`, {
+    x: PAGE_WIDTH - PAGE_MARGIN_X - 120,
+    y: heroTop - 68,
+    size: 24,
+    font: layout.fontBold,
+    color: INK_DARK
+  });
+  layout.currentPage.drawText("Safety score", {
+    x: PAGE_WIDTH - PAGE_MARGIN_X - 120,
+    y: heroTop - 84,
+    size: 9.5,
+    font: layout.fontRegular,
+    color: MUTED_COLOR
+  });
+  layout.cursorY = heroTop - heroHeight - 12;
+
+  const cardWidth = (PAGE_WIDTH - PAGE_MARGIN_X * 2 - 12) / 2;
+  const cardHeight = 60;
+  const cardsTop = layout.cursorY;
+  cards.forEach((card, index) => {
+    const column = index % 2;
+    const row = Math.floor(index / 2);
+    const x = PAGE_MARGIN_X + column * (cardWidth + 12);
+    const y = cardsTop - row * (cardHeight + 10) - cardHeight;
+    layout.drawCard({
+      x,
+      y,
+      width: cardWidth,
+      height: cardHeight,
+      background: card.background,
+      border: card.border
+    });
+    layout.currentPage.drawText(card.label, {
+      x: x + 12,
+      y: y + 42,
+      size: 9.5,
+      font: layout.fontBold,
+      color: MUTED_COLOR
+    });
+    layout.currentPage.drawText(String(card.value || "Not collected"), {
+      x: x + 12,
+      y: y + 22,
+      size: 16,
+      font: layout.fontBold,
+      color: INK_DARK
+    });
+    if (card.detail) {
+      layout.currentPage.drawText(String(card.detail), {
+        x: x + 12,
+        y: y + 9,
+        size: 8.7,
+        font: layout.fontRegular,
+        color: MUTED_COLOR
+      });
+    }
+  });
+  layout.cursorY = cardsTop - Math.ceil(cards.length / 2) * (cardHeight + 10) - 4;
 
   layout.keyValue("Report ID", report?.id || "Not collected");
   layout.keyValue("Generated At", toDisplayDate(report?.completedAt || report?.createdAt || new Date().toISOString()));
@@ -500,6 +786,15 @@ function addExecutiveSummary(layout, report) {
     layout.bullet("No plain-language summary was generated for this scan. Use the findings and indicators below for analyst review.");
   } else {
     reasons.slice(0, 8).forEach((reason) => layout.bullet(reason));
+  }
+
+  if (priorityFindings.length > 0) {
+    layout.spacer(0.15);
+    layout.paragraph("Priority focus", {
+      size: 11,
+      bold: true
+    });
+    priorityFindings.forEach((item) => layout.bullet(item, { indent: 10 }));
   }
 }
 
@@ -716,8 +1011,8 @@ function addAnalystNotice(layout) {
 
 async function buildLegacyScanReportPdf(report) {
   const pdfDoc = await PDFDocument.create();
-  const fontRegular = await pdfDoc.embedFont(StandardFonts.TimesRoman);
-  const fontBold = await pdfDoc.embedFont(StandardFonts.TimesRomanBold);
+  const fontRegular = await pdfDoc.embedFont(StandardFonts.Helvetica);
+  const fontBold = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
 
   let logoImage = null;
   const logoBytes = await resolveLogoBytes();

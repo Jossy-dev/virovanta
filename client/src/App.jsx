@@ -34,7 +34,8 @@ import {
   readResetFlowState,
   resolveHeroBackgroundVariant,
   resolveTheme,
-  selectHighlightedJob
+  selectHighlightedJob,
+  triggerBlobDownload
 } from "./appUtils";
 import {
   loadDashboardShell,
@@ -48,6 +49,7 @@ import {
   loadStatusPage,
   ROUTE_PREFETCHERS
 } from "./routeModules";
+import { buildUrlScanIntakeBody } from "./urlScanIntake";
 import { createEnterMotion, createPageTransitionMotion } from "./ui/motionSystem";
 import { SkeletonBlock, SkeletonText } from "./ui/Skeleton";
 
@@ -70,6 +72,7 @@ const API_KEY_SCOPE_OPTIONS = Object.freeze([
   "jobs:read",
   "jobs:write",
   "reports:read",
+  "workflow:write",
   "reports:share",
   "reports:delete",
   "analytics:read"
@@ -234,6 +237,7 @@ function buildSessionFromAuthPayload(payload, previousSession = {}) {
     refreshToken: payload.refreshToken,
     user: payload.user || previousSession?.user || null,
     usage: previousSession?.usage || null,
+    workspace: previousSession?.workspace || null,
     persistenceMode: resolveSessionPersistenceMode(previousSession?.persistenceMode, SESSION_PERSISTENCE_LOCAL),
     accessTokenExpiresAt: resolveAccessTokenExpiresAt(payload?.expiresInSeconds),
     sessionStartedAt,
@@ -607,7 +611,15 @@ function AppContent() {
   const [analytics, setAnalytics] = useState(() => buildAnalyticsData());
   const [notifications, setNotifications] = useState([]);
   const [activeReport, setActiveReport] = useState(null);
+  const [reportWorkflow, setReportWorkflow] = useState(null);
+  const [reportComments, setReportComments] = useState([]);
+  const [reportShares, setReportShares] = useState([]);
   const [apiKeys, setApiKeys] = useState([]);
+  const [workspaceSummary, setWorkspaceSummary] = useState(null);
+  const [monitors, setMonitors] = useState([]);
+  const [webhooks, setWebhooks] = useState([]);
+  const [webhookDeliveries, setWebhookDeliveries] = useState([]);
+  const [auditEvents, setAuditEvents] = useState([]);
   const [newApiKey, setNewApiKey] = useState("");
   const [newApiKeyName, setNewApiKeyName] = useState("Default Key");
   const [newApiKeyScopes, setNewApiKeyScopes] = useState(DEFAULT_API_KEY_SCOPES);
@@ -616,9 +628,18 @@ function AppContent() {
     url: "",
     expiresAt: ""
   });
+  const [shareDraft, setShareDraft] = useState({
+    label: "",
+    ttlHours: 72
+  });
   const [shareError, setShareError] = useState("");
   const [isCreatingShare, setIsCreatingShare] = useState(false);
   const [isDeletingReport, setIsDeletingReport] = useState(false);
+  const [isUpdatingReportWorkflow, setIsUpdatingReportWorkflow] = useState(false);
+  const [isPostingReportComment, setIsPostingReportComment] = useState(false);
+  const [isManagingMonitor, setIsManagingMonitor] = useState(false);
+  const [isManagingWebhook, setIsManagingWebhook] = useState(false);
+  const [isStartingTrial, setIsStartingTrial] = useState(false);
   const [shareCopied, setShareCopied] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   const [dashboardTheme, setDashboardTheme] = useState(resolveTheme);
@@ -708,17 +729,26 @@ function AppContent() {
     setSession(null);
     setScanLimits(DEFAULT_SCAN_LIMITS);
     setActiveReport(null);
+    setReportWorkflow(null);
+    setReportComments([]);
+    setReportShares([]);
     setReports([]);
     setNotifications([]);
     setJobs([]);
     setAnalytics(buildAnalyticsData());
     setActiveJob(null);
     setApiKeys([]);
+    setWorkspaceSummary(null);
+    setMonitors([]);
+    setWebhooks([]);
+    setWebhookDeliveries([]);
+    setAuditEvents([]);
     setNewApiKey("");
     setNewApiKeyScopes(DEFAULT_API_KEY_SCOPES);
     setSearchQuery("");
     clearSelectedFiles();
     setShareState({ url: "", expiresAt: "" });
+    setShareDraft({ label: "", ttlHours: 72 });
     setShareError("");
     setShareCopied(false);
     clearDashboardCache();
@@ -1255,8 +1285,12 @@ function AppContent() {
 
   useEffect(() => {
     setShareState({ url: "", expiresAt: "" });
+    setShareDraft({ label: "", ttlHours: 72 });
     setShareError("");
     setShareCopied(false);
+    setReportWorkflow(null);
+    setReportComments([]);
+    setReportShares([]);
   }, [activeReportId]);
 
   useEffect(() => {
@@ -1458,7 +1492,12 @@ function AppContent() {
         refreshReports(activeSession),
         refreshApiKeys(activeSession),
         refreshNotifications(activeSession),
-        refreshAnalytics(activeSession)
+        refreshAnalytics(activeSession),
+        refreshWorkspaceSummary(activeSession),
+        refreshMonitors(activeSession),
+        refreshWebhooks(activeSession),
+        refreshWebhookDeliveries(activeSession),
+        refreshAuditEvents(activeSession)
       ]);
     } finally {
       if (showSyncIndicator) {
@@ -1474,6 +1513,7 @@ function AppContent() {
       ...activeSession,
       user: mePayload.user,
       usage: mePayload.usage,
+      workspace: mePayload.workspace || activeSession?.workspace || null,
       persistenceMode: resolveSessionPersistenceMode(activeSession?.persistenceMode, SESSION_PERSISTENCE_LOCAL),
       accessTokenExpiresAt: activeSession?.accessTokenExpiresAt || resolveAccessTokenExpiresAt(ACCESS_TOKEN_FALLBACK_TTL_SECONDS)
     };
@@ -1482,6 +1522,7 @@ function AppContent() {
       maxFilesPerBatch: Number(mePayload?.scanLimits?.maxFilesPerBatch) || DEFAULT_SCAN_LIMITS.maxFilesPerBatch,
       maxUploadMb: Number(mePayload?.scanLimits?.maxUploadMb) || DEFAULT_SCAN_LIMITS.maxUploadMb
     });
+    setWorkspaceSummary(mePayload?.workspace || null);
     setSession(nextSession);
     persistSessionSnapshot(nextSession);
     touchSessionActivity({ force: true });
@@ -1578,6 +1619,82 @@ function AppContent() {
     updateDashboardCache(activeSession, { notifications: nextNotifications });
   }
 
+  async function refreshWorkspaceSummary(activeSession = session) {
+    if (!activeSession) {
+      return;
+    }
+
+    const payload = await apiRequest("/api/workspace/summary", { authSession: activeSession });
+    const nextWorkspace = payload?.workspace || null;
+    setWorkspaceSummary(nextWorkspace);
+    setSession((current) => {
+      if (!current?.accessToken) {
+        return current;
+      }
+
+      const nextSession = {
+        ...current,
+        workspace: nextWorkspace
+      };
+      persistSessionSnapshot(nextSession);
+      return nextSession;
+    });
+  }
+
+  async function refreshMonitors(activeSession = session) {
+    if (!activeSession) {
+      return;
+    }
+
+    const payload = await apiRequest("/api/workspace/monitors", { authSession: activeSession });
+    setMonitors(Array.isArray(payload?.monitors) ? payload.monitors : []);
+  }
+
+  async function refreshWebhooks(activeSession = session) {
+    if (!activeSession) {
+      return;
+    }
+
+    const payload = await apiRequest("/api/workspace/webhooks", { authSession: activeSession });
+    setWebhooks(Array.isArray(payload?.webhooks) ? payload.webhooks : []);
+  }
+
+  async function refreshWebhookDeliveries(activeSession = session) {
+    if (!activeSession) {
+      return;
+    }
+
+    const payload = await apiRequest("/api/workspace/webhooks/deliveries?limit=20", { authSession: activeSession });
+    setWebhookDeliveries(Array.isArray(payload?.deliveries) ? payload.deliveries : []);
+  }
+
+  async function refreshAuditEvents(activeSession = session) {
+    if (!activeSession) {
+      return;
+    }
+
+    const payload = await apiRequest("/api/workspace/audit?limit=20", { authSession: activeSession });
+    setAuditEvents(Array.isArray(payload?.events) ? payload.events : []);
+  }
+
+  async function loadReportWorkspace(reportId, activeSession = session) {
+    if (!activeSession || !reportId) {
+      setReportWorkflow(null);
+      setReportComments([]);
+      setReportShares([]);
+      return null;
+    }
+
+    const payload = await apiRequest(`/api/scans/reports/${encodeURIComponent(reportId)}/workflow`, {
+      authSession: activeSession
+    });
+
+    setReportWorkflow(payload?.workflow || null);
+    setReportComments(Array.isArray(payload?.comments) ? payload.comments : []);
+    setReportShares(Array.isArray(payload?.shares) ? payload.shares : []);
+    return payload;
+  }
+
   async function fetchNotificationsPage({ limit = 10, offset = 0 } = {}, activeSession = session) {
     if (!activeSession) {
       return {
@@ -1619,6 +1736,9 @@ function AppContent() {
     const nextReport = isDetailedReportPayload(payload?.report) ? payload.report : null;
     setActiveReport(nextReport);
     updateDashboardCache(activeSession, { activeReport: nextReport });
+    if (nextReport?.id) {
+      await loadReportWorkspace(nextReport.id, activeSession);
+    }
     return nextReport;
   }
 
@@ -1865,39 +1985,68 @@ function AppContent() {
     }
   }
 
-  async function submitUrlScan(url) {
+  async function resolveUrlScanTargets(input) {
+    if (!session || isSubmittingScan) {
+      return null;
+    }
+
+    const rawInput = String(input || "").trim();
+    if (!rawInput) {
+      throw new Error("Paste a URL or a suspicious message to scan.");
+    }
+
+    const payload = await apiRequest("/api/scans/links/resolve", {
+      method: "POST",
+      body: buildUrlScanIntakeBody(rawInput),
+      authSession: session,
+      timeoutMs: API_REQUEST_TIMEOUT_UPLOAD_MS
+    });
+
+    return payload?.resolution || null;
+  }
+
+  async function submitUrlScans(urls, { extracted = false } = {}) {
     if (!session || isSubmittingScan) {
       return;
     }
 
-    const trimmedUrl = String(url || "").trim();
-    if (!trimmedUrl) {
-      throw new Error("Paste a URL to scan.");
+    const requestedUrls = Array.isArray(urls)
+      ? urls.map((item) => String(item || "").trim()).filter(Boolean)
+      : [String(urls || "").trim()].filter(Boolean);
+
+    if (requestedUrls.length === 0) {
+      throw new Error("Select at least one link to scan.");
     }
+
+    const requestBody = requestedUrls.length === 1 ? { url: requestedUrls[0] } : { urls: requestedUrls };
 
     setIsSubmittingScan(true);
 
     try {
       const payload = await apiRequest("/api/scans/links/jobs", {
         method: "POST",
-        body: { url: trimmedUrl },
+        body: requestBody,
         authSession: session,
         timeoutMs: API_REQUEST_TIMEOUT_UPLOAD_MS
       });
 
-      const queuedJob = payload?.job || null;
-      setActiveJob(queuedJob);
+      const queuedJobs = Array.isArray(payload?.jobs) ? payload.jobs : payload?.job ? [payload.job] : [];
+      setActiveJob(queuedJobs[0] || null);
       applyQuotaFromResponse(payload?.quota);
 
-      toast.success("URL scan job queued.");
+      if (queuedJobs.length > 1) {
+        toast.success(`${pluralize("URL scan job", queuedJobs.length)} queued.`);
+      } else {
+        toast.success(extracted || payload?.extracted ? "Suspicious link extracted and queued." : "URL scan job queued.");
+      }
       await Promise.all([refreshJobs(session), refreshNotifications(session), refreshAnalytics(session)]);
       navigate("/app/projects", { replace: false });
-      return queuedJob;
+      return queuedJobs;
     } catch (error) {
       if (session && error?.code === "SCAN_QUOTA_EXCEEDED") {
         await refreshNotifications(session);
       }
-      toast.error(error.message || "Could not queue URL scan job.");
+      toast.error(error.message || "Could not queue URL scan jobs.");
       throw error;
     } finally {
       setIsSubmittingScan(false);
@@ -1980,7 +2129,7 @@ function AppContent() {
       setNewApiKey(responsePayload.apiKey || "");
       setNewApiKeyName(requestedName);
       setNewApiKeyScopes(normalizedScopes);
-      await Promise.all([refreshApiKeys(session), refreshNotifications(session)]);
+      await Promise.all([refreshApiKeys(session), refreshNotifications(session), refreshAuditEvents(session)]);
       toast.success("API key created. Copy it now, it will not be shown again.");
     } catch (error) {
       toast.error(error.message || "Could not create API key.");
@@ -2090,13 +2239,13 @@ function AppContent() {
         authSession: session
       });
 
-      await Promise.all([refreshApiKeys(session), refreshNotifications(session)]);
+      await Promise.all([refreshApiKeys(session), refreshNotifications(session), refreshAuditEvents(session)]);
     } catch (error) {
       toast.error(error.message || "Could not revoke API key.");
     }
   }
 
-  async function createReportShareLink() {
+  async function createReportShareLink(options = {}) {
     if (!session || !activeReportId || isCreatingShare) {
       return;
     }
@@ -2108,6 +2257,10 @@ function AppContent() {
     try {
       const payload = await apiRequest(`/api/scans/reports/${activeReportId}/share`, {
         method: "POST",
+        body: {
+          label: String(options.label ?? shareDraft.label ?? "").trim(),
+          ttlHours: Number(options.ttlHours ?? shareDraft.ttlHours ?? 72)
+        },
         authSession: session
       });
 
@@ -2119,11 +2272,83 @@ function AppContent() {
         url: resolvedUrl,
         expiresAt: payload.expiresAt || ""
       });
-      await refreshNotifications(session);
+      setShareDraft({
+        label: "",
+        ttlHours: shareDraft.ttlHours || 72
+      });
+      await Promise.all([refreshNotifications(session), refreshAuditEvents(session), loadReportWorkspace(activeReportId, session)]);
     } catch (error) {
       setShareError(error.message || "Failed to generate share link.");
     } finally {
       setIsCreatingShare(false);
+    }
+  }
+
+  async function revokeReportShare(shareId) {
+    if (!session || !activeReportId || !shareId) {
+      return;
+    }
+
+    try {
+      await apiRequest(`/api/scans/reports/${activeReportId}/shares/${encodeURIComponent(shareId)}`, {
+        method: "DELETE",
+        authSession: session
+      });
+      await Promise.all([refreshAuditEvents(session), loadReportWorkspace(activeReportId, session)]);
+      toast.success("Share link revoked.");
+    } catch (error) {
+      setShareError(error.message || "Could not revoke share link.");
+      throw error;
+    }
+  }
+
+  async function updateActiveReportWorkflow(patch) {
+    if (!session || !activeReportId || isUpdatingReportWorkflow) {
+      return;
+    }
+
+    setIsUpdatingReportWorkflow(true);
+
+    try {
+      const payload = await apiRequest(`/api/scans/reports/${activeReportId}/workflow`, {
+        method: "PATCH",
+        body: patch,
+        authSession: session
+      });
+      setReportWorkflow(payload?.workflow || null);
+      await Promise.all([refreshNotifications(session), refreshAuditEvents(session), refreshAnalytics(session)]);
+      return payload?.workflow || null;
+    } catch (error) {
+      toast.error(error.message || "Could not update report workflow.");
+      throw error;
+    } finally {
+      setIsUpdatingReportWorkflow(false);
+    }
+  }
+
+  async function addActiveReportComment(body) {
+    if (!session || !activeReportId || isPostingReportComment) {
+      return;
+    }
+
+    setIsPostingReportComment(true);
+
+    try {
+      const payload = await apiRequest(`/api/scans/reports/${activeReportId}/comments`, {
+        method: "POST",
+        body: {
+          body
+        },
+        authSession: session
+      });
+      setReportComments((current) => [...current, payload?.comment].filter(Boolean));
+      await Promise.all([refreshNotifications(session), refreshAuditEvents(session), loadReportWorkspace(activeReportId, session)]);
+      return payload?.comment || null;
+    } catch (error) {
+      toast.error(error.message || "Could not add comment.");
+      throw error;
+    } finally {
+      setIsPostingReportComment(false);
     }
   }
 
@@ -2144,7 +2369,7 @@ function AppContent() {
       });
 
       toast.success("Report deleted.");
-      await Promise.all([refreshReports(session), refreshAnalytics(session), refreshNotifications(session)]);
+      await Promise.all([refreshReports(session), refreshAnalytics(session), refreshNotifications(session), refreshAuditEvents(session)]);
     } catch (error) {
       toast.error(error.message || "Could not delete report.");
     } finally {
@@ -2210,14 +2435,227 @@ function AppContent() {
     }
 
     const blob = await response.blob();
-    const objectUrl = URL.createObjectURL(blob);
-    const anchor = document.createElement("a");
-    anchor.href = objectUrl;
-    anchor.download = `${String(reportId || "report").replace(/[^a-zA-Z0-9._-]+/g, "_")}.pdf`;
-    document.body.appendChild(anchor);
-    anchor.click();
-    anchor.remove();
-    URL.revokeObjectURL(objectUrl);
+    await triggerBlobDownload(blob, `${String(reportId || "report").replace(/[^a-zA-Z0-9._-]+/g, "_")}.pdf`);
+  }
+
+  async function downloadReportExport(reportId, format) {
+    if (!session?.accessToken || !reportId) {
+      throw new Error("A signed-in session is required to download this export.");
+    }
+
+    let activeSession = session;
+    if (shouldRefreshAccessToken(activeSession)) {
+      activeSession = await refreshAuthSession(activeSession.refreshToken, activeSession);
+    }
+
+    const fetchAsset = async (accessToken) =>
+      fetch(buildApiUrl(`/api/scans/reports/${encodeURIComponent(reportId)}/export.${format}`), {
+        method: "GET",
+        headers: {
+          Authorization: `Bearer ${accessToken}`
+        }
+      });
+
+    let response = await fetchAsset(activeSession.accessToken);
+    if (response.status === 401 && activeSession.refreshToken) {
+      const refreshedSession = await refreshAuthSession(activeSession.refreshToken, activeSession);
+      response = await fetchAsset(refreshedSession.accessToken);
+      activeSession = refreshedSession;
+    }
+
+    if (!response.ok) {
+      let errorMessage = "Could not download export.";
+      try {
+        const payload = await response.json();
+        if (payload?.error?.message) {
+          errorMessage = payload.error.message;
+        }
+      } catch {
+        // no-op
+      }
+
+      throw new Error(errorMessage);
+    }
+
+    const disposition = String(response.headers.get("content-disposition") || "");
+    const fileNameMatch = disposition.match(/filename=\"?([^\";]+)\"?/i);
+    const fallbackName = `${String(reportId || "report").replace(/[^a-zA-Z0-9._-]+/g, "_")}.${format}`;
+    const fileName = fileNameMatch?.[1] || fallbackName;
+    const blob = await response.blob();
+    await triggerBlobDownload(blob, fileName);
+  }
+
+  async function startWorkspaceTrial() {
+    if (!session || isStartingTrial) {
+      return;
+    }
+
+    setIsStartingTrial(true);
+
+    try {
+      const payload = await apiRequest("/api/workspace/trial/start", {
+        method: "POST",
+        body: {},
+        authSession: session
+      });
+      const nextWorkspace = payload?.workspace || null;
+      setWorkspaceSummary(nextWorkspace);
+      setSession((current) => {
+        if (!current) {
+          return current;
+        }
+
+        const next = {
+          ...current,
+          workspace: nextWorkspace
+        };
+        persistSessionSnapshot(next);
+        return next;
+      });
+      toast.success("Pro trial started.");
+      await Promise.all([refreshNotifications(session), refreshMonitors(session), refreshWebhooks(session), refreshAuditEvents(session)]);
+    } catch (error) {
+      toast.error(error.message || "Could not start trial.");
+      throw error;
+    } finally {
+      setIsStartingTrial(false);
+    }
+  }
+
+  async function createMonitor(input) {
+    if (!session || isManagingMonitor) {
+      return;
+    }
+
+    setIsManagingMonitor(true);
+
+    try {
+      await apiRequest("/api/workspace/monitors", {
+        method: "POST",
+        body: input,
+        authSession: session
+      });
+      await Promise.all([refreshMonitors(session), refreshWorkspaceSummary(session), refreshNotifications(session), refreshAuditEvents(session)]);
+      toast.success("Monitor created.");
+    } catch (error) {
+      toast.error(error.message || "Could not create monitor.");
+      throw error;
+    } finally {
+      setIsManagingMonitor(false);
+    }
+  }
+
+  async function runMonitorNow(monitorId) {
+    if (!session || !monitorId) {
+      return;
+    }
+
+    try {
+      const payload = await apiRequest(`/api/workspace/monitors/${encodeURIComponent(monitorId)}/run`, {
+        method: "POST",
+        body: {},
+        authSession: session
+      });
+      if (payload?.job) {
+        setActiveJob(payload.job);
+      }
+      await Promise.all([refreshJobs(session), refreshNotifications(session), refreshAnalytics(session), refreshAuditEvents(session)]);
+      toast.success("Monitor run queued.");
+    } catch (error) {
+      toast.error(error.message || "Could not queue monitor run.");
+      throw error;
+    }
+  }
+
+  async function deleteMonitor(monitorId) {
+    if (!session || !monitorId || isManagingMonitor) {
+      return;
+    }
+
+    setIsManagingMonitor(true);
+
+    try {
+      await apiRequest(`/api/workspace/monitors/${encodeURIComponent(monitorId)}`, {
+        method: "DELETE",
+        authSession: session
+      });
+      await Promise.all([refreshMonitors(session), refreshWorkspaceSummary(session), refreshAuditEvents(session)]);
+      toast.success("Monitor deleted.");
+    } catch (error) {
+      toast.error(error.message || "Could not delete monitor.");
+      throw error;
+    } finally {
+      setIsManagingMonitor(false);
+    }
+  }
+
+  async function createWebhook(input) {
+    if (!session || isManagingWebhook) {
+      return;
+    }
+
+    setIsManagingWebhook(true);
+
+    try {
+      const payload = await apiRequest("/api/workspace/webhooks", {
+        method: "POST",
+        body: input,
+        authSession: session
+      });
+      await Promise.all([refreshWebhooks(session), refreshWebhookDeliveries(session), refreshWorkspaceSummary(session), refreshAuditEvents(session)]);
+      toast.success("Webhook endpoint created.");
+      return payload;
+    } catch (error) {
+      toast.error(error.message || "Could not create webhook.");
+      throw error;
+    } finally {
+      setIsManagingWebhook(false);
+    }
+  }
+
+  async function testWebhook(webhookId) {
+    if (!session || !webhookId || isManagingWebhook) {
+      return;
+    }
+
+    setIsManagingWebhook(true);
+
+    try {
+      await apiRequest(`/api/workspace/webhooks/${encodeURIComponent(webhookId)}/test`, {
+        method: "POST",
+        body: {},
+        authSession: session
+      });
+      await Promise.all([refreshWebhookDeliveries(session), refreshAuditEvents(session)]);
+      toast.success("Test webhook sent.");
+    } catch (error) {
+      toast.error(error.message || "Could not send test webhook.");
+      throw error;
+    } finally {
+      setIsManagingWebhook(false);
+    }
+  }
+
+  async function deleteWebhook(webhookId) {
+    if (!session || !webhookId || isManagingWebhook) {
+      return;
+    }
+
+    setIsManagingWebhook(true);
+
+    try {
+      await apiRequest(`/api/workspace/webhooks/${encodeURIComponent(webhookId)}`, {
+        method: "DELETE",
+        authSession: session
+      });
+      await Promise.all([refreshWebhooks(session), refreshWorkspaceSummary(session), refreshAuditEvents(session)]);
+      toast.success("Webhook removed.");
+    } catch (error) {
+      toast.error(error.message || "Could not remove webhook.");
+      throw error;
+    } finally {
+      setIsManagingWebhook(false);
+    }
   }
 
   async function loadSharedReport(token) {
@@ -2371,19 +2809,34 @@ function AppContent() {
                       reports={reports}
                       activeJob={activeJob}
                       activeReport={activeReport}
+                      reportWorkflow={reportWorkflow}
+                      reportComments={reportComments}
+                      reportShares={reportShares}
                       activeRiskMeta={activeRiskMeta}
                       shareState={shareState}
+                      shareDraft={shareDraft}
                       shareError={shareError}
                       isCreatingShare={isCreatingShare}
                       isDeletingReport={isDeletingReport}
+                      isUpdatingReportWorkflow={isUpdatingReportWorkflow}
+                      isPostingReportComment={isPostingReportComment}
                       shareCopied={shareCopied}
                       apiKeys={apiKeys}
+                      workspaceSummary={workspaceSummary}
+                      monitors={monitors}
+                      webhooks={webhooks}
+                      webhookDeliveries={webhookDeliveries}
+                      auditEvents={auditEvents}
                       newApiKey={newApiKey}
                       newApiKeyName={newApiKeyName}
                       newApiKeyScopes={newApiKeyScopes}
                       isCreatingKey={isCreatingKey}
+                      isManagingMonitor={isManagingMonitor}
+                      isManagingWebhook={isManagingWebhook}
+                      isStartingTrial={isStartingTrial}
                       setNewApiKeyName={setNewApiKeyName}
                       setNewApiKeyScopes={setNewApiKeyScopes}
+                      setShareDraft={setShareDraft}
                       notifications={notifications}
                       onLogout={logout}
                       onNotificationsViewed={markNotificationsViewed}
@@ -2391,16 +2844,28 @@ function AppContent() {
                       onSelectNotification={handleNotificationSelect}
                       onSelectFiles={handleSelectedFiles}
                       onSubmitScan={submitScan}
-                      onSubmitUrlScan={submitUrlScan}
+                      onResolveUrlScanTargets={resolveUrlScanTargets}
+                      onSubmitUrlScans={submitUrlScans}
                       onSubmitWebsiteSafetyScan={submitWebsiteSafetyScan}
                       onClearSelectedFiles={clearSelectedFiles}
                       onOpenReport={openReport}
                       onDownloadReportPdf={downloadReportPdf}
+                      onDownloadReportExport={downloadReportExport}
                       onCreateShare={createReportShareLink}
+                      onRevokeShare={revokeReportShare}
                       onDeleteReport={deleteReport}
                       onCopyShare={copyShareLink}
+                      onUpdateReportWorkflow={updateActiveReportWorkflow}
+                      onAddReportComment={addActiveReportComment}
                       onCreateApiKey={createApiKey}
                       onRevokeApiKey={revokeApiKey}
+                      onStartWorkspaceTrial={startWorkspaceTrial}
+                      onCreateMonitor={createMonitor}
+                      onRunMonitor={runMonitorNow}
+                      onDeleteMonitor={deleteMonitor}
+                      onCreateWebhook={createWebhook}
+                      onTestWebhook={testWebhook}
+                      onDeleteWebhook={deleteWebhook}
                       formatDateTime={formatDateTime}
                       formatBytes={formatBytes}
                       pluralize={pluralize}

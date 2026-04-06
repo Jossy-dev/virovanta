@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { CheckCircle2, Copy, KeyRound, MonitorCog, Shield } from "lucide-react";
+import { Activity, CheckCircle2, Copy, KeyRound, MonitorCog, Shield, Webhook } from "lucide-react";
 import { DataTable } from "../components/DataTable";
 import { WidgetCard } from "../components/WidgetCard";
 
@@ -20,6 +20,11 @@ const API_SCOPE_OPTIONS = Object.freeze([
     description: "Access report details, IOC output, and integrity status."
   },
   {
+    value: "workflow:write",
+    label: "Workflow Write",
+    description: "Update report case state and add analyst comments."
+  },
+  {
     value: "reports:share",
     label: "Reports Share",
     description: "Generate share links for selected reports."
@@ -34,6 +39,17 @@ const API_SCOPE_OPTIONS = Object.freeze([
     label: "Analytics Read",
     description: "Read usage, verdict, and posture analytics."
   }
+]);
+
+const WEBHOOK_EVENT_OPTIONS = Object.freeze([
+  "report.ready",
+  "report.deleted",
+  "report.share.created",
+  "report.share.revoked",
+  "report.workflow.updated",
+  "report.comment.created",
+  "monitor.change.detected",
+  "monitor.run.completed"
 ]);
 
 function sortApiKeyScopes(scopes = []) {
@@ -83,8 +99,20 @@ function formatDateCell(value) {
   }).format(new Date(timestamp));
 }
 
+function formatAuditActionLabel(action) {
+  return String(action || "workspace.updated")
+    .split(".")
+    .filter(Boolean)
+    .map((segment) => segment.charAt(0).toUpperCase() + segment.slice(1))
+    .join(" ");
+}
+
 export function SettingsView({
   session,
+  workspaceSummary,
+  webhooks,
+  webhookDeliveries,
+  auditEvents = [],
   theme,
   onToggleTheme,
   newApiKeyName,
@@ -95,19 +123,38 @@ export function SettingsView({
   isCreatingKey,
   newApiKey,
   apiKeys,
-  onRevokeApiKey
+  onRevokeApiKey,
+  isManagingWebhook = false,
+  isStartingTrial = false,
+  onStartWorkspaceTrial = async () => {},
+  onCreateWebhook = async () => {},
+  onTestWebhook = async () => {},
+  onDeleteWebhook = async () => {}
 }) {
   const [isCopying, setIsCopying] = useState(false);
   const [keyCopied, setKeyCopied] = useState(false);
+  const [webhookName, setWebhookName] = useState("Workspace automation");
+  const [webhookUrl, setWebhookUrl] = useState("");
+  const [webhookEvents, setWebhookEvents] = useState(["report.ready", "monitor.change.detected"]);
+  const [latestWebhookSecret, setLatestWebhookSecret] = useState("");
   const canCopyApiKey = typeof navigator !== "undefined" && Boolean(navigator?.clipboard?.writeText);
   const selectedScopeSet = useMemo(() => new Set(sortApiKeyScopes(newApiKeyScopes)), [newApiKeyScopes]);
   const selectedScopeCount = selectedScopeSet.size;
   const canCreateKey = !isCreatingKey && String(newApiKeyName || "").trim().length >= 3 && selectedScopeCount > 0;
+  const activePlanName = workspaceSummary?.profile?.planName || "Free";
+  const trialStatus = workspaceSummary?.trial?.status || "available";
+  const usageSummary = workspaceSummary?.usage || {};
 
   useEffect(() => {
     setKeyCopied(false);
     setIsCopying(false);
   }, [newApiKey]);
+
+  function toggleWebhookEvent(eventName) {
+    setWebhookEvents((current) =>
+      current.includes(eventName) ? current.filter((entry) => entry !== eventName) : [...current, eventName]
+    );
+  }
 
   function toggleScope(scopeValue) {
     setNewApiKeyScopes((current) => {
@@ -140,6 +187,21 @@ export function SettingsView({
       setKeyCopied(true);
     } finally {
       setIsCopying(false);
+    }
+  }
+
+  async function submitWebhookCreation() {
+    try {
+      const payload = await onCreateWebhook({
+        name: String(webhookName || "").trim(),
+        url: String(webhookUrl || "").trim(),
+        events: webhookEvents
+      });
+
+      setLatestWebhookSecret(payload?.signingSecret || "");
+      setWebhookUrl("");
+    } catch {
+      // Parent already handles toast messaging.
     }
   }
 
@@ -244,6 +306,65 @@ export function SettingsView({
           </div>
         </WidgetCard>
 
+        <WidgetCard title="Workspace plan" subtitle="Subscription-ready entitlement layer" action={<Activity size={18} className="text-slate-400 dark:text-slate-500" />}>
+          <div className="grid gap-3 sm:grid-cols-2">
+            <div className="rounded-2xl border border-slate-200/80 px-4 py-4 dark:border-slate-800/80">
+              <p className="dashboard-label">Plan</p>
+              <p className="mt-2 text-lg font-semibold text-slate-950 dark:text-white">{activePlanName}</p>
+              <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">{workspaceSummary?.profile?.headline || "Private triage workspace"}</p>
+            </div>
+            <div className="rounded-2xl border border-slate-200/80 px-4 py-4 dark:border-slate-800/80">
+              <p className="dashboard-label">Trial</p>
+              <p className="mt-2 text-lg font-semibold capitalize text-slate-950 dark:text-white">{trialStatus.replace(/_/g, " ")}</p>
+              <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">
+                {workspaceSummary?.trial?.trialEndsAt ? `Ends ${formatDateCell(workspaceSummary.trial.trialEndsAt)}` : "Ready when you want more headroom."}
+              </p>
+            </div>
+          </div>
+          <div className="mt-4 grid gap-3 sm:grid-cols-2">
+            <div className="rounded-2xl border border-slate-200/80 px-4 py-4 dark:border-slate-800/80">
+              <p className="dashboard-label">Scans</p>
+              <p className="mt-2 text-lg font-semibold text-slate-950 dark:text-white">
+                {workspaceSummary?.entitlements?.limits?.dailyScans == null ? "Unlimited" : workspaceSummary?.entitlements?.limits?.dailyScans}
+              </p>
+            </div>
+            <div className="rounded-2xl border border-slate-200/80 px-4 py-4 dark:border-slate-800/80">
+              <p className="dashboard-label">Monitors</p>
+              <p className="mt-2 text-lg font-semibold text-slate-950 dark:text-white">
+                {usageSummary.monitorsActive || 0}/{workspaceSummary?.entitlements?.limits?.monitors ?? "Unlimited"}
+              </p>
+            </div>
+            <div className="rounded-2xl border border-slate-200/80 px-4 py-4 dark:border-slate-800/80">
+              <p className="dashboard-label">Webhooks</p>
+              <p className="mt-2 text-lg font-semibold text-slate-950 dark:text-white">
+                {usageSummary.webhooksActive || 0}/{workspaceSummary?.entitlements?.limits?.webhooks ?? "Unlimited"}
+              </p>
+            </div>
+            <div className="rounded-2xl border border-slate-200/80 px-4 py-4 dark:border-slate-800/80">
+              <p className="dashboard-label">Share window</p>
+              <p className="mt-2 text-lg font-semibold text-slate-950 dark:text-white">
+                {workspaceSummary?.entitlements?.limits?.shareTtlHours || 72}h
+              </p>
+            </div>
+            <div className="rounded-2xl border border-slate-200/80 px-4 py-4 dark:border-slate-800/80">
+              <p className="dashboard-label">Retention</p>
+              <p className="mt-2 text-lg font-semibold text-slate-950 dark:text-white">
+                {workspaceSummary?.entitlements?.limits?.retentionDays || 90} days
+              </p>
+            </div>
+          </div>
+          {trialStatus === "available" ? (
+            <button
+              type="button"
+              onClick={() => { void onStartWorkspaceTrial(); }}
+              disabled={isStartingTrial}
+              className="dashboard-brand-button mt-4 w-full justify-center disabled:cursor-not-allowed disabled:opacity-45 sm:w-auto"
+            >
+              {isStartingTrial ? "Starting trial..." : "Start Pro Trial"}
+            </button>
+          ) : null}
+        </WidgetCard>
+
         <WidgetCard
           title="Appearance"
           subtitle="Dashboard theme"
@@ -265,9 +386,36 @@ export function SettingsView({
         </WidgetCard>
 
         <WidgetCard title="Security" subtitle="Operational note" action={<Shield size={18} className="text-slate-400 dark:text-slate-500" />}>
-          <p className="text-sm leading-7 text-slate-500 dark:text-slate-400">
-            API keys should remain scoped to active automations only. Revoke any key that is no longer tied to a live workflow.
-          </p>
+          <div className="space-y-3 text-sm leading-7 text-slate-500 dark:text-slate-400">
+            <p>API keys should remain scoped to active automations only. Revoke any key that is no longer tied to a live workflow.</p>
+            <p>Reports stay private by default, share links are revocable, and retention is visible at the workspace level so billing and policy controls can plug in cleanly later.</p>
+          </div>
+        </WidgetCard>
+
+        <WidgetCard title="Recent activity" subtitle="Workspace audit feed">
+          {(auditEvents || []).length === 0 ? (
+            <div className="rounded-2xl border border-dashed border-slate-300/80 px-4 py-5 text-sm text-slate-500 dark:border-slate-800 dark:text-slate-400">
+              No workspace events yet. Key changes, monitors, shares, and workflow actions will show up here.
+            </div>
+          ) : (
+            <div className="space-y-3">
+              {auditEvents.slice(0, 8).map((event) => (
+                <div key={event.id} className="rounded-2xl border border-slate-200/80 px-4 py-4 dark:border-slate-800/80">
+                  <div className="flex items-start justify-between gap-3">
+                    <div>
+                      <p className="text-sm font-semibold text-slate-950 dark:text-white">{formatAuditActionLabel(event.action)}</p>
+                      <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">{formatDateCell(event.createdAt)}</p>
+                    </div>
+                    {event.metadata && Object.keys(event.metadata).length > 0 ? (
+                      <span className="rounded-full border border-slate-200 px-2.5 py-1 text-[11px] uppercase tracking-[0.08em] text-slate-600 dark:border-slate-800 dark:text-slate-300">
+                        tracked
+                      </span>
+                    ) : null}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
         </WidgetCard>
       </div>
 
@@ -378,6 +526,123 @@ export function SettingsView({
         </WidgetCard>
 
         <DataTable columns={columns} rows={apiKeys} page={1} totalPages={1} onPageChange={() => {}} emptyMessage="No API keys have been created yet." />
+
+        <WidgetCard title="Webhooks" subtitle="Signed outbound automation events" action={<Webhook size={18} className="text-slate-400 dark:text-slate-500" />}>
+          <div className="grid gap-3 sm:grid-cols-2">
+            <label className="grid gap-2 text-sm text-slate-600 dark:text-slate-300">
+              <span>Name</span>
+              <input
+                type="text"
+                value={webhookName}
+                onChange={(event) => setWebhookName(event.target.value)}
+                className="rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-950 outline-none transition focus:border-viro-400 dark:border-slate-800 dark:bg-slate-950 dark:text-white"
+                placeholder="Ops automation"
+              />
+            </label>
+            <label className="grid gap-2 text-sm text-slate-600 dark:text-slate-300">
+              <span>Destination URL</span>
+              <input
+                type="url"
+                value={webhookUrl}
+                onChange={(event) => setWebhookUrl(event.target.value)}
+                className="rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-950 outline-none transition focus:border-viro-400 dark:border-slate-800 dark:bg-slate-950 dark:text-white"
+                placeholder="https://example.com/hooks/virovanta"
+              />
+            </label>
+          </div>
+
+          <div className="mt-4 grid gap-2 sm:grid-cols-2">
+            {WEBHOOK_EVENT_OPTIONS.map((eventName) => {
+              const active = webhookEvents.includes(eventName);
+              return (
+                <label
+                  key={eventName}
+                  className={`flex cursor-pointer items-start gap-3 rounded-2xl border px-3 py-3 text-left transition ${
+                    active
+                      ? "border-viro-300 bg-viro-50 text-viro-900 dark:border-viro-700 dark:bg-viro-900/30 dark:text-viro-100"
+                      : "border-slate-200 bg-white text-slate-700 dark:border-slate-800 dark:bg-slate-950 dark:text-slate-300"
+                  }`}
+                >
+                  <input
+                    type="checkbox"
+                    checked={active}
+                    onChange={() => toggleWebhookEvent(eventName)}
+                    className="mt-0.5 h-4 w-4 rounded border-slate-300 text-viro-600 focus:ring-viro-400 dark:border-slate-700 dark:bg-slate-900"
+                  />
+                  <span className="text-sm">{eventName}</span>
+                </label>
+              );
+            })}
+          </div>
+
+          <div className="mt-4 flex flex-wrap gap-3">
+            <button
+              type="button"
+              onClick={submitWebhookCreation}
+              disabled={isManagingWebhook || !webhookUrl.trim() || !webhookName.trim() || webhookEvents.length === 0}
+              className="dashboard-brand-button w-full justify-center disabled:cursor-not-allowed disabled:opacity-45 sm:w-auto"
+            >
+              {isManagingWebhook ? "Creating..." : "Create webhook"}
+            </button>
+          </div>
+
+          {latestWebhookSecret ? (
+            <div className="mt-4 rounded-2xl border border-viro-200 bg-viro-50/70 px-4 py-4 text-sm text-viro-900 dark:border-viro-800 dark:bg-viro-900/25 dark:text-viro-100">
+              <p className="font-semibold">Signing secret</p>
+              <p className="mt-1 text-xs text-viro-700 dark:text-viro-200">Copy this once. Future deliveries are signed with this secret.</p>
+              <code className="mt-3 block overflow-x-auto rounded-2xl border border-viro-200 bg-white/80 px-3 py-2 text-xs text-slate-700 dark:border-viro-900 dark:bg-slate-950/70 dark:text-slate-200">
+                {latestWebhookSecret}
+              </code>
+            </div>
+          ) : null}
+
+          <div className="mt-5 space-y-3">
+            {(webhooks || []).length === 0 ? (
+              <div className="rounded-2xl border border-dashed border-slate-300/80 px-4 py-5 text-sm text-slate-500 dark:border-slate-800 dark:text-slate-400">
+                No webhook endpoints configured yet.
+              </div>
+            ) : (
+              webhooks.map((webhook) => (
+                <div key={webhook.id} className="rounded-2xl border border-slate-200/80 px-4 py-4 dark:border-slate-800/80">
+                  <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                    <div>
+                      <p className="text-sm font-semibold text-slate-950 dark:text-white">{webhook.name}</p>
+                      <p className="mt-1 break-all text-xs text-slate-500 dark:text-slate-400">{webhook.targetUrl}</p>
+                      <p className="mt-2 text-xs text-slate-500 dark:text-slate-400">{(webhook.events || []).join(", ")}</p>
+                    </div>
+                    <div className="flex flex-wrap gap-2">
+                      <button type="button" onClick={() => { void onTestWebhook(webhook.id); }} className="dashboard-brand-outline px-3 py-1.5 text-xs">
+                        Test
+                      </button>
+                      <button type="button" onClick={() => { void onDeleteWebhook(webhook.id); }} className="dashboard-brand-outline px-3 py-1.5 text-xs">
+                        Delete
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              ))
+            )}
+          </div>
+
+          {(webhookDeliveries || []).length > 0 ? (
+            <div className="mt-5 space-y-3">
+              <p className="dashboard-label">Recent deliveries</p>
+              {webhookDeliveries.map((delivery) => (
+                <div key={delivery.id} className="rounded-2xl border border-slate-200/80 px-4 py-4 dark:border-slate-800/80">
+                  <div className="flex items-center justify-between gap-3">
+                    <div>
+                      <p className="text-sm font-semibold text-slate-950 dark:text-white">{delivery.eventType}</p>
+                      <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">{formatDateCell(delivery.deliveredAt)}</p>
+                    </div>
+                    <span className="rounded-full border border-slate-200 px-2.5 py-1 text-xs text-slate-700 dark:border-slate-800 dark:text-slate-300">
+                      {delivery.responseStatus || delivery.errorMessage || "pending"}
+                    </span>
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : null}
+        </WidgetCard>
       </div>
     </div>
   );

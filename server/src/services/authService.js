@@ -5,6 +5,7 @@ import { createRemoteJWKSet, jwtVerify } from "jose";
 import { HttpError } from "../utils/httpError.js";
 import { normalizeApiKeyScopes } from "../utils/apiKeyScopes.js";
 import { generateOpaqueToken, hashSecret, normalizeEmail, safeText } from "../utils/security.js";
+import { buildWorkspaceEntitlements, createDefaultWorkspaceProfile } from "../utils/workspaceEntitlements.js";
 
 const TOKEN_ALGORITHM = "HS256";
 const AUTH_SUPABASE_UNAVAILABLE_CODE = "AUTH_SUPABASE_UNAVAILABLE";
@@ -223,6 +224,11 @@ export class AuthService {
     this.logger = logger;
     this.notificationService = notificationService;
     this.supabaseJwks = this.#createSupabaseJwks();
+  }
+
+  async #resolveWorkspaceEntitlements(userId) {
+    const profile = (await this.store.getWorkspaceProfile?.(userId)) || createDefaultWorkspaceProfile(userId);
+    return buildWorkspaceEntitlements(profile, this.config, new Date());
   }
 
   async #notifyUsageThreshold(userId, quota, { requestedScans = 1 } = {}) {
@@ -1068,8 +1074,14 @@ export class AuthService {
       throw new HttpError(404, "User not found.", { code: "AUTH_USER_NOT_FOUND" });
     }
 
-    const activeKeyCount = await this.store.countActiveApiKeys(userId);
-    if (activeKeyCount >= this.config.maxApiKeysPerUser) {
+    const [activeKeyCount, entitlements] = await Promise.all([
+      this.store.countActiveApiKeys(userId),
+      this.#resolveWorkspaceEntitlements(userId)
+    ]);
+    const apiKeyLimit = Number.isFinite(Number(entitlements?.limits?.apiKeys))
+      ? Number(entitlements.limits.apiKeys)
+      : this.config.maxApiKeysPerUser;
+    if (activeKeyCount >= apiKeyLimit) {
       throw new HttpError(400, "API key limit reached for this account.", { code: "AUTH_API_KEY_LIMIT" });
     }
 
@@ -1146,9 +1158,11 @@ export class AuthService {
   }
 
   async consumeDailyQuota(userId) {
+    const entitlements = await this.#resolveWorkspaceEntitlements(userId);
+    const scanLimit = entitlements?.limits?.dailyScans ?? this.config.freeTierDailyScanLimit;
     const usage = await this.store.getUsageSnapshot({
       userId,
-      limit: this.config.freeTierDailyScanLimit
+      limit: scanLimit
     });
     if (!usage) {
       throw new HttpError(404, "User not found.", { code: "AUTH_USER_NOT_FOUND" });
@@ -1163,19 +1177,19 @@ export class AuthService {
             remaining: null,
             windowStartedAt: usage.windowStartedAt
           }
-        : usage.used >= this.config.freeTierDailyScanLimit
+        : usage.used >= scanLimit
           ? {
               allowed: false,
-              limit: this.config.freeTierDailyScanLimit,
+              limit: scanLimit,
               used: usage.used,
               remaining: 0,
               windowStartedAt: usage.windowStartedAt
             }
           : {
               allowed: true,
-              limit: this.config.freeTierDailyScanLimit,
+              limit: scanLimit,
               used: usage.used + 1,
-              remaining: Math.max(0, this.config.freeTierDailyScanLimit - (usage.used + 1)),
+              remaining: Math.max(0, scanLimit - (usage.used + 1)),
               windowStartedAt: usage.windowStartedAt
             };
     await this.#notifyUsageThreshold(userId, quota, { requestedScans: 1 });
@@ -1184,9 +1198,11 @@ export class AuthService {
 
   async consumeDailyQuotaBatch(userId, requestedScans) {
     const batchSize = Math.max(1, Math.floor(Number(requestedScans) || 0));
+    const entitlements = await this.#resolveWorkspaceEntitlements(userId);
+    const scanLimit = entitlements?.limits?.dailyScans ?? this.config.freeTierDailyScanLimit;
     const usage = await this.store.getUsageSnapshot({
       userId,
-      limit: this.config.freeTierDailyScanLimit
+      limit: scanLimit
     });
     if (!usage) {
       throw new HttpError(404, "User not found.", { code: "AUTH_USER_NOT_FOUND" });
@@ -1202,21 +1218,21 @@ export class AuthService {
             remaining: null,
             windowStartedAt: usage.windowStartedAt
           }
-        : Math.max(0, this.config.freeTierDailyScanLimit - usage.used) < batchSize
+        : Math.max(0, scanLimit - usage.used) < batchSize
           ? {
               allowed: false,
               accepted: 0,
-              limit: this.config.freeTierDailyScanLimit,
+              limit: scanLimit,
               used: usage.used,
-              remaining: Math.max(0, this.config.freeTierDailyScanLimit - usage.used),
+              remaining: Math.max(0, scanLimit - usage.used),
               windowStartedAt: usage.windowStartedAt
             }
           : {
               allowed: true,
               accepted: batchSize,
-              limit: this.config.freeTierDailyScanLimit,
+              limit: scanLimit,
               used: usage.used + batchSize,
-              remaining: Math.max(0, this.config.freeTierDailyScanLimit - (usage.used + batchSize)),
+              remaining: Math.max(0, scanLimit - (usage.used + batchSize)),
               windowStartedAt: usage.windowStartedAt
             };
     await this.#notifyUsageThreshold(userId, quota, { requestedScans });
@@ -1249,9 +1265,10 @@ export class AuthService {
   }
 
   async getUsage(userId) {
+    const entitlements = await this.#resolveWorkspaceEntitlements(userId);
     const usage = await this.store.getUsageSnapshot({
       userId,
-      limit: this.config.freeTierDailyScanLimit
+      limit: entitlements?.limits?.dailyScans ?? this.config.freeTierDailyScanLimit
     });
     if (!usage) {
       throw new HttpError(404, "User not found.", { code: "AUTH_USER_NOT_FOUND" });

@@ -168,17 +168,108 @@ print(res.json())`
     }
   },
   {
-    id: "submit-url-job",
-    name: "Create URL Scan Job",
+    id: "resolve-url-targets",
+    name: "Resolve URL Candidates",
     method: "POST",
-    path: "/api/scans/links/jobs",
-    description: "Queues a URL scan job and returns job metadata plus quota state.",
+    path: "/api/scans/links/resolve",
+    description: "Parses a direct URL or pasted message, ranks extracted candidates, and returns them without queuing a scan.",
     authRequired: true,
     scopes: ["jobs:write"],
     pathParams: [],
     queryParams: [],
     bodySchema: {
-      url: "string (required, http/https)"
+      url: "string (optional, http/https, required unless message is provided)",
+      message: "string (optional, pasted email/chat/text content, required unless url is provided)"
+    },
+    successExample: {
+      resolution: {
+        inputMode: "message",
+        primaryUrl: "https://secure-billing.example.com/login/reset?case=4287",
+        extracted: true,
+        candidateCount: 3,
+        source: "explicit",
+        candidates: [
+          {
+            rank: 1,
+            url: "https://secure-billing.example.com/login/reset?case=4287",
+            hostname: "secure-billing.example.com",
+            source: "explicit",
+            score: 83,
+            isPrimary: true
+          },
+          {
+            rank: 2,
+            url: "https://support-check.example.net/portal",
+            hostname: "support-check.example.net",
+            source: "bare",
+            score: 41,
+            isPrimary: false
+          }
+        ]
+      }
+    },
+    errorExample: {
+      error: {
+        code: "URL_SCAN_TARGET_INVALID",
+        message: "No HTTP or HTTPS link could be extracted from the pasted message."
+      },
+      requestId: "9f0e83ed-ef0f-46f1-a191-51e3326d3409"
+    },
+    statusCodes: [
+      { code: 200, meaning: "Candidates resolved successfully." },
+      { code: 400, meaning: "No valid web target could be extracted." },
+      { code: 429, meaning: "Rate limit exceeded." }
+    ],
+    codeSamples: {
+      curl: `curl -X POST "<API_BASE_URL>/api/scans/links/resolve" \\
+  -H "x-api-key: <API_KEY>" \\
+  -H "Content-Type: application/json" \\
+  -d '{"message":"Review now at hxxps[:]//secure-billing[.]example.com/login/reset"}'`,
+      javascript: `const response = await fetch("<API_BASE_URL>/api/scans/links/resolve", {
+  method: "POST",
+  headers: {
+    "Content-Type": "application/json",
+    "x-api-key": process.env.VIROVANTA_API_KEY
+  },
+  body: JSON.stringify({
+    message: "Review now at hxxps[:]//secure-billing[.]example.com/login/reset"
+  })
+});
+
+const payload = await response.json();`,
+      python: `import requests
+payload = {
+    "message": "Review now at hxxps[:]//secure-billing[.]example.com/login/reset"
+}
+res = requests.post(
+    "<API_BASE_URL>/api/scans/links/resolve",
+    headers={"x-api-key": "<API_KEY>"},
+    json=payload,
+    timeout=20
+)
+print(res.json())`
+    },
+    tryIt: {
+      enabled: true,
+      body: `{
+  "message": "Review now at hxxps[:]//secure-billing[.]example.com/login/reset"
+}`
+    }
+  },
+  {
+    id: "submit-url-job",
+    name: "Create URL Scan Job",
+    method: "POST",
+    path: "/api/scans/links/jobs",
+    description: "Queues a URL scan job from either a direct URL or a pasted message and returns job metadata plus quota state.",
+    authRequired: true,
+    scopes: ["jobs:write"],
+    pathParams: [],
+    queryParams: [],
+    bodySchema: {
+      url: "string (optional, http/https, required unless message is provided)",
+      urls: "string[] (optional, queue multiple selected links at once)",
+      message: "string (optional, pasted email/chat/text content, required unless url is provided)"
     },
     successExample: {
       job: {
@@ -194,12 +285,46 @@ print(res.json())`
         reportId: null,
         errorMessage: null
       },
+      jobs: [
+        {
+          id: "job_2ad6d7b4",
+          sourceType: "url",
+          status: "queued",
+          createdAt: "2026-03-16T18:08:06.410Z",
+          startedAt: null,
+          completedAt: null,
+          originalName: "https://secure-billing.example.com/login/reset",
+          fileSize: 0,
+          targetUrl: "https://secure-billing.example.com/login/reset",
+          reportId: null,
+          errorMessage: null
+        },
+        {
+          id: "job_b57d7c22",
+          sourceType: "url",
+          status: "queued",
+          createdAt: "2026-03-16T18:08:06.411Z",
+          startedAt: null,
+          completedAt: null,
+          originalName: "https://support-check.example.net/portal",
+          fileSize: 0,
+          targetUrl: "https://support-check.example.net/portal",
+          reportId: null,
+          errorMessage: null
+        }
+      ],
+      acceptedUrls: 2,
       quota: {
         allowed: true,
         limit: 40,
-        used: 7,
-        remaining: 33,
+        used: 8,
+        remaining: 32,
         windowStartedAt: "2026-03-15T19:18:06.304Z"
+      },
+      extracted: {
+        url: "https://secure-billing.example.com/login/reset?case=4287",
+        candidateCount: 2,
+        source: "explicit"
       }
     },
     errorExample: {
@@ -224,19 +349,29 @@ print(res.json())`
       curl: `curl -X POST "<API_BASE_URL>/api/scans/links/jobs" \\
   -H "x-api-key: <API_KEY>" \\
   -H "Content-Type: application/json" \\
-  -d '{"url":"https://example.com/reset"}'`,
+  -d '{"urls":["https://secure-billing.example.com/login/reset","https://support-check.example.net/portal"]}'`,
       javascript: `const response = await fetch("<API_BASE_URL>/api/scans/links/jobs", {
   method: "POST",
   headers: {
     "Content-Type": "application/json",
     "x-api-key": process.env.VIROVANTA_API_KEY
   },
-  body: JSON.stringify({ url: "https://example.com/reset" })
+  body: JSON.stringify({
+    urls: [
+      "https://secure-billing.example.com/login/reset",
+      "https://support-check.example.net/portal"
+    ]
+  })
 });
 
 const payload = await response.json();`,
       python: `import requests
-payload = {"url": "https://example.com/reset"}
+payload = {
+    "urls": [
+        "https://secure-billing.example.com/login/reset",
+        "https://support-check.example.net/portal"
+    ]
+}
 res = requests.post(
     "<API_BASE_URL>/api/scans/links/jobs",
     headers={"x-api-key": "<API_KEY>"},
@@ -248,7 +383,10 @@ print(res.json())`
     tryIt: {
       enabled: true,
       body: `{
-  "url": "https://example.com/reset"
+  "urls": [
+    "https://secure-billing.example.com/login/reset",
+    "https://support-check.example.net/portal"
+  ]
 }`
     }
   },
@@ -646,6 +784,441 @@ print(res.json())`
       enabled: true,
       body: ""
     }
+  },
+  {
+    id: "report-workflow",
+    name: "Get Report Workflow",
+    method: "GET",
+    path: "/api/scans/reports/{reportId}/workflow",
+    description: "Returns case workflow metadata, analyst comments, and share-link state for a report.",
+    authRequired: true,
+    scopes: ["reports:read"],
+    pathParams: [
+      {
+        name: "reportId",
+        type: "string",
+        required: true,
+        description: "Unique report identifier."
+      }
+    ],
+    queryParams: [],
+    bodySchema: null,
+    successExample: {
+      workflow: {
+        id: "workflow_01hzn",
+        reportId: "scan_a13fdf22",
+        caseStatus: "triage",
+        severity: "high",
+        assigneeLabel: "Tier 1 SOC",
+        clientLabel: "Acme Finance",
+        recommendedAction: "Block and notify recipient",
+        notesSummary: "Credential-harvest pattern with redirect drift.",
+        updatedAt: "2026-03-29T10:15:20.000Z"
+      },
+      comments: [
+        {
+          id: "comment_01",
+          authorName: "Alex",
+          body: "Observed redirect to credential prompt after initial landing page.",
+          createdAt: "2026-03-29T10:16:00.000Z"
+        }
+      ],
+      shares: [
+        {
+          id: "share_01",
+          label: "Client handoff",
+          expiresAt: "2026-03-31T10:15:20.000Z",
+          revokedAt: null
+        }
+      ]
+    },
+    errorExample: {
+      error: {
+        code: "SCAN_REPORT_NOT_FOUND",
+        message: "Scan report not found."
+      },
+      requestId: "7a17b0cb-6232-4d52-b3b2-d4bd8698a803"
+    },
+    statusCodes: [
+      { code: 200, meaning: "Workflow state returned." },
+      { code: 403, meaning: "API key lacks reports:read scope." },
+      { code: 404, meaning: "Report was not found for the current account." }
+    ],
+    codeSamples: {
+      curl: `curl -X GET "<API_BASE_URL>/api/scans/reports/<REPORT_ID>/workflow" \\
+  -H "x-api-key: <API_KEY>"`,
+      javascript: `const res = await fetch("<API_BASE_URL>/api/scans/reports/<REPORT_ID>/workflow", {
+  headers: { "x-api-key": process.env.VIROVANTA_API_KEY }
+});
+const data = await res.json();`,
+      python: `res = requests.get(
+    "<API_BASE_URL>/api/scans/reports/<REPORT_ID>/workflow",
+    headers={"x-api-key": "<API_KEY>"},
+    timeout=20
+)
+print(res.json())`
+    },
+    tryIt: {
+      enabled: false,
+      body: ""
+    }
+  },
+  {
+    id: "update-report-workflow",
+    name: "Update Report Workflow",
+    method: "PATCH",
+    path: "/api/scans/reports/{reportId}/workflow",
+    description: "Updates case state, severity, assignment, and recommended action fields for a report.",
+    authRequired: true,
+    scopes: ["workflow:write"],
+    pathParams: [
+      {
+        name: "reportId",
+        type: "string",
+        required: true,
+        description: "Unique report identifier."
+      }
+    ],
+    queryParams: [],
+    bodySchema: {
+      caseStatus: "\"new\" | \"triage\" | \"investigating\" | \"closed\" (optional)",
+      severity: "\"low\" | \"medium\" | \"high\" | \"critical\" (optional)",
+      assigneeLabel: "string (optional)",
+      clientLabel: "string (optional)",
+      recommendedAction: "string (optional)",
+      notesSummary: "string (optional)"
+    },
+    successExample: {
+      workflow: {
+        id: "workflow_01hzn",
+        reportId: "scan_a13fdf22",
+        caseStatus: "investigating",
+        severity: "critical",
+        assigneeLabel: "IR Lead",
+        clientLabel: "Acme Finance",
+        recommendedAction: "Reset credentials and block destination",
+        notesSummary: "Escalated after repeat monitor drift.",
+        updatedAt: "2026-03-29T10:25:20.000Z"
+      }
+    },
+    errorExample: {
+      error: {
+        code: "AUTH_API_KEY_SCOPE_REQUIRED",
+        message: "API key does not include required scope permissions.",
+        details: {
+          requiredScopes: ["workflow:write"],
+          grantedScopes: ["reports:read"]
+        }
+      },
+      requestId: "79942116-8564-4da8-9780-04f64c03424a"
+    },
+    statusCodes: [
+      { code: 200, meaning: "Workflow updated." },
+      { code: 403, meaning: "API key lacks workflow:write scope." }
+    ],
+    codeSamples: {
+      curl: `curl -X PATCH "<API_BASE_URL>/api/scans/reports/<REPORT_ID>/workflow" \\
+  -H "x-api-key: <API_KEY>" \\
+  -H "Content-Type: application/json" \\
+  -d '{"caseStatus":"investigating","severity":"critical","assigneeLabel":"IR Lead"}'`,
+      javascript: `await fetch("<API_BASE_URL>/api/scans/reports/<REPORT_ID>/workflow", {
+  method: "PATCH",
+  headers: {
+    "Content-Type": "application/json",
+    "x-api-key": process.env.VIROVANTA_API_KEY
+  },
+  body: JSON.stringify({
+    caseStatus: "investigating",
+    severity: "critical",
+    assigneeLabel: "IR Lead"
+  })
+});`,
+      python: `requests.patch(
+    "<API_BASE_URL>/api/scans/reports/<REPORT_ID>/workflow",
+    headers={"x-api-key": "<API_KEY>"},
+    json={"caseStatus": "investigating", "severity": "critical"},
+    timeout=20
+)`
+    },
+    tryIt: {
+      enabled: false,
+      body: ""
+    }
+  },
+  {
+    id: "export-report-stix",
+    name: "Export Report as STIX",
+    method: "GET",
+    path: "/api/scans/reports/{reportId}/export.stix",
+    description: "Downloads the report in STIX-compatible JSON for downstream security tooling.",
+    authRequired: true,
+    scopes: ["reports:read"],
+    pathParams: [
+      {
+        name: "reportId",
+        type: "string",
+        required: true,
+        description: "Unique report identifier."
+      }
+    ],
+    queryParams: [],
+    bodySchema: null,
+    successExample: {
+      type: "bundle",
+      id: "bundle--3a92f6c4-1b51-4b1d-94a8-7d3f8c7fb4c4",
+      objects: []
+    },
+    errorExample: {
+      error: {
+        code: "SCAN_REPORT_NOT_FOUND",
+        message: "Scan report not found."
+      },
+      requestId: "99df5462-2175-409e-b057-20e3f8fd0569"
+    },
+    statusCodes: [
+      { code: 200, meaning: "STIX export returned." },
+      { code: 403, meaning: "API key lacks reports:read scope." }
+    ],
+    codeSamples: {
+      curl: `curl -X GET "<API_BASE_URL>/api/scans/reports/<REPORT_ID>/export.stix" \\
+  -H "x-api-key: <API_KEY>" \\
+  -o virovanta-report.stix.json`,
+      javascript: `const res = await fetch("<API_BASE_URL>/api/scans/reports/<REPORT_ID>/export.stix", {
+  headers: { "x-api-key": process.env.VIROVANTA_API_KEY }
+});
+const stix = await res.json();`,
+      python: `res = requests.get(
+    "<API_BASE_URL>/api/scans/reports/<REPORT_ID>/export.stix",
+    headers={"x-api-key": "<API_KEY>"},
+    timeout=20
+)
+print(res.json())`
+    },
+    tryIt: {
+      enabled: false,
+      body: ""
+    }
+  },
+  {
+    id: "workspace-summary",
+    name: "Get Workspace Summary",
+    method: "GET",
+    path: "/api/workspace/summary",
+    description: "Returns plan metadata, entitlement limits, usage, and trial state for the authenticated workspace.",
+    authRequired: true,
+    scopes: [],
+    pathParams: [],
+    queryParams: [],
+    bodySchema: null,
+    successExample: {
+      workspace: {
+        profile: {
+          planId: "free",
+          effectivePlanId: "pro",
+          planName: "Pro"
+        },
+        trial: {
+          status: "active",
+          trialEndsAt: "2026-04-12T18:00:00.000Z"
+        },
+        entitlements: {
+          limits: {
+            dailyScans: 250,
+            monitors: 25,
+            webhooks: 3,
+            apiKeys: 10,
+            shareTtlHours: 168,
+            retentionDays: 180
+          }
+        },
+        usage: {
+          monitorsActive: 4,
+          webhooksActive: 1,
+          apiKeysActive: 2
+        }
+      }
+    },
+    errorExample: {
+      error: {
+        code: "AUTH_TOKEN_INVALID",
+        message: "Authentication required."
+      },
+      requestId: "cb8fc952-54f9-4de9-bab7-825c48724095"
+    },
+    statusCodes: [
+      { code: 200, meaning: "Workspace summary returned." },
+      { code: 401, meaning: "Bearer session missing or invalid." }
+    ],
+    codeSamples: {
+      curl: `curl -X GET "<API_BASE_URL>/api/workspace/summary" \\
+  -H "Authorization: Bearer <ACCESS_TOKEN>"`,
+      javascript: `const res = await fetch("<API_BASE_URL>/api/workspace/summary", {
+  headers: { Authorization: \`Bearer \${accessToken}\` }
+});
+const data = await res.json();`,
+      python: `res = requests.get(
+    "<API_BASE_URL>/api/workspace/summary",
+    headers={"Authorization": f"Bearer {access_token}"},
+    timeout=20
+)
+print(res.json())`
+    },
+    tryIt: {
+      enabled: false,
+      body: ""
+    }
+  },
+  {
+    id: "create-monitor",
+    name: "Create Monitor",
+    method: "POST",
+    path: "/api/workspace/monitors",
+    description: "Adds a recurring website or URL watch target that can re-alert when posture changes.",
+    authRequired: true,
+    scopes: [],
+    pathParams: [],
+    queryParams: [],
+    bodySchema: {
+      name: "string",
+      targetType: "\"website\" | \"url\"",
+      target: "string",
+      cadenceHours: "integer (optional)",
+      notes: "string (optional)"
+    },
+    successExample: {
+      monitor: {
+        id: "monitor_01",
+        name: "Vendor login watch",
+        targetType: "website",
+        target: "https://vendor.example.com",
+        cadenceHours: 24,
+        status: "active",
+        nextCheckAt: "2026-03-31T18:00:00.000Z"
+      }
+    },
+    errorExample: {
+      error: {
+        code: "WORKSPACE_MONITOR_LIMIT_REACHED",
+        message: "Monitor limit reached for the current workspace plan.",
+        details: {
+          limit: 3,
+          used: 3
+        }
+      },
+      requestId: "5347f461-6101-4137-a2dc-ae45a9b5d0fc"
+    },
+    statusCodes: [
+      { code: 201, meaning: "Monitor created." },
+      { code: 429, meaning: "Workspace monitor allowance has been reached." }
+    ],
+    codeSamples: {
+      curl: `curl -X POST "<API_BASE_URL>/api/workspace/monitors" \\
+  -H "Authorization: Bearer <ACCESS_TOKEN>" \\
+  -H "Content-Type: application/json" \\
+  -d '{"name":"Vendor login watch","targetType":"website","target":"https://vendor.example.com","cadenceHours":24}'`,
+      javascript: `await fetch("<API_BASE_URL>/api/workspace/monitors", {
+  method: "POST",
+  headers: {
+    "Content-Type": "application/json",
+    Authorization: \`Bearer \${accessToken}\`
+  },
+  body: JSON.stringify({
+    name: "Vendor login watch",
+    targetType: "website",
+    target: "https://vendor.example.com",
+    cadenceHours: 24
+  })
+});`,
+      python: `requests.post(
+    "<API_BASE_URL>/api/workspace/monitors",
+    headers={"Authorization": f"Bearer {access_token}"},
+    json={
+        "name": "Vendor login watch",
+        "targetType": "website",
+        "target": "https://vendor.example.com",
+        "cadenceHours": 24,
+    },
+    timeout=20,
+)`
+    },
+    tryIt: {
+      enabled: false,
+      body: ""
+    }
+  },
+  {
+    id: "create-webhook",
+    name: "Create Webhook",
+    method: "POST",
+    path: "/api/workspace/webhooks",
+    description: "Registers a signed outbound webhook endpoint for report, workflow, and monitor events.",
+    authRequired: true,
+    scopes: [],
+    pathParams: [],
+    queryParams: [],
+    bodySchema: {
+      name: "string",
+      url: "string (absolute URL)",
+      events: "string[]"
+    },
+    successExample: {
+      webhook: {
+        id: "webhook_01",
+        name: "Ops automation",
+        targetUrl: "https://ops.example.com/hooks/virovanta",
+        events: ["report.ready", "monitor.change.detected"]
+      },
+      signingSecret: "4c58b2df0fdb55a98c41ef7c842e8f4d..."
+    },
+    errorExample: {
+      error: {
+        code: "WORKSPACE_WEBHOOK_LIMIT_REACHED",
+        message: "Webhook limit reached for the current workspace plan.",
+        details: {
+          limit: 1,
+          used: 1
+        }
+      },
+      requestId: "b1bb96bc-ea18-4038-9be8-d55fc8d2fbc6"
+    },
+    statusCodes: [
+      { code: 201, meaning: "Webhook endpoint created and secret returned once." },
+      { code: 429, meaning: "Workspace webhook allowance has been reached." }
+    ],
+    codeSamples: {
+      curl: `curl -X POST "<API_BASE_URL>/api/workspace/webhooks" \\
+  -H "Authorization: Bearer <ACCESS_TOKEN>" \\
+  -H "Content-Type: application/json" \\
+  -d '{"name":"Ops automation","url":"https://ops.example.com/hooks/virovanta","events":["report.ready","monitor.change.detected"]}'`,
+      javascript: `const res = await fetch("<API_BASE_URL>/api/workspace/webhooks", {
+  method: "POST",
+  headers: {
+    "Content-Type": "application/json",
+    Authorization: \`Bearer \${accessToken}\`
+  },
+  body: JSON.stringify({
+    name: "Ops automation",
+    url: "https://ops.example.com/hooks/virovanta",
+    events: ["report.ready", "monitor.change.detected"]
+  })
+});
+const data = await res.json();`,
+      python: `res = requests.post(
+    "<API_BASE_URL>/api/workspace/webhooks",
+    headers={"Authorization": f"Bearer {access_token}"},
+    json={
+        "name": "Ops automation",
+        "url": "https://ops.example.com/hooks/virovanta",
+        "events": ["report.ready", "monitor.change.detected"],
+    },
+    timeout=20,
+)
+print(res.json())`
+    },
+    tryIt: {
+      enabled: false,
+      body: ""
+    }
   }
 ]);
 
@@ -735,10 +1308,11 @@ export const DOCS_JS_SDK_SAMPLE = `export class ViroVantaClient {
     return this.request(\`/api/scans/jobs?limit=\${limit}\`);
   }
 
-  submitUrlScan(url) {
+  submitUrlScan({ url = "", message = "" } = {}) {
+    const body = url ? { url } : { message };
     return this.request("/api/scans/links/jobs", {
       method: "POST",
-      body: { url }
+      body
     });
   }
 
@@ -792,8 +1366,9 @@ class ViroVantaClient:
     def list_jobs(self, limit: int = 20):
         return self.request("GET", "/api/scans/jobs", params={"limit": limit})
 
-    def submit_url_scan(self, url: str):
-        return self.request("POST", "/api/scans/links/jobs", json={"url": url})
+    def submit_url_scan(self, url: str = "", message: str = ""):
+        payload = {"url": url} if url else {"message": message}
+        return self.request("POST", "/api/scans/links/jobs", json=payload)
 
     def get_report(self, report_id: str):
         return self.request("GET", f"/api/scans/reports/{report_id}")

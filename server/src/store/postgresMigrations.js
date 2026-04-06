@@ -191,6 +191,162 @@ function buildScaleHardeningSql({
   `;
 }
 
+function buildCommercialWorkspaceSql({
+  usersTable,
+  reportsTable,
+  apiKeysTable,
+  workspaceProfilesTable,
+  reportSharesTable,
+  reportWorkflowsTable,
+  reportCommentsTable,
+  webhooksTable,
+  webhookDeliveriesTable,
+  monitorsTable
+}) {
+  return `
+    CREATE TABLE IF NOT EXISTS ${workspaceProfilesTable} (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL UNIQUE REFERENCES ${usersTable}(id) ON DELETE CASCADE ON UPDATE CASCADE,
+      plan_id TEXT NOT NULL DEFAULT 'free',
+      trial_plan_id TEXT NOT NULL DEFAULT 'pro',
+      trial_status TEXT NOT NULL DEFAULT 'available',
+      trial_started_at TIMESTAMPTZ NULL,
+      trial_ends_at TIMESTAMPTZ NULL,
+      trial_days INTEGER NOT NULL DEFAULT 14,
+      retention_days_override INTEGER NULL,
+      monitor_limit_override INTEGER NULL,
+      webhook_limit_override INTEGER NULL,
+      api_key_limit_override INTEGER NULL,
+      billing_provider TEXT NULL,
+      billing_customer_id TEXT NULL,
+      billing_subscription_id TEXT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+
+    CREATE TABLE IF NOT EXISTS ${reportSharesTable} (
+      id TEXT PRIMARY KEY,
+      report_id TEXT NOT NULL REFERENCES ${reportsTable}(id) ON DELETE CASCADE ON UPDATE CASCADE,
+      owner_user_id TEXT NOT NULL REFERENCES ${usersTable}(id) ON DELETE CASCADE ON UPDATE CASCADE,
+      label TEXT NULL,
+      expires_at TIMESTAMPTZ NOT NULL,
+      revoked_at TIMESTAMPTZ NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      last_accessed_at TIMESTAMPTZ NULL,
+      access_count INTEGER NOT NULL DEFAULT 0
+    );
+
+    CREATE TABLE IF NOT EXISTS ${reportWorkflowsTable} (
+      id TEXT PRIMARY KEY,
+      report_id TEXT NOT NULL UNIQUE REFERENCES ${reportsTable}(id) ON DELETE CASCADE ON UPDATE CASCADE,
+      owner_user_id TEXT NOT NULL REFERENCES ${usersTable}(id) ON DELETE CASCADE ON UPDATE CASCADE,
+      case_status TEXT NOT NULL DEFAULT 'new',
+      severity TEXT NOT NULL DEFAULT 'medium',
+      assignee_label TEXT NULL,
+      client_label TEXT NULL,
+      recommended_action TEXT NULL,
+      notes_summary TEXT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      last_commented_at TIMESTAMPTZ NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS ${reportCommentsTable} (
+      id TEXT PRIMARY KEY,
+      report_id TEXT NOT NULL REFERENCES ${reportsTable}(id) ON DELETE CASCADE ON UPDATE CASCADE,
+      owner_user_id TEXT NOT NULL REFERENCES ${usersTable}(id) ON DELETE CASCADE ON UPDATE CASCADE,
+      author_user_id TEXT NULL REFERENCES ${usersTable}(id) ON DELETE SET NULL ON UPDATE CASCADE,
+      author_name TEXT NOT NULL,
+      body TEXT NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+
+    CREATE TABLE IF NOT EXISTS ${webhooksTable} (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL REFERENCES ${usersTable}(id) ON DELETE CASCADE ON UPDATE CASCADE,
+      name TEXT NOT NULL,
+      target_url TEXT NOT NULL,
+      events JSONB NOT NULL DEFAULT '[]'::jsonb,
+      secret TEXT NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      deleted_at TIMESTAMPTZ NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS ${webhookDeliveriesTable} (
+      id TEXT PRIMARY KEY,
+      webhook_id TEXT NOT NULL REFERENCES ${webhooksTable}(id) ON DELETE CASCADE ON UPDATE CASCADE,
+      user_id TEXT NOT NULL REFERENCES ${usersTable}(id) ON DELETE CASCADE ON UPDATE CASCADE,
+      event_type TEXT NOT NULL,
+      request_body JSONB NOT NULL,
+      response_status INTEGER NULL,
+      response_body JSONB NULL,
+      error_message TEXT NULL,
+      delivered_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+
+    CREATE TABLE IF NOT EXISTS ${monitorsTable} (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL REFERENCES ${usersTable}(id) ON DELETE CASCADE ON UPDATE CASCADE,
+      name TEXT NOT NULL,
+      target_type TEXT NOT NULL,
+      target TEXT NOT NULL,
+      normalized_target TEXT NOT NULL,
+      cadence_hours INTEGER NOT NULL DEFAULT 24,
+      notes TEXT NULL,
+      status TEXT NOT NULL DEFAULT 'active',
+      last_checked_at TIMESTAMPTZ NULL,
+      next_check_at TIMESTAMPTZ NULL,
+      last_report_id TEXT NULL REFERENCES ${reportsTable}(id) ON DELETE SET NULL ON UPDATE CASCADE,
+      last_verdict TEXT NULL,
+      last_risk_score INTEGER NULL,
+      last_change_summary JSONB NULL,
+      last_snapshot JSONB NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      deleted_at TIMESTAMPTZ NULL
+    );
+
+    DO $$
+    BEGIN
+      IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = '${workspaceProfilesTable}_plan_check') THEN
+        EXECUTE 'ALTER TABLE ${workspaceProfilesTable} ADD CONSTRAINT ${workspaceProfilesTable}_plan_check CHECK (plan_id IN (''free'', ''pro'', ''team'', ''business''))';
+      END IF;
+      IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = '${workspaceProfilesTable}_trial_plan_check') THEN
+        EXECUTE 'ALTER TABLE ${workspaceProfilesTable} ADD CONSTRAINT ${workspaceProfilesTable}_trial_plan_check CHECK (trial_plan_id IN (''free'', ''pro'', ''team'', ''business''))';
+      END IF;
+      IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = '${workspaceProfilesTable}_trial_status_check') THEN
+        EXECUTE 'ALTER TABLE ${workspaceProfilesTable} ADD CONSTRAINT ${workspaceProfilesTable}_trial_status_check CHECK (trial_status IN (''available'', ''active'', ''expired'', ''converted''))';
+      END IF;
+      IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = '${reportWorkflowsTable}_status_check') THEN
+        EXECUTE 'ALTER TABLE ${reportWorkflowsTable} ADD CONSTRAINT ${reportWorkflowsTable}_status_check CHECK (case_status IN (''new'', ''triage'', ''investigating'', ''closed''))';
+      END IF;
+      IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = '${reportWorkflowsTable}_severity_check') THEN
+        EXECUTE 'ALTER TABLE ${reportWorkflowsTable} ADD CONSTRAINT ${reportWorkflowsTable}_severity_check CHECK (severity IN (''low'', ''medium'', ''high'', ''critical''))';
+      END IF;
+      IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = '${monitorsTable}_target_type_check') THEN
+        EXECUTE 'ALTER TABLE ${monitorsTable} ADD CONSTRAINT ${monitorsTable}_target_type_check CHECK (target_type IN (''url'', ''website''))';
+      END IF;
+      IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = '${monitorsTable}_status_check') THEN
+        EXECUTE 'ALTER TABLE ${monitorsTable} ADD CONSTRAINT ${monitorsTable}_status_check CHECK (status IN (''active'', ''paused'', ''deleted''))';
+      END IF;
+      IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = '${monitorsTable}_verdict_check') THEN
+        EXECUTE 'ALTER TABLE ${monitorsTable} ADD CONSTRAINT ${monitorsTable}_verdict_check CHECK (last_verdict IS NULL OR last_verdict IN (''clean'', ''suspicious'', ''malicious''))';
+      END IF;
+    END $$;
+
+    CREATE INDEX IF NOT EXISTS ${workspaceProfilesTable}_plan_idx ON ${workspaceProfilesTable}(plan_id, trial_status, updated_at DESC);
+    CREATE INDEX IF NOT EXISTS ${reportSharesTable}_report_created_idx ON ${reportSharesTable}(report_id, created_at DESC);
+    CREATE INDEX IF NOT EXISTS ${reportSharesTable}_owner_active_idx ON ${reportSharesTable}(owner_user_id, revoked_at, expires_at DESC);
+    CREATE INDEX IF NOT EXISTS ${reportWorkflowsTable}_owner_status_idx ON ${reportWorkflowsTable}(owner_user_id, case_status, severity, updated_at DESC);
+    CREATE INDEX IF NOT EXISTS ${reportCommentsTable}_report_created_idx ON ${reportCommentsTable}(report_id, created_at DESC);
+    CREATE INDEX IF NOT EXISTS ${webhooksTable}_user_active_idx ON ${webhooksTable}(user_id, deleted_at, created_at DESC);
+    CREATE INDEX IF NOT EXISTS ${webhookDeliveriesTable}_webhook_delivered_idx ON ${webhookDeliveriesTable}(webhook_id, delivered_at DESC);
+    CREATE INDEX IF NOT EXISTS ${webhookDeliveriesTable}_user_delivered_idx ON ${webhookDeliveriesTable}(user_id, delivered_at DESC);
+    CREATE INDEX IF NOT EXISTS ${monitorsTable}_user_active_idx ON ${monitorsTable}(user_id, deleted_at, status, next_check_at ASC);
+    CREATE INDEX IF NOT EXISTS ${monitorsTable}_target_lookup_idx ON ${monitorsTable}(user_id, normalized_target, deleted_at);
+  `;
+}
+
 export function buildStoreMigrations(context) {
   const migrations = [
     {
@@ -200,6 +356,10 @@ export function buildStoreMigrations(context) {
     {
       name: "002_scale_hardening",
       sql: buildScaleHardeningSql(context)
+    },
+    {
+      name: "003_commercial_workspace_foundations",
+      sql: buildCommercialWorkspaceSql(context)
     }
   ];
 

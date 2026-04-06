@@ -3,6 +3,7 @@ export const MARKETING_NAV_ITEMS = Object.freeze([
   { path: "/how-it-works", label: "How it works" },
   { path: "/use-cases", label: "Use cases" },
   { path: "/security", label: "Security" },
+  { path: "/trust", label: "Trust" },
   { path: "/pricing", label: "Pricing" },
   { path: "/about", label: "About" }
 ]);
@@ -20,6 +21,7 @@ export const MARKETING_FOOTER_GROUPS = Object.freeze([
     title: "Company",
     links: [
       { path: "/security", label: "Security" },
+      { path: "/trust", label: "Trust" },
       { path: "/status", label: "Status" },
       { path: "/pricing", label: "Pricing" },
       { path: "/about", label: "About" }
@@ -369,6 +371,88 @@ export const MARKETING_PAGES = Object.freeze([
       description: "Use the public scan for evaluation or open an account to see how reports, notifications, and ownership controls behave together.",
       primary: { path: "/signup", label: "Create account" },
       secondary: { path: "/", label: "Run guest scan" }
+    }
+  },
+  {
+    id: "trust",
+    path: "/trust",
+    navLabel: "Trust",
+    eyebrow: "Privacy, retention, and response standards",
+    heroTitle: "Trust controls that support a paid security workflow",
+    heroDescription:
+      "ViroVanta is being shaped as a private phishing and trust-triage workspace, so the product makes retention, sharing, workflow changes, and automation events visible instead of leaving them implicit.",
+    heroPoints: [
+      "Private-by-default reports with revocable share links",
+      "Visible retention windows and workspace entitlements",
+      "Audit trails, webhook delivery logs, and explainable verdict output"
+    ],
+    seoTitle: "Trust | ViroVanta",
+    seoDescription:
+      "Review ViroVanta trust commitments across privacy, retention controls, report sharing, workflow audit trails, false-positive handling, and service expectations.",
+    sections: [
+      {
+        title: "Privacy and retention",
+        tag: "Data handling",
+        layout: "grid",
+        items: [
+          {
+            title: "Private by default",
+            description: "Reports stay inside the authenticated workspace unless the owner creates a controlled share link."
+          },
+          {
+            title: "Retention visibility",
+            description: "Workspace settings expose retention windows and share durations so policy controls are understandable before billing is layered on."
+          },
+          {
+            title: "Revocable sharing",
+            description: "Shared report access can be reviewed and revoked instead of becoming an untracked permanent public URL."
+          }
+        ]
+      },
+      {
+        title: "Methodology and evidence",
+        tag: "How verdicts are supported",
+        layout: "list",
+        items: [
+          {
+            title: "Explainable reports",
+            description: "URL, website, and file reports pair verdicts with plain-language reasons, evidence, and recommended next actions."
+          },
+          {
+            title: "Exportable output",
+            description: "Teams can move findings into JSON, CSV, STIX, and PDF formats for downstream workflows and customer-safe reporting."
+          },
+          {
+            title: "Monitoring and re-alerts",
+            description: "Watch targets can be tracked over time so new redirects, verdict changes, and posture shifts trigger follow-up events instead of being lost after a single scan."
+          }
+        ]
+      },
+      {
+        title: "Operating expectations",
+        tag: "What users can rely on",
+        layout: "grid",
+        items: [
+          {
+            title: "False-positive handling",
+            description: "Scanner changes are expected to improve signal quality, and reports are structured so analysts can review evidence instead of trusting a score blindly."
+          },
+          {
+            title: "Accountability",
+            description: "Key events such as API key changes, monitor actions, share operations, and workflow updates are recorded in the workspace audit trail."
+          },
+          {
+            title: "Service transparency",
+            description: "Health, readiness, and uptime surfaces remain part of the product so reliability is visible alongside security outcomes."
+          }
+        ]
+      }
+    ],
+    cta: {
+      title: "Evaluate the trust posture directly",
+      description: "Create a workspace and review how report privacy, workflow controls, webhooks, and retention appear in the product today.",
+      primary: { path: "/signup", label: "Create free account" },
+      secondary: { path: "/security", label: "Review security model" }
     }
   },
   {

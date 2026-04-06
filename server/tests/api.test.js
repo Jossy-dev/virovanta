@@ -563,6 +563,103 @@ describe("ViroVanta API", () => {
     expect(reportResponse.body.report.url?.final).toContain("example.com");
   });
 
+  it("queues URL scan jobs from pasted messages and reports the extracted target", async () => {
+    const app = await setupTestApp();
+    const session = await registerAndGetToken(app, "url-message@example.com");
+
+    const submit = await request(app)
+      .post("/api/scans/links/jobs")
+      .set("Authorization", `Bearer ${session.accessToken}`)
+      .send({
+        message: `
+          Hello,
+          We could not validate your last payment.
+          Review immediately at hxxps[:]//secure-billing[.]example.com/login/reset?case=4287
+          Footer: https://news.example.com/unsubscribe
+        `
+      });
+
+    expect(submit.status).toBe(202);
+    expect(submit.body.job.status).toBe("queued");
+    expect(submit.body.job.sourceType).toBe("url");
+    expect(submit.body.job.targetUrl).toBe("https://secure-billing.example.com/login/reset?case=4287");
+    expect(submit.body.extracted).toEqual({
+      url: "https://secure-billing.example.com/login/reset?case=4287",
+      candidateCount: 2,
+      source: "explicit"
+    });
+
+    const finished = await waitForJobCompletion(app, session.accessToken, submit.body.job.id);
+    expect(finished.status).toBe("completed");
+
+    const reportResponse = await request(app)
+      .get(`/api/scans/reports/${finished.reportId}`)
+      .set("Authorization", `Bearer ${session.accessToken}`);
+
+    expect(reportResponse.status).toBe(200);
+    expect(reportResponse.body.report.url?.final).toBe("https://secure-billing.example.com/login/reset?case=4287");
+  });
+
+  it("resolves multiple links from pasted messages in ranked order before queueing", async () => {
+    const app = await setupTestApp();
+    const session = await registerAndGetToken(app, "url-message-resolve@example.com");
+
+    const resolveResponse = await request(app)
+      .post("/api/scans/links/resolve")
+      .set("Authorization", `Bearer ${session.accessToken}`)
+      .send({
+        message: `
+          Safe footer: https://news.example.com/unsubscribe
+          Review now: https://secure-billing.example.com/login/reset?case=2001
+          Backup mirror: support-check.example.net/portal
+        `
+      });
+
+    expect(resolveResponse.status).toBe(200);
+    expect(resolveResponse.body.resolution.primaryUrl).toBe("https://secure-billing.example.com/login/reset?case=2001");
+    expect(resolveResponse.body.resolution.candidateCount).toBe(3);
+    expect(resolveResponse.body.resolution.candidates[0]).toEqual(
+      expect.objectContaining({
+        rank: 1,
+        url: "https://secure-billing.example.com/login/reset?case=2001",
+        isPrimary: true
+      })
+    );
+  });
+
+  it("queues a selected batch of resolved URLs in one request", async () => {
+    const app = await setupTestApp();
+    const session = await registerAndGetToken(app, "url-batch@example.com");
+
+    const submit = await request(app)
+      .post("/api/scans/links/jobs")
+      .set("Authorization", `Bearer ${session.accessToken}`)
+      .send({
+        urls: ["https://secure-billing.example.com/login/reset", "support-check.example.net/portal"]
+      });
+
+    expect(submit.status).toBe(202);
+    expect(submit.body.acceptedUrls).toBe(2);
+    expect(submit.body.jobs).toHaveLength(2);
+    expect(submit.body.jobs[0].sourceType).toBe("url");
+    expect(submit.body.jobs[1].targetUrl).toBe("https://support-check.example.net/portal");
+  });
+
+  it("rejects pasted messages when no scannable link can be extracted", async () => {
+    const app = await setupTestApp();
+    const session = await registerAndGetToken(app, "url-message-empty@example.com");
+
+    const submit = await request(app)
+      .post("/api/scans/links/jobs")
+      .set("Authorization", `Bearer ${session.accessToken}`)
+      .send({
+        message: "Security alert: call us immediately. No website was included in this notice."
+      });
+
+    expect(submit.status).toBe(400);
+    expect(submit.body.error.code).toBe("URL_SCAN_TARGET_INVALID");
+  });
+
   it("queues website safety jobs and returns website reports", async () => {
     const app = await setupTestApp();
     const session = await registerAndGetToken(app, "website-safety@example.com");

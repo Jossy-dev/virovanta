@@ -15,7 +15,14 @@ const DEFAULT_STATE = {
   reports: [],
   jobs: [],
   notifications: [],
-  auditEvents: []
+  auditEvents: [],
+  workspaceProfiles: [],
+  reportShares: [],
+  reportWorkflows: [],
+  reportComments: [],
+  webhooks: [],
+  webhookDeliveries: [],
+  monitors: []
 };
 
 const ANALYTICS_WINDOW_DAYS = 30;
@@ -208,6 +215,150 @@ function mapAuditEventRow(row) {
   };
 }
 
+function mapWorkspaceProfileRow(row) {
+  if (!row) {
+    return null;
+  }
+
+  return {
+    id: row.id,
+    userId: row.user_id,
+    planId: row.plan_id,
+    trialPlanId: row.trial_plan_id,
+    trialStatus: row.trial_status,
+    trialStartedAt: toIsoOrNull(row.trial_started_at),
+    trialEndsAt: toIsoOrNull(row.trial_ends_at),
+    trialDays: Number(row.trial_days) || 14,
+    retentionDaysOverride: row.retention_days_override == null ? null : Number(row.retention_days_override),
+    monitorLimitOverride: row.monitor_limit_override == null ? null : Number(row.monitor_limit_override),
+    webhookLimitOverride: row.webhook_limit_override == null ? null : Number(row.webhook_limit_override),
+    apiKeyLimitOverride: row.api_key_limit_override == null ? null : Number(row.api_key_limit_override),
+    billingProvider: row.billing_provider || null,
+    billingCustomerId: row.billing_customer_id || null,
+    billingSubscriptionId: row.billing_subscription_id || null,
+    createdAt: toIsoOrNull(row.created_at),
+    updatedAt: toIsoOrNull(row.updated_at)
+  };
+}
+
+function mapReportShareRow(row) {
+  if (!row) {
+    return null;
+  }
+
+  return {
+    id: row.id,
+    reportId: row.report_id,
+    ownerUserId: row.owner_user_id,
+    label: row.label || "",
+    expiresAt: toIsoOrNull(row.expires_at),
+    revokedAt: toIsoOrNull(row.revoked_at),
+    createdAt: toIsoOrNull(row.created_at),
+    lastAccessedAt: toIsoOrNull(row.last_accessed_at),
+    accessCount: Number(row.access_count) || 0
+  };
+}
+
+function mapReportWorkflowRow(row) {
+  if (!row) {
+    return null;
+  }
+
+  return {
+    id: row.id,
+    reportId: row.report_id,
+    ownerUserId: row.owner_user_id,
+    caseStatus: row.case_status || "new",
+    severity: row.severity || "medium",
+    assigneeLabel: row.assignee_label || "",
+    clientLabel: row.client_label || "",
+    recommendedAction: row.recommended_action || "",
+    notesSummary: row.notes_summary || "",
+    createdAt: toIsoOrNull(row.created_at),
+    updatedAt: toIsoOrNull(row.updated_at),
+    lastCommentedAt: toIsoOrNull(row.last_commented_at)
+  };
+}
+
+function mapReportCommentRow(row) {
+  if (!row) {
+    return null;
+  }
+
+  return {
+    id: row.id,
+    reportId: row.report_id,
+    ownerUserId: row.owner_user_id,
+    authorUserId: row.author_user_id || null,
+    authorName: row.author_name,
+    body: row.body,
+    createdAt: toIsoOrNull(row.created_at)
+  };
+}
+
+function mapWebhookRow(row) {
+  if (!row) {
+    return null;
+  }
+
+  return {
+    id: row.id,
+    userId: row.user_id,
+    name: row.name,
+    targetUrl: row.target_url,
+    events: normalizeScopes(row.events),
+    secret: row.secret,
+    createdAt: toIsoOrNull(row.created_at),
+    deletedAt: toIsoOrNull(row.deleted_at)
+  };
+}
+
+function mapWebhookDeliveryRow(row) {
+  if (!row) {
+    return null;
+  }
+
+  return {
+    id: row.id,
+    webhookId: row.webhook_id,
+    userId: row.user_id,
+    eventType: row.event_type,
+    requestBody: row.request_body || {},
+    responseStatus: row.response_status == null ? null : Number(row.response_status),
+    responseBody: row.response_body || null,
+    errorMessage: row.error_message || null,
+    deliveredAt: toIsoOrNull(row.delivered_at)
+  };
+}
+
+function mapMonitorRow(row) {
+  if (!row) {
+    return null;
+  }
+
+  return {
+    id: row.id,
+    userId: row.user_id,
+    name: row.name,
+    targetType: row.target_type,
+    target: row.target,
+    normalizedTarget: row.normalized_target,
+    cadenceHours: Number(row.cadence_hours) || 24,
+    notes: row.notes || "",
+    status: row.status || "active",
+    lastCheckedAt: toIsoOrNull(row.last_checked_at),
+    nextCheckAt: toIsoOrNull(row.next_check_at),
+    lastReportId: row.last_report_id || null,
+    lastVerdict: row.last_verdict || null,
+    lastRiskScore: row.last_risk_score == null ? null : Number(row.last_risk_score),
+    lastChangeSummary: Array.isArray(row.last_change_summary) ? row.last_change_summary : row.last_change_summary || [],
+    lastSnapshot: row.last_snapshot || null,
+    createdAt: toIsoOrNull(row.created_at),
+    updatedAt: toIsoOrNull(row.updated_at),
+    deletedAt: toIsoOrNull(row.deleted_at)
+  };
+}
+
 function extractReportColumns(report) {
   const detectedFileType = String(report?.file?.detectedFileType || "").trim();
   const fileExtension = String(report?.file?.extension || "").trim();
@@ -252,7 +403,14 @@ function normalizeLegacyState(input) {
     reports: Array.isArray(input.reports) ? input.reports : [],
     jobs: Array.isArray(input.jobs) ? input.jobs : [],
     notifications: Array.isArray(input.notifications) ? input.notifications : [],
-    auditEvents: Array.isArray(input.auditEvents) ? input.auditEvents : []
+    auditEvents: Array.isArray(input.auditEvents) ? input.auditEvents : [],
+    workspaceProfiles: Array.isArray(input.workspaceProfiles) ? input.workspaceProfiles : [],
+    reportShares: Array.isArray(input.reportShares) ? input.reportShares : [],
+    reportWorkflows: Array.isArray(input.reportWorkflows) ? input.reportWorkflows : [],
+    reportComments: Array.isArray(input.reportComments) ? input.reportComments : [],
+    webhooks: Array.isArray(input.webhooks) ? input.webhooks : [],
+    webhookDeliveries: Array.isArray(input.webhookDeliveries) ? input.webhookDeliveries : [],
+    monitors: Array.isArray(input.monitors) ? input.monitors : []
   };
 }
 
@@ -284,6 +442,13 @@ export class PersistentStore {
     this.reportsTable = `${this.tableBase}_reports`;
     this.notificationsTable = `${this.tableBase}_notifications`;
     this.auditEventsTable = `${this.tableBase}_audit_events`;
+    this.workspaceProfilesTable = `${this.tableBase}_workspace_profiles`;
+    this.reportSharesTable = `${this.tableBase}_report_shares`;
+    this.reportWorkflowsTable = `${this.tableBase}_report_workflows`;
+    this.reportCommentsTable = `${this.tableBase}_report_comments`;
+    this.webhooksTable = `${this.tableBase}_webhooks`;
+    this.webhookDeliveriesTable = `${this.tableBase}_webhook_deliveries`;
+    this.monitorsTable = `${this.tableBase}_monitors`;
     this.migrationsTable = `${this.tableBase}_schema_migrations`;
     this.state = cloneState(DEFAULT_STATE);
     this.writeChain = Promise.resolve();
@@ -1376,6 +1541,15 @@ export class PersistentStore {
           };
         }
 
+        if (limit == null) {
+          return {
+            windowStartedAt,
+            used,
+            remaining: null,
+            limit: null
+          };
+        }
+
         return {
           windowStartedAt,
           used,
@@ -1407,12 +1581,812 @@ export class PersistentStore {
       };
     }
 
+    if (limit == null) {
+      return {
+        windowStartedAt,
+        used,
+        remaining: null,
+        limit: null
+      };
+    }
+
     return {
       windowStartedAt,
       used,
       remaining: Math.max(0, limit - used),
       limit
     };
+  }
+
+  async getWorkspaceProfile(userId) {
+    if (this.driver !== "postgres") {
+      return this.read((state) => state.workspaceProfiles.find((profile) => profile.userId === userId) || null);
+    }
+
+    const result = await this.pool.query(`SELECT * FROM ${this.workspaceProfilesTable} WHERE user_id = $1 LIMIT 1`, [userId]);
+    return mapWorkspaceProfileRow(result.rows[0]);
+  }
+
+  async upsertWorkspaceProfile(profile) {
+    if (!profile?.id || !profile?.userId) {
+      throw new Error("Workspace profile requires id and userId.");
+    }
+
+    if (this.driver !== "postgres") {
+      return this.write((state) => {
+        const index = state.workspaceProfiles.findIndex((candidate) => candidate.userId === profile.userId);
+        if (index === -1) {
+          state.workspaceProfiles.unshift(profile);
+        } else {
+          state.workspaceProfiles[index] = {
+            ...state.workspaceProfiles[index],
+            ...profile
+          };
+        }
+
+        return state.workspaceProfiles.find((candidate) => candidate.userId === profile.userId) || null;
+      });
+    }
+
+    const result = await this.pool.query(
+      `
+        INSERT INTO ${this.workspaceProfilesTable} (
+          id,
+          user_id,
+          plan_id,
+          trial_plan_id,
+          trial_status,
+          trial_started_at,
+          trial_ends_at,
+          trial_days,
+          retention_days_override,
+          monitor_limit_override,
+          webhook_limit_override,
+          api_key_limit_override,
+          billing_provider,
+          billing_customer_id,
+          billing_subscription_id,
+          created_at,
+          updated_at
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
+        ON CONFLICT (user_id)
+        DO UPDATE SET
+          plan_id = EXCLUDED.plan_id,
+          trial_plan_id = EXCLUDED.trial_plan_id,
+          trial_status = EXCLUDED.trial_status,
+          trial_started_at = EXCLUDED.trial_started_at,
+          trial_ends_at = EXCLUDED.trial_ends_at,
+          trial_days = EXCLUDED.trial_days,
+          retention_days_override = EXCLUDED.retention_days_override,
+          monitor_limit_override = EXCLUDED.monitor_limit_override,
+          webhook_limit_override = EXCLUDED.webhook_limit_override,
+          api_key_limit_override = EXCLUDED.api_key_limit_override,
+          billing_provider = EXCLUDED.billing_provider,
+          billing_customer_id = EXCLUDED.billing_customer_id,
+          billing_subscription_id = EXCLUDED.billing_subscription_id,
+          updated_at = EXCLUDED.updated_at
+        RETURNING *
+      `,
+      [
+        profile.id,
+        profile.userId,
+        profile.planId || "free",
+        profile.trialPlanId || "pro",
+        profile.trialStatus || "available",
+        profile.trialStartedAt || null,
+        profile.trialEndsAt || null,
+        Number(profile.trialDays) || 14,
+        profile.retentionDaysOverride ?? null,
+        profile.monitorLimitOverride ?? null,
+        profile.webhookLimitOverride ?? null,
+        profile.apiKeyLimitOverride ?? null,
+        profile.billingProvider || null,
+        profile.billingCustomerId || null,
+        profile.billingSubscriptionId || null,
+        profile.createdAt || new Date().toISOString(),
+        profile.updatedAt || new Date().toISOString()
+      ]
+    );
+
+    return mapWorkspaceProfileRow(result.rows[0]);
+  }
+
+  async getWorkspaceCounts(userId) {
+    if (this.driver !== "postgres") {
+      return this.read((state) => ({
+        monitorsActive: (state.monitors || []).filter((monitor) => monitor.userId === userId && !monitor.deletedAt).length,
+        webhooksActive: (state.webhooks || []).filter((webhook) => webhook.userId === userId && !webhook.deletedAt).length,
+        apiKeysActive:
+          state.users.find((candidate) => candidate.id === userId)?.apiKeys?.filter((key) => !key.revokedAt).length || 0
+      }));
+    }
+
+    const [monitorsResult, webhooksResult, apiKeysResult] = await Promise.all([
+      this.pool.query(
+        `SELECT COUNT(*)::int AS count FROM ${this.monitorsTable} WHERE user_id = $1 AND deleted_at IS NULL AND status <> 'deleted'`,
+        [userId]
+      ),
+      this.pool.query(`SELECT COUNT(*)::int AS count FROM ${this.webhooksTable} WHERE user_id = $1 AND deleted_at IS NULL`, [userId]),
+      this.pool.query(`SELECT COUNT(*)::int AS count FROM ${this.apiKeysTable} WHERE user_id = $1 AND revoked_at IS NULL`, [userId])
+    ]);
+
+    return {
+      monitorsActive: Number(monitorsResult.rows[0]?.count) || 0,
+      webhooksActive: Number(webhooksResult.rows[0]?.count) || 0,
+      apiKeysActive: Number(apiKeysResult.rows[0]?.count) || 0
+    };
+  }
+
+  async getOrCreateReportWorkflow({ reportId, ownerUserId, now = new Date().toISOString() }) {
+    if (this.driver !== "postgres") {
+      return this.write((state) => {
+        const existing = state.reportWorkflows.find((workflow) => workflow.reportId === reportId && workflow.ownerUserId === ownerUserId);
+        if (existing) {
+          return existing;
+        }
+
+        const workflow = {
+          id: `workflow_${crypto.randomUUID()}`,
+          reportId,
+          ownerUserId,
+          caseStatus: "new",
+          severity: "medium",
+          assigneeLabel: "",
+          clientLabel: "",
+          recommendedAction: "",
+          notesSummary: "",
+          createdAt: now,
+          updatedAt: now,
+          lastCommentedAt: null
+        };
+        state.reportWorkflows.unshift(workflow);
+        return workflow;
+      });
+    }
+
+    return this.#withTransaction(async (client) => {
+      const existing = await client.query(`SELECT * FROM ${this.reportWorkflowsTable} WHERE report_id = $1 LIMIT 1 FOR UPDATE`, [reportId]);
+      if (existing.rowCount > 0) {
+        return mapReportWorkflowRow(existing.rows[0]);
+      }
+
+      const created = await client.query(
+        `
+          INSERT INTO ${this.reportWorkflowsTable} (
+            id,
+            report_id,
+            owner_user_id,
+            case_status,
+            severity,
+            assignee_label,
+            client_label,
+            recommended_action,
+            notes_summary,
+            created_at,
+            updated_at,
+            last_commented_at
+          )
+          VALUES ($1, $2, $3, 'new', 'medium', '', '', '', '', $4, $4, NULL)
+          RETURNING *
+        `,
+        [`workflow_${crypto.randomUUID()}`, reportId, ownerUserId, now]
+      );
+
+      return mapReportWorkflowRow(created.rows[0]);
+    });
+  }
+
+  async updateReportWorkflow({ reportId, ownerUserId, updates, updatedAt }) {
+    const existing = await this.getOrCreateReportWorkflow({ reportId, ownerUserId, now: updatedAt });
+    const patch = {
+      caseStatus: updates.caseStatus ?? existing.caseStatus,
+      severity: updates.severity ?? existing.severity,
+      assigneeLabel: updates.assigneeLabel ?? existing.assigneeLabel,
+      clientLabel: updates.clientLabel ?? existing.clientLabel,
+      recommendedAction: updates.recommendedAction ?? existing.recommendedAction,
+      notesSummary: updates.notesSummary ?? existing.notesSummary,
+      updatedAt
+    };
+
+    if (this.driver !== "postgres") {
+      return this.write((state) => {
+        const index = state.reportWorkflows.findIndex((workflow) => workflow.reportId === reportId && workflow.ownerUserId === ownerUserId);
+        if (index === -1) {
+          return null;
+        }
+
+        state.reportWorkflows[index] = {
+          ...state.reportWorkflows[index],
+          ...patch
+        };
+        return state.reportWorkflows[index];
+      });
+    }
+
+    const result = await this.pool.query(
+      `
+        UPDATE ${this.reportWorkflowsTable}
+        SET
+          case_status = $3,
+          severity = $4,
+          assignee_label = $5,
+          client_label = $6,
+          recommended_action = $7,
+          notes_summary = $8,
+          updated_at = $9
+        WHERE report_id = $1 AND owner_user_id = $2
+        RETURNING *
+      `,
+      [reportId, ownerUserId, patch.caseStatus, patch.severity, patch.assigneeLabel, patch.clientLabel, patch.recommendedAction, patch.notesSummary, updatedAt]
+    );
+
+    return mapReportWorkflowRow(result.rows[0]);
+  }
+
+  async listReportComments(reportId, ownerUserId) {
+    if (this.driver !== "postgres") {
+      return this.read((state) =>
+        (state.reportComments || [])
+          .filter((comment) => comment.reportId === reportId && comment.ownerUserId === ownerUserId)
+          .sort((left, right) => Date.parse(left.createdAt || "") - Date.parse(right.createdAt || ""))
+      );
+    }
+
+    const result = await this.pool.query(
+      `SELECT * FROM ${this.reportCommentsTable} WHERE report_id = $1 AND owner_user_id = $2 ORDER BY created_at ASC`,
+      [reportId, ownerUserId]
+    );
+    return result.rows.map(mapReportCommentRow);
+  }
+
+  async createReportComment({ reportId, ownerUserId, authorUserId = null, authorName, body, createdAt }) {
+    await this.getOrCreateReportWorkflow({ reportId, ownerUserId, now: createdAt });
+
+    if (this.driver !== "postgres") {
+      return this.write((state) => {
+        const comment = {
+          id: `comment_${crypto.randomUUID()}`,
+          reportId,
+          ownerUserId,
+          authorUserId,
+          authorName,
+          body,
+          createdAt
+        };
+        state.reportComments.push(comment);
+        const workflow = state.reportWorkflows.find((entry) => entry.reportId === reportId && entry.ownerUserId === ownerUserId);
+        if (workflow) {
+          workflow.lastCommentedAt = createdAt;
+          workflow.updatedAt = createdAt;
+        }
+        return comment;
+      });
+    }
+
+    return this.#withTransaction(async (client) => {
+      const commentResult = await client.query(
+        `
+          INSERT INTO ${this.reportCommentsTable} (
+            id,
+            report_id,
+            owner_user_id,
+            author_user_id,
+            author_name,
+            body,
+            created_at
+          )
+          VALUES ($1, $2, $3, $4, $5, $6, $7)
+          RETURNING *
+        `,
+        [`comment_${crypto.randomUUID()}`, reportId, ownerUserId, authorUserId, authorName, body, createdAt]
+      );
+
+      await client.query(
+        `UPDATE ${this.reportWorkflowsTable} SET last_commented_at = $3, updated_at = $3 WHERE report_id = $1 AND owner_user_id = $2`,
+        [reportId, ownerUserId, createdAt]
+      );
+
+      return mapReportCommentRow(commentResult.rows[0]);
+    });
+  }
+
+  async listReportShares({ reportId, ownerUserId }) {
+    if (this.driver !== "postgres") {
+      return this.read((state) =>
+        (state.reportShares || [])
+          .filter((share) => share.reportId === reportId && share.ownerUserId === ownerUserId)
+          .sort((left, right) => Date.parse(right.createdAt || "") - Date.parse(left.createdAt || ""))
+      );
+    }
+
+    const result = await this.pool.query(
+      `SELECT * FROM ${this.reportSharesTable} WHERE report_id = $1 AND owner_user_id = $2 ORDER BY created_at DESC`,
+      [reportId, ownerUserId]
+    );
+    return result.rows.map(mapReportShareRow);
+  }
+
+  async createReportShare({ reportId, ownerUserId, label = "", expiresAt, createdAt }) {
+    if (this.driver !== "postgres") {
+      return this.write((state) => {
+        const share = {
+          id: `share_${crypto.randomUUID()}`,
+          reportId,
+          ownerUserId,
+          label,
+          expiresAt,
+          revokedAt: null,
+          createdAt,
+          lastAccessedAt: null,
+          accessCount: 0
+        };
+        state.reportShares.unshift(share);
+        return share;
+      });
+    }
+
+    const result = await this.pool.query(
+      `
+        INSERT INTO ${this.reportSharesTable} (
+          id,
+          report_id,
+          owner_user_id,
+          label,
+          expires_at,
+          revoked_at,
+          created_at,
+          last_accessed_at,
+          access_count
+        )
+        VALUES ($1, $2, $3, $4, $5, NULL, $6, NULL, 0)
+        RETURNING *
+      `,
+      [`share_${crypto.randomUUID()}`, reportId, ownerUserId, label, expiresAt, createdAt]
+    );
+    return mapReportShareRow(result.rows[0]);
+  }
+
+  async findReportShareById(shareId) {
+    if (this.driver !== "postgres") {
+      return this.read((state) => (state.reportShares || []).find((share) => share.id === shareId) || null);
+    }
+
+    const result = await this.pool.query(`SELECT * FROM ${this.reportSharesTable} WHERE id = $1 LIMIT 1`, [shareId]);
+    return mapReportShareRow(result.rows[0]);
+  }
+
+  async revokeReportShare({ shareId, ownerUserId, revokedAt }) {
+    if (this.driver !== "postgres") {
+      return this.write((state) => {
+        const share = (state.reportShares || []).find((candidate) => candidate.id === shareId && candidate.ownerUserId === ownerUserId);
+        if (!share) {
+          return null;
+        }
+        share.revokedAt = share.revokedAt || revokedAt;
+        return share;
+      });
+    }
+
+    const result = await this.pool.query(
+      `UPDATE ${this.reportSharesTable} SET revoked_at = COALESCE(revoked_at, $3) WHERE id = $1 AND owner_user_id = $2 RETURNING *`,
+      [shareId, ownerUserId, revokedAt]
+    );
+    return mapReportShareRow(result.rows[0]);
+  }
+
+  async markReportShareAccessed({ shareId, accessedAt }) {
+    if (this.driver !== "postgres") {
+      return this.write((state) => {
+        const share = (state.reportShares || []).find((candidate) => candidate.id === shareId);
+        if (!share) {
+          return null;
+        }
+        share.lastAccessedAt = accessedAt;
+        share.accessCount = Number(share.accessCount) + 1;
+        return share;
+      });
+    }
+
+    const result = await this.pool.query(
+      `
+        UPDATE ${this.reportSharesTable}
+        SET last_accessed_at = $2, access_count = access_count + 1
+        WHERE id = $1
+        RETURNING *
+      `,
+      [shareId, accessedAt]
+    );
+    return mapReportShareRow(result.rows[0]);
+  }
+
+  async listWebhooksForUser(userId) {
+    if (this.driver !== "postgres") {
+      return this.read((state) =>
+        (state.webhooks || [])
+          .filter((webhook) => webhook.userId === userId && !webhook.deletedAt)
+          .sort((left, right) => Date.parse(right.createdAt || "") - Date.parse(left.createdAt || ""))
+      );
+    }
+
+    const result = await this.pool.query(
+      `SELECT * FROM ${this.webhooksTable} WHERE user_id = $1 AND deleted_at IS NULL ORDER BY created_at DESC`,
+      [userId]
+    );
+    return result.rows.map(mapWebhookRow);
+  }
+
+  async findWebhookById(webhookId) {
+    if (this.driver !== "postgres") {
+      return this.read((state) => (state.webhooks || []).find((webhook) => webhook.id === webhookId) || null);
+    }
+
+    const result = await this.pool.query(`SELECT * FROM ${this.webhooksTable} WHERE id = $1 LIMIT 1`, [webhookId]);
+    return mapWebhookRow(result.rows[0]);
+  }
+
+  async createWebhook({ userId, name, targetUrl, events, secret, createdAt }) {
+    if (this.driver !== "postgres") {
+      return this.write((state) => {
+        const webhook = {
+          id: `webhook_${crypto.randomUUID()}`,
+          userId,
+          name,
+          targetUrl,
+          events,
+          secret,
+          createdAt,
+          deletedAt: null
+        };
+        state.webhooks.unshift(webhook);
+        return webhook;
+      });
+    }
+
+    const result = await this.pool.query(
+      `
+        INSERT INTO ${this.webhooksTable} (id, user_id, name, target_url, events, secret, created_at, deleted_at)
+        VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, NULL)
+        RETURNING *
+      `,
+      [`webhook_${crypto.randomUUID()}`, userId, name, targetUrl, JSON.stringify(events), secret, createdAt]
+    );
+    return mapWebhookRow(result.rows[0]);
+  }
+
+  async deleteWebhook({ userId, webhookId, deletedAt }) {
+    if (this.driver !== "postgres") {
+      return this.write((state) => {
+        const webhook = (state.webhooks || []).find((candidate) => candidate.id === webhookId && candidate.userId === userId);
+        if (!webhook) {
+          return null;
+        }
+        webhook.deletedAt = webhook.deletedAt || deletedAt;
+        return webhook;
+      });
+    }
+
+    const result = await this.pool.query(
+      `UPDATE ${this.webhooksTable} SET deleted_at = COALESCE(deleted_at, $3) WHERE id = $1 AND user_id = $2 RETURNING *`,
+      [webhookId, userId, deletedAt]
+    );
+    return mapWebhookRow(result.rows[0]);
+  }
+
+  async createWebhookDelivery({ webhookId, userId, eventType, requestBody, responseStatus, responseBody, errorMessage, deliveredAt }) {
+    if (this.driver !== "postgres") {
+      return this.write((state) => {
+        const delivery = {
+          id: `webhook_delivery_${crypto.randomUUID()}`,
+          webhookId,
+          userId,
+          eventType,
+          requestBody,
+          responseStatus,
+          responseBody,
+          errorMessage,
+          deliveredAt
+        };
+        state.webhookDeliveries.unshift(delivery);
+        return delivery;
+      });
+    }
+
+    const result = await this.pool.query(
+      `
+        INSERT INTO ${this.webhookDeliveriesTable} (
+          id,
+          webhook_id,
+          user_id,
+          event_type,
+          request_body,
+          response_status,
+          response_body,
+          error_message,
+          delivered_at
+        )
+        VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7::jsonb, $8, $9)
+        RETURNING *
+      `,
+      [
+        `webhook_delivery_${crypto.randomUUID()}`,
+        webhookId,
+        userId,
+        eventType,
+        JSON.stringify(requestBody || {}),
+        responseStatus ?? null,
+        responseBody == null ? null : JSON.stringify(responseBody),
+        errorMessage || null,
+        deliveredAt
+      ]
+    );
+    return mapWebhookDeliveryRow(result.rows[0]);
+  }
+
+  async listWebhookDeliveriesForUser(userId, limit = 20) {
+    const safeLimit = Math.max(1, Math.min(100, Number(limit) || 20));
+    if (this.driver !== "postgres") {
+      return this.read((state) =>
+        (state.webhookDeliveries || [])
+          .filter((delivery) => delivery.userId === userId)
+          .sort((left, right) => Date.parse(right.deliveredAt || "") - Date.parse(left.deliveredAt || ""))
+          .slice(0, safeLimit)
+      );
+    }
+
+    const result = await this.pool.query(
+      `SELECT * FROM ${this.webhookDeliveriesTable} WHERE user_id = $1 ORDER BY delivered_at DESC LIMIT $2`,
+      [userId, safeLimit]
+    );
+    return result.rows.map(mapWebhookDeliveryRow);
+  }
+
+  async listMonitorsForUser(userId) {
+    if (this.driver !== "postgres") {
+      return this.read((state) =>
+        (state.monitors || [])
+          .filter((monitor) => monitor.userId === userId && !monitor.deletedAt)
+          .sort((left, right) => Date.parse(left.nextCheckAt || "") - Date.parse(right.nextCheckAt || ""))
+      );
+    }
+
+    const result = await this.pool.query(
+      `SELECT * FROM ${this.monitorsTable} WHERE user_id = $1 AND deleted_at IS NULL ORDER BY next_check_at ASC NULLS LAST, created_at DESC`,
+      [userId]
+    );
+    return result.rows.map(mapMonitorRow);
+  }
+
+  async claimDueMonitors({ now = new Date().toISOString(), limit = 10 }) {
+    const safeLimit = Math.max(1, Math.min(100, Number(limit) || 10));
+    const claimedAt = now;
+
+    if (this.driver !== "postgres") {
+      return this.write((state) => {
+        const currentTime = Date.parse(claimedAt);
+        const dueMonitors = (state.monitors || [])
+          .filter((monitor) => {
+            if (monitor.deletedAt || monitor.status !== "active") {
+              return false;
+            }
+
+            const nextCheckAt = Date.parse(monitor.nextCheckAt || "");
+            return !Number.isFinite(nextCheckAt) || nextCheckAt <= currentTime;
+          })
+          .sort((left, right) => {
+            const leftTime = Date.parse(left.nextCheckAt || "") || 0;
+            const rightTime = Date.parse(right.nextCheckAt || "") || 0;
+            return leftTime - rightTime;
+          })
+          .slice(0, safeLimit);
+
+        for (const monitor of dueMonitors) {
+          const cadenceHours = Math.max(1, Number(monitor.cadenceHours) || 24);
+          monitor.nextCheckAt = new Date(Date.parse(claimedAt) + cadenceHours * 60 * 60 * 1000).toISOString();
+          monitor.updatedAt = claimedAt;
+        }
+
+        return dueMonitors.map((monitor) => ({ ...monitor }));
+      });
+    }
+
+    const result = await this.pool.query(
+      `
+        WITH due AS (
+          SELECT id
+          FROM ${this.monitorsTable}
+          WHERE deleted_at IS NULL
+            AND status = 'active'
+            AND (next_check_at IS NULL OR next_check_at <= $1::timestamptz)
+          ORDER BY next_check_at ASC NULLS FIRST, created_at ASC
+          LIMIT $2
+          FOR UPDATE SKIP LOCKED
+        )
+        UPDATE ${this.monitorsTable} AS monitor
+        SET
+          next_check_at = $1::timestamptz + make_interval(hours => GREATEST(COALESCE(monitor.cadence_hours, 24), 1)),
+          updated_at = $1
+        FROM due
+        WHERE monitor.id = due.id
+        RETURNING monitor.*
+      `,
+      [claimedAt, safeLimit]
+    );
+
+    return result.rows.map(mapMonitorRow);
+  }
+
+  async findMonitorById(monitorId) {
+    if (this.driver !== "postgres") {
+      return this.read((state) => (state.monitors || []).find((monitor) => monitor.id === monitorId) || null);
+    }
+
+    const result = await this.pool.query(`SELECT * FROM ${this.monitorsTable} WHERE id = $1 LIMIT 1`, [monitorId]);
+    return mapMonitorRow(result.rows[0]);
+  }
+
+  async createMonitor({ userId, name, targetType, target, normalizedTarget, cadenceHours, notes, nextCheckAt, createdAt }) {
+    if (this.driver !== "postgres") {
+      return this.write((state) => {
+        const monitor = {
+          id: `monitor_${crypto.randomUUID()}`,
+          userId,
+          name,
+          targetType,
+          target,
+          normalizedTarget,
+          cadenceHours,
+          notes,
+          status: "active",
+          lastCheckedAt: null,
+          nextCheckAt,
+          lastReportId: null,
+          lastVerdict: null,
+          lastRiskScore: null,
+          lastChangeSummary: [],
+          lastSnapshot: null,
+          createdAt,
+          updatedAt: createdAt,
+          deletedAt: null
+        };
+        state.monitors.unshift(monitor);
+        return monitor;
+      });
+    }
+
+    const result = await this.pool.query(
+      `
+        INSERT INTO ${this.monitorsTable} (
+          id,
+          user_id,
+          name,
+          target_type,
+          target,
+          normalized_target,
+          cadence_hours,
+          notes,
+          status,
+          last_checked_at,
+          next_check_at,
+          last_report_id,
+          last_verdict,
+          last_risk_score,
+          last_change_summary,
+          last_snapshot,
+          created_at,
+          updated_at,
+          deleted_at
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'active', NULL, $9, NULL, NULL, NULL, '[]'::jsonb, NULL, $10, $10, NULL)
+        RETURNING *
+      `,
+      [`monitor_${crypto.randomUUID()}`, userId, name, targetType, target, normalizedTarget, cadenceHours, notes, nextCheckAt, createdAt]
+    );
+    return mapMonitorRow(result.rows[0]);
+  }
+
+  async deleteMonitor({ userId, monitorId, deletedAt }) {
+    if (this.driver !== "postgres") {
+      return this.write((state) => {
+        const monitor = (state.monitors || []).find((candidate) => candidate.id === monitorId && candidate.userId === userId);
+        if (!monitor) {
+          return null;
+        }
+        monitor.deletedAt = monitor.deletedAt || deletedAt;
+        monitor.status = "deleted";
+        monitor.updatedAt = deletedAt;
+        return monitor;
+      });
+    }
+
+    const result = await this.pool.query(
+      `
+        UPDATE ${this.monitorsTable}
+        SET deleted_at = COALESCE(deleted_at, $3), status = 'deleted', updated_at = $3
+        WHERE id = $1 AND user_id = $2
+        RETURNING *
+      `,
+      [monitorId, userId, deletedAt]
+    );
+    return mapMonitorRow(result.rows[0]);
+  }
+
+  async listMatchingMonitors({ userId, normalizedTargets = [] }) {
+    const candidates = Array.isArray(normalizedTargets)
+      ? normalizedTargets.map((value) => String(value || "").trim()).filter(Boolean)
+      : [];
+    if (candidates.length === 0) {
+      return [];
+    }
+
+    if (this.driver !== "postgres") {
+      return this.read((state) =>
+        (state.monitors || []).filter(
+          (monitor) =>
+            monitor.userId === userId &&
+            !monitor.deletedAt &&
+            monitor.status === "active" &&
+            candidates.includes(String(monitor.normalizedTarget || ""))
+        )
+      );
+    }
+
+    const result = await this.pool.query(
+      `
+        SELECT * FROM ${this.monitorsTable}
+        WHERE user_id = $1
+          AND deleted_at IS NULL
+          AND status = 'active'
+          AND normalized_target = ANY($2::text[])
+      `,
+      [userId, candidates]
+    );
+    return result.rows.map(mapMonitorRow);
+  }
+
+  async updateMonitorSnapshot({ monitorId, reportId, verdict, riskScore, snapshot, lastChangeSummary, checkedAt, nextCheckAt }) {
+    if (this.driver !== "postgres") {
+      return this.write((state) => {
+        const monitor = (state.monitors || []).find((candidate) => candidate.id === monitorId);
+        if (!monitor) {
+          return null;
+        }
+
+        Object.assign(monitor, {
+          lastReportId: reportId,
+          lastVerdict: verdict,
+          lastRiskScore: riskScore,
+          lastSnapshot: snapshot,
+          lastChangeSummary,
+          status: "active",
+          lastCheckedAt: checkedAt,
+          nextCheckAt,
+          updatedAt: checkedAt
+        });
+
+        return monitor;
+      });
+    }
+
+    const result = await this.pool.query(
+      `
+        UPDATE ${this.monitorsTable}
+        SET
+          last_report_id = $2,
+          last_verdict = $3,
+          last_risk_score = $4,
+          last_snapshot = $5::jsonb,
+          last_change_summary = $6::jsonb,
+          status = 'active',
+          last_checked_at = $7,
+          next_check_at = $8,
+          updated_at = $7
+        WHERE id = $1
+        RETURNING *
+      `,
+      [monitorId, reportId, verdict, riskScore, JSON.stringify(snapshot || {}), JSON.stringify(lastChangeSummary || []), checkedAt, nextCheckAt]
+    );
+    return mapMonitorRow(result.rows[0]);
   }
 
   async getAdminMetrics() {
@@ -1479,6 +2453,64 @@ export class PersistentStore {
       [safeLimit]
     );
     return result.rows.map(mapAuditEventRow);
+  }
+
+  async listAuditEventsForUser(userId, limit = 100) {
+    const safeLimit = Math.max(1, Math.min(500, Number(limit) || 100));
+
+    if (this.driver !== "postgres") {
+      return this.read((state) =>
+        state.auditEvents
+          .filter((event) => event.userId === userId)
+          .sort((left, right) => Date.parse(right.createdAt || "") - Date.parse(left.createdAt || ""))
+          .slice(0, safeLimit)
+      );
+    }
+
+    const result = await this.pool.query(
+      `SELECT * FROM ${this.auditEventsTable} WHERE user_id = $1 ORDER BY created_at DESC LIMIT $2`,
+      [userId, safeLimit]
+    );
+    return result.rows.map(mapAuditEventRow);
+  }
+
+  async createAuditEvent({
+    userId = null,
+    action,
+    metadata = {},
+    ipAddress = null,
+    userAgent = "",
+    createdAt = new Date().toISOString()
+  }) {
+    if (!action) {
+      return null;
+    }
+
+    if (this.driver !== "postgres") {
+      return this.write((state) => {
+        const event = {
+          id: `audit_${crypto.randomUUID()}`,
+          userId,
+          action,
+          ipAddress,
+          userAgent,
+          metadata,
+          createdAt
+        };
+        state.auditEvents.unshift(event);
+        return event;
+      });
+    }
+
+    const result = await this.pool.query(
+      `
+        INSERT INTO ${this.auditEventsTable} (id, user_id, action, ip_address, user_agent, metadata, created_at)
+        VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7)
+        RETURNING *
+      `,
+      [`audit_${crypto.randomUUID()}`, userId, action, ipAddress, String(userAgent || ""), JSON.stringify(metadata || {}), createdAt]
+    );
+    return mapAuditEventRow(result.rows[0]);
   }
 
   async createNotification({
@@ -2779,17 +3811,39 @@ export class PersistentStore {
   }
 
   async #materializePostgresState() {
-    const [usersResult, apiKeysResult, refreshTokensResult, resetTokensResult, jobsResult, reportsResult, notificationsResult, auditResult] =
-      await Promise.all([
-        this.pool.query(`SELECT * FROM ${this.usersTable} ORDER BY created_at DESC`),
-        this.pool.query(`SELECT * FROM ${this.apiKeysTable} ORDER BY created_at DESC`),
-        this.pool.query(`SELECT * FROM ${this.refreshTokensTable} ORDER BY created_at DESC`),
-        this.pool.query(`SELECT * FROM ${this.passwordResetTable} ORDER BY created_at DESC`),
-        this.pool.query(`SELECT * FROM ${this.jobsTable} ORDER BY created_at DESC`),
-        this.pool.query(`SELECT * FROM ${this.reportsTable} ORDER BY completed_at DESC NULLS LAST, created_at DESC`),
-        this.pool.query(`SELECT * FROM ${this.notificationsTable} ORDER BY created_at DESC`),
-        this.pool.query(`SELECT * FROM ${this.auditEventsTable} ORDER BY created_at DESC LIMIT 20000`)
-      ]);
+    const [
+      usersResult,
+      apiKeysResult,
+      refreshTokensResult,
+      resetTokensResult,
+      jobsResult,
+      reportsResult,
+      notificationsResult,
+      auditResult,
+      workspaceProfilesResult,
+      reportSharesResult,
+      reportWorkflowsResult,
+      reportCommentsResult,
+      webhooksResult,
+      webhookDeliveriesResult,
+      monitorsResult
+    ] = await Promise.all([
+      this.pool.query(`SELECT * FROM ${this.usersTable} ORDER BY created_at DESC`),
+      this.pool.query(`SELECT * FROM ${this.apiKeysTable} ORDER BY created_at DESC`),
+      this.pool.query(`SELECT * FROM ${this.refreshTokensTable} ORDER BY created_at DESC`),
+      this.pool.query(`SELECT * FROM ${this.passwordResetTable} ORDER BY created_at DESC`),
+      this.pool.query(`SELECT * FROM ${this.jobsTable} ORDER BY created_at DESC`),
+      this.pool.query(`SELECT * FROM ${this.reportsTable} ORDER BY completed_at DESC NULLS LAST, created_at DESC`),
+      this.pool.query(`SELECT * FROM ${this.notificationsTable} ORDER BY created_at DESC`),
+      this.pool.query(`SELECT * FROM ${this.auditEventsTable} ORDER BY created_at DESC LIMIT 20000`),
+      this.pool.query(`SELECT * FROM ${this.workspaceProfilesTable} ORDER BY updated_at DESC`),
+      this.pool.query(`SELECT * FROM ${this.reportSharesTable} ORDER BY created_at DESC`),
+      this.pool.query(`SELECT * FROM ${this.reportWorkflowsTable} ORDER BY updated_at DESC`),
+      this.pool.query(`SELECT * FROM ${this.reportCommentsTable} ORDER BY created_at DESC`),
+      this.pool.query(`SELECT * FROM ${this.webhooksTable} ORDER BY created_at DESC`),
+      this.pool.query(`SELECT * FROM ${this.webhookDeliveriesTable} ORDER BY delivered_at DESC LIMIT 5000`),
+      this.pool.query(`SELECT * FROM ${this.monitorsTable} ORDER BY updated_at DESC`)
+    ]);
 
     const users = usersResult.rows.map(mapUserRow);
     const usersById = new Map(users.map((user) => [user.id, user]));
@@ -2821,7 +3875,14 @@ export class PersistentStore {
       jobs: jobsResult.rows.map(mapJobRow),
       reports: reportsResult.rows.map(mapReportPayloadRow),
       notifications: notificationsResult.rows.map(mapNotificationRow),
-      auditEvents: auditResult.rows.map(mapAuditEventRow)
+      auditEvents: auditResult.rows.map(mapAuditEventRow),
+      workspaceProfiles: workspaceProfilesResult.rows.map(mapWorkspaceProfileRow),
+      reportShares: reportSharesResult.rows.map(mapReportShareRow),
+      reportWorkflows: reportWorkflowsResult.rows.map(mapReportWorkflowRow),
+      reportComments: reportCommentsResult.rows.map(mapReportCommentRow),
+      webhooks: webhooksResult.rows.map(mapWebhookRow),
+      webhookDeliveries: webhookDeliveriesResult.rows.map(mapWebhookDeliveryRow),
+      monitors: monitorsResult.rows.map(mapMonitorRow)
     };
   }
 
@@ -2855,7 +3916,14 @@ export class PersistentStore {
         refreshTokensTable: this.refreshTokensTable,
         passwordResetTable: this.passwordResetTable,
         notificationsTable: this.notificationsTable,
-        auditEventsTable: this.auditEventsTable
+        auditEventsTable: this.auditEventsTable,
+        workspaceProfilesTable: this.workspaceProfilesTable,
+        reportSharesTable: this.reportSharesTable,
+        reportWorkflowsTable: this.reportWorkflowsTable,
+        reportCommentsTable: this.reportCommentsTable,
+        webhooksTable: this.webhooksTable,
+        webhookDeliveriesTable: this.webhookDeliveriesTable,
+        monitorsTable: this.monitorsTable
       })
     });
   }
@@ -2931,6 +3999,21 @@ export class PersistentStore {
       .slice(0, Math.max(500, this.maxReports * 20));
 
     state.auditEvents = state.auditEvents.slice(0, 20_000);
+    state.workspaceProfiles = (state.workspaceProfiles || []).filter((profile) => Boolean(profile?.id && profile?.userId)).slice(0, 50_000);
+    state.reportShares = (state.reportShares || [])
+      .filter((share) => Boolean(share?.id && share?.reportId && share?.ownerUserId))
+      .slice(0, Math.max(1_000, this.maxReports * 20));
+    state.reportWorkflows = (state.reportWorkflows || [])
+      .filter((workflow) => Boolean(workflow?.id && workflow?.reportId && workflow?.ownerUserId))
+      .slice(0, Math.max(500, this.maxReports * 2));
+    state.reportComments = (state.reportComments || [])
+      .filter((comment) => Boolean(comment?.id && comment?.reportId && comment?.ownerUserId && comment?.createdAt))
+      .slice(0, Math.max(2_000, this.maxReports * 20));
+    state.webhooks = (state.webhooks || []).filter((webhook) => Boolean(webhook?.id && webhook?.userId)).slice(0, 10_000);
+    state.webhookDeliveries = (state.webhookDeliveries || [])
+      .filter((delivery) => Boolean(delivery?.id && delivery?.webhookId && delivery?.userId && delivery?.deliveredAt))
+      .slice(0, 20_000);
+    state.monitors = (state.monitors || []).filter((monitor) => Boolean(monitor?.id && monitor?.userId && monitor?.target)).slice(0, 20_000);
 
     state.users = state.users.map((user) => ({
       ...user,

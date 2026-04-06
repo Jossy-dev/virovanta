@@ -3,14 +3,15 @@ import { HttpError } from "./httpError.js";
 
 const SHARE_TOKEN_ALGORITHM = "HS256";
 
-export function createReportShareToken({ reportId, ownerUserId, config }) {
+export function createReportShareToken({ reportId, ownerUserId, shareId = null, config }) {
   const ttlMinutes = config.reportShareTokenTtlMinutes;
   const expiresAt = new Date(Date.now() + ttlMinutes * 60 * 1000).toISOString();
 
   const token = jwt.sign(
     {
       rid: reportId,
-      oid: ownerUserId
+      oid: ownerUserId,
+      ...(shareId ? { sid: shareId } : {})
     },
     config.reportShareTokenSecret,
     {
@@ -43,7 +44,8 @@ export function verifyReportShareToken(token, config) {
 
     return {
       reportId: payload.rid,
-      ownerUserId: payload.oid
+      ownerUserId: payload.oid,
+      shareId: payload.sid || null
     };
   } catch (error) {
     if (error instanceof HttpError) {

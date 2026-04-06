@@ -23,9 +23,9 @@ describe("routeSeo", () => {
     const staticRoutes = getStaticSeoRoutes();
 
     expect(sitemapEntries.map((entry) => entry.path)).toEqual(
-      expect.arrayContaining(["/", "/features", "/how-it-works", "/use-cases", "/security", "/pricing", "/about", "/status"])
+      expect.arrayContaining(["/", "/features", "/how-it-works", "/use-cases", "/security", "/trust", "/pricing", "/about", "/status"])
     );
-    expect(sitemapEntries).toHaveLength(8);
+    expect(sitemapEntries).toHaveLength(9);
     expect(staticRoutes.some((route) => route.path === "/app/dashboard")).toBe(true);
     expect(staticRoutes.some((route) => route.path === "/signup")).toBe(true);
     expect(staticRoutes.some((route) => route.path === "/features")).toBe(true);

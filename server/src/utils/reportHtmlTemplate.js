@@ -204,6 +204,88 @@ function buildExecutiveHighlights(report) {
   return highlights;
 }
 
+function normalizeTargetHost(report) {
+  return (
+    report?.url?.hostname ||
+    report?.websiteSafety?.url?.hostname ||
+    report?.websiteSafety?.modules?.normalization?.asciiHostname ||
+    report?.file?.originalName ||
+    "Not collected"
+  );
+}
+
+function rankSeverity(severity) {
+  const normalized = String(severity || "").toLowerCase();
+  if (normalized === "critical") {
+    return 4;
+  }
+  if (normalized === "high") {
+    return 3;
+  }
+  if (normalized === "medium") {
+    return 2;
+  }
+  if (normalized === "low") {
+    return 1;
+  }
+  return 0;
+}
+
+function buildSignalSnapshot(report) {
+  const modules = report?.websiteSafety?.modules || {};
+  const findings = asArray(report?.findings);
+  const missingHeaders = asArray(modules?.headers?.missing).length;
+  const flaggedProviders = asArray(modules?.reputation?.flaggedProviders).length;
+  const exposures = asArray(modules?.vulnerabilityChecks?.exposures).length;
+  const redirects = Number(modules?.redirects?.count) || 0;
+  const domainAge = formatDomainAge(modules?.dnsDomain?.ageDays);
+
+  return [
+    {
+      label: "Risk score",
+      value: `${Math.max(0, Math.min(100, Number(report?.riskScore) || 0))}/100`,
+      tone: "metric-danger"
+    },
+    {
+      label: "Findings",
+      value: String(findings.length),
+      tone: findings.length > 0 ? "metric-warning" : "metric-safe"
+    },
+    {
+      label: "Missing headers",
+      value: String(missingHeaders),
+      tone: missingHeaders > 0 ? "metric-warning" : "metric-safe"
+    },
+    {
+      label: "Sensitive exposures",
+      value: String(exposures),
+      tone: exposures > 0 ? "metric-danger" : "metric-safe"
+    },
+    {
+      label: "Flagged intel",
+      value: String(flaggedProviders),
+      tone: flaggedProviders > 0 ? "metric-danger" : "metric-safe"
+    },
+    {
+      label: "Domain age",
+      value: domainAge,
+      tone: domainAge === "Not collected" ? "metric-neutral" : "metric-safe"
+    },
+    {
+      label: "Redirects",
+      value: String(redirects),
+      tone: redirects > 0 ? "metric-neutral" : "metric-safe"
+    }
+  ];
+}
+
+function buildPriorityFindings(findings) {
+  return asArray(findings)
+    .slice()
+    .sort((left, right) => rankSeverity(right?.severity) - rankSeverity(left?.severity))
+    .slice(0, 4);
+}
+
 function groupFindingsByRisk(findings) {
   const groups = {
     high: [],
@@ -286,6 +368,16 @@ function ProgressBar({ label, value = 0, max = 100, color = "var(--brand-blue)" 
         <span class="progress-fill" style="width:${percent}%; background:${escapeHtml(color)};"></span>
       </div>
     </div>
+  `;
+}
+
+function MetricCard({ label, value, tone = "metric-neutral", detail = "" }) {
+  return `
+    <article class="metric-card ${escapeHtml(tone)}">
+      <p class="metric-label">${escapeHtml(label)}</p>
+      <p class="metric-value">${escapeHtml(value)}</p>
+      ${detail ? `<p class="metric-detail">${escapeHtml(detail)}</p>` : ""}
+    </article>
   `;
 }
 
@@ -431,11 +523,16 @@ function coverPage({ report, scoreBreakdown, logoDataUri }) {
   const safetyScore = report?.websiteSafety?.score != null ? Number(report.websiteSafety.score) : Math.max(0, 100 - (Number(report?.riskScore) || 0));
   const verdict = report?.websiteSafety?.verdict || report?.verdict || "suspicious";
   const targetUrl = report?.url?.final || report?.url?.normalized || report?.file?.originalName || "Not collected";
+  const targetHost = normalizeTargetHost(report);
   const scanDate = formatDateTime(report?.completedAt || report?.createdAt || new Date().toISOString());
+  const signalSnapshot = buildSignalSnapshot(report);
+  const openingReason = asArray(report?.plainLanguageReasons)[0] || "Use this report to quickly assess trust posture, visible exposures, and remediation priorities.";
 
   return `
     <section class="page page-cover">
       ${logoDataUri ? `<img class="watermark" src="${logoDataUri}" alt="ViroVanta watermark" />` : ""}
+      <div class="cover-orb cover-orb-one"></div>
+      <div class="cover-orb cover-orb-two"></div>
       <div class="cover-top">
         <div class="brand">
           ${logoDataUri ? `<img src="${logoDataUri}" alt="ViroVanta logo" />` : ""}
@@ -444,10 +541,16 @@ function coverPage({ report, scoreBreakdown, logoDataUri }) {
             <p class="brand-subtitle">Website Safety Scanner</p>
           </div>
         </div>
+        <div class="report-chip">Analyst-ready assessment</div>
       </div>
       <div class="cover-main">
+        <p class="eyebrow">Executive website safety report</p>
         <h1>Website Security Report</h1>
-        <p class="lead">Comprehensive trust and security assessment for public web properties.</p>
+        <p class="lead">A modern trust, posture, and exposure assessment for public-facing web properties.</p>
+        <div class="target-hero">
+          <p class="target-host">${escapeHtml(targetHost)}</p>
+          <p class="target-url">${escapeHtml(targetUrl)}</p>
+        </div>
         <div class="cover-meta">
           ${HeaderRow({ label: "Target URL", value: targetUrl })}
           ${HeaderRow({ label: "Scan date", value: scanDate })}
@@ -458,12 +561,22 @@ function coverPage({ report, scoreBreakdown, logoDataUri }) {
       <div class="cover-score-grid">
         ${ScoreBadge({ score: Math.round(safetyScore), verdict })}
         <div class="score-breakdown-mini">
-          <p>Score distribution</p>
+          <p>Control distribution</p>
           ${scoreBreakdown
             .slice(0, 4)
             .map((row) => ProgressBar({ label: row.label, value: row.score, max: row.max, color: row.color }))
             .join("")}
         </div>
+      </div>
+      <div class="signal-strip">
+        ${signalSnapshot
+          .slice(0, 5)
+          .map((metric) => MetricCard(metric))
+          .join("")}
+      </div>
+      <div class="cover-brief">
+        <p class="cover-brief-kicker">First analyst note</p>
+        <p>${escapeHtml(openingReason)}</p>
       </div>
     </section>
   `;
@@ -476,11 +589,19 @@ function mainReportPages({ report, scoreBreakdown, logoDataUri }) {
   const findings = asArray(report?.findings);
   const recommendations = asArray(report?.recommendations);
   const highlights = buildExecutiveHighlights(report);
+  const signalSnapshot = buildSignalSnapshot(report);
+  const priorityFindings = buildPriorityFindings(findings);
 
   const executive = SectionCard({
     title: "Executive Summary",
     subtitle: "Plain-language overview of observed risks and trust posture.",
     body: `
+      <div class="executive-metric-grid">
+        ${signalSnapshot
+          .slice(0, 6)
+          .map((metric) => MetricCard(metric))
+          .join("")}
+      </div>
       <div class="summary-grid">
         <div class="summary-text">
           <p>${escapeHtml(reportSummaryText(report))}</p>
@@ -499,6 +620,37 @@ function mainReportPages({ report, scoreBreakdown, logoDataUri }) {
     `
   });
 
+  const prioritySection = SectionCard({
+    title: "Priority Findings",
+    subtitle: "What deserves attention first",
+    body:
+      priorityFindings.length === 0
+        ? `<p class="muted">No notable findings were generated for this report.</p>`
+        : `
+      <div class="priority-grid">
+        ${priorityFindings
+          .map(
+            (finding) => `
+          <article class="priority-card ${escapeHtml(toneForSeverity(finding?.severity))}">
+            <div class="priority-card-head">
+              ${RiskLabel({ severity: finding?.severity || "low" })}
+              <span class="priority-category">${escapeHtml(finding?.category || "General")}</span>
+            </div>
+            <h3>${escapeHtml(finding?.title || "Finding")}</h3>
+            <p>${escapeHtml(finding?.description || "Not collected")}</p>
+            ${
+              finding?.evidence
+                ? `<div class="priority-evidence"><strong>Evidence:</strong> ${escapeHtml(finding.evidence)}</div>`
+                : ""
+            }
+          </article>
+        `
+          )
+          .join("")}
+      </div>
+    `
+  });
+
   const scoreSection = SectionCard({
     title: "Score Breakdown",
     subtitle: "Weighted scoring across key security controls.",
@@ -506,6 +658,7 @@ function mainReportPages({ report, scoreBreakdown, logoDataUri }) {
       <div class="progress-grid">
         ${scoreBreakdown.map((row) => ProgressBar(row)).join("")}
       </div>
+      <p class="muted">Higher scores indicate stronger posture in that control family. Low-control areas map directly to the findings and recommendations later in this report.</p>
     `
   });
 
@@ -643,6 +796,7 @@ function mainReportPages({ report, scoreBreakdown, logoDataUri }) {
     <section class="page">
       ${logoDataUri ? `<img class="watermark watermark-secondary" src="${logoDataUri}" alt="" />` : ""}
       ${executive}
+      ${prioritySection}
       ${scoreSection}
       ${detailSection}
       ${riskHighlights}
@@ -655,14 +809,17 @@ function mainReportPages({ report, scoreBreakdown, logoDataUri }) {
 function cssStyles() {
   return `
     :root {
-      --bg: #F9FAFB;
+      --bg: #F3F6FA;
       --card-bg: #FFFFFF;
-      --line: #E5E7EB;
+      --line: #DCE3EC;
       --text: #0F172A;
       --text-soft: #5B6475;
       --brand-blue: #2563EB;
-      --brand-blue-dark: #1D4ED8;
+      --brand-blue-dark: #1E40AF;
       --brand-purple: #7C3AED;
+      --brand-emerald: #0F8A55;
+      --brand-ink: #06131C;
+      --brand-surface: #EEF6FF;
       --success-bg: #E8FAEF;
       --success-border: #A3D9B6;
       --danger-bg: #FFECEF;
@@ -691,12 +848,12 @@ function cssStyles() {
     .page {
       background: var(--card-bg);
       border: 1px solid var(--line);
-      border-radius: 16px;
-      padding: 24px;
+      border-radius: 22px;
+      padding: 26px;
       margin-bottom: 18px;
       position: relative;
       overflow: hidden;
-      box-shadow: 0 12px 36px rgba(15, 23, 42, 0.06);
+      box-shadow: 0 22px 54px rgba(15, 23, 42, 0.08);
     }
 
     .page-cover {
@@ -704,6 +861,10 @@ function cssStyles() {
       display: flex;
       flex-direction: column;
       justify-content: space-between;
+      background:
+        radial-gradient(circle at top right, rgba(37, 99, 235, 0.11), transparent 26%),
+        radial-gradient(circle at bottom left, rgba(15, 138, 85, 0.1), transparent 24%),
+        linear-gradient(180deg, #fbfdff 0%, #ffffff 100%);
     }
 
     .watermark {
@@ -720,6 +881,30 @@ function cssStyles() {
       bottom: -120px;
       width: 420px;
       opacity: 0.045;
+    }
+
+    .cover-orb {
+      position: absolute;
+      border-radius: 999px;
+      filter: blur(2px);
+      opacity: 0.35;
+      pointer-events: none;
+    }
+
+    .cover-orb-one {
+      width: 170px;
+      height: 170px;
+      top: -42px;
+      right: 62px;
+      background: radial-gradient(circle, rgba(37, 99, 235, 0.22), rgba(37, 99, 235, 0));
+    }
+
+    .cover-orb-two {
+      width: 200px;
+      height: 200px;
+      bottom: 130px;
+      left: -55px;
+      background: radial-gradient(circle, rgba(15, 138, 85, 0.18), rgba(15, 138, 85, 0));
     }
 
     .brand {
@@ -750,10 +935,19 @@ function cssStyles() {
 
     .cover-main h1 {
       margin: 12px 0 6px;
-      font-size: 42px;
+      font-size: 44px;
       line-height: 1.15;
       letter-spacing: -0.02em;
       color: #0F172A;
+    }
+
+    .eyebrow {
+      margin: 0 0 10px;
+      color: var(--brand-blue-dark);
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.12em;
+      font-weight: 800;
     }
 
     .lead {
@@ -762,13 +956,53 @@ function cssStyles() {
       font-size: 15px;
     }
 
+    .report-chip {
+      display: inline-flex;
+      align-items: center;
+      border-radius: 999px;
+      border: 1px solid #C5D8FF;
+      background: rgba(255, 255, 255, 0.9);
+      padding: 7px 12px;
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      color: var(--brand-blue-dark);
+      box-shadow: 0 10px 22px rgba(30, 64, 175, 0.08);
+    }
+
+    .target-hero {
+      margin: 0 0 18px;
+      padding: 16px 18px;
+      border-radius: 18px;
+      border: 1px solid #D9E5F4;
+      background: linear-gradient(135deg, rgba(250, 252, 255, 0.98), rgba(238, 246, 255, 0.9));
+      box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.75);
+    }
+
+    .target-host {
+      margin: 0;
+      font-size: 28px;
+      font-weight: 800;
+      letter-spacing: -0.03em;
+      color: #0B1524;
+      word-break: break-word;
+    }
+
+    .target-url {
+      margin: 8px 0 0;
+      font-size: 12px;
+      color: #516074;
+      word-break: break-word;
+    }
+
     .cover-meta {
       display: grid;
       gap: 8px;
       padding: 14px;
       border: 1px solid var(--line);
-      border-radius: 14px;
-      background: #FCFCFD;
+      border-radius: 18px;
+      background: rgba(252, 252, 253, 0.92);
     }
 
     .header-row {
@@ -810,9 +1044,10 @@ function cssStyles() {
     .score-badge,
     .score-breakdown-mini {
       border: 1px solid var(--line);
-      background: #FAFCFF;
-      border-radius: 14px;
-      padding: 14px;
+      background: linear-gradient(180deg, #fbfdff 0%, #f5f9ff 100%);
+      border-radius: 18px;
+      padding: 16px;
+      box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.8);
     }
 
     .score-kicker {
@@ -833,7 +1068,7 @@ function cssStyles() {
     }
 
     .score-value {
-      font-size: 46px;
+      font-size: 54px;
       line-height: 1;
       letter-spacing: -0.03em;
       font-weight: 800;
@@ -861,15 +1096,16 @@ function cssStyles() {
 
     .section-card {
       border: 1px solid var(--line);
-      border-radius: 14px;
-      padding: 16px;
+      border-radius: 18px;
+      padding: 18px;
       background: #fff;
-      margin-bottom: 12px;
+      margin-bottom: 14px;
+      box-shadow: 0 10px 24px rgba(15, 23, 42, 0.04);
     }
 
     .section-card-head h2 {
       margin: 0;
-      font-size: 18px;
+      font-size: 19px;
       line-height: 1.25;
       letter-spacing: -0.01em;
     }
@@ -890,6 +1126,71 @@ function cssStyles() {
       gap: 14px;
     }
 
+    .executive-metric-grid,
+    .signal-strip {
+      display: grid;
+      grid-template-columns: repeat(5, minmax(0, 1fr));
+      gap: 10px;
+      margin-bottom: 14px;
+    }
+
+    .executive-metric-grid {
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+    }
+
+    .metric-card {
+      border-radius: 16px;
+      padding: 12px 12px 11px;
+      border: 1px solid #E0E7EF;
+      background: #FBFCFE;
+      min-height: 82px;
+    }
+
+    .metric-label {
+      margin: 0;
+      font-size: 10px;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      font-weight: 700;
+      color: #607084;
+    }
+
+    .metric-value {
+      margin: 10px 0 0;
+      font-size: 24px;
+      line-height: 1.08;
+      font-weight: 800;
+      letter-spacing: -0.03em;
+      color: #0B1524;
+      word-break: break-word;
+    }
+
+    .metric-detail {
+      margin: 8px 0 0;
+      font-size: 11px;
+      color: #607084;
+    }
+
+    .metric-safe {
+      background: linear-gradient(180deg, #F5FCF7 0%, #EEF9F2 100%);
+      border-color: #CFECD8;
+    }
+
+    .metric-warning {
+      background: linear-gradient(180deg, #FFFBF3 0%, #FFF6E4 100%);
+      border-color: #F3D7A0;
+    }
+
+    .metric-danger {
+      background: linear-gradient(180deg, #FFF6F8 0%, #FFEDEF 100%);
+      border-color: #F2C0CB;
+    }
+
+    .metric-neutral {
+      background: linear-gradient(180deg, #FBFCFE 0%, #F4F7FB 100%);
+      border-color: #D8E2EE;
+    }
+
     .summary-text p {
       margin: 0 0 10px;
     }
@@ -902,12 +1203,13 @@ function cssStyles() {
 
     .risk-summary {
       border: 1px solid;
-      border-radius: 12px;
-      padding: 12px;
+      border-radius: 16px;
+      padding: 14px;
       display: flex;
       flex-direction: column;
       gap: 6px;
       justify-content: center;
+      box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.55);
     }
 
     .risk-summary h3,
@@ -924,6 +1226,29 @@ function cssStyles() {
       display: grid;
       grid-template-columns: repeat(2, minmax(0, 1fr));
       gap: 10px 14px;
+    }
+
+    .cover-brief {
+      margin-top: 16px;
+      padding: 14px 16px;
+      border-radius: 18px;
+      border: 1px solid #DCE8F6;
+      background: linear-gradient(135deg, rgba(240, 248, 255, 0.92), rgba(255, 255, 255, 0.98));
+    }
+
+    .cover-brief-kicker {
+      margin: 0 0 8px;
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      font-weight: 700;
+      color: var(--brand-blue-dark);
+    }
+
+    .cover-brief p:last-child {
+      margin: 0;
+      font-size: 13px;
+      color: #1F2937;
     }
 
     .progress-item {
@@ -1061,6 +1386,74 @@ function cssStyles() {
       gap: 12px;
     }
 
+    .priority-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 12px;
+    }
+
+    .priority-card {
+      border-radius: 16px;
+      border: 1px solid #E1E8F0;
+      background: linear-gradient(180deg, #FFFFFF 0%, #FBFCFE 100%);
+      padding: 14px;
+      box-shadow: 0 8px 18px rgba(15, 23, 42, 0.04);
+    }
+
+    .priority-card.risk-high {
+      border-color: #F0C2CC;
+      background: linear-gradient(180deg, #FFF8F9 0%, #FFF0F2 100%);
+    }
+
+    .priority-card.risk-medium {
+      border-color: #F2D9A7;
+      background: linear-gradient(180deg, #FFFDF7 0%, #FFF7EA 100%);
+    }
+
+    .priority-card.risk-low {
+      border-color: #D6EEDC;
+      background: linear-gradient(180deg, #FBFFFC 0%, #F1FBF4 100%);
+    }
+
+    .priority-card-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+    }
+
+    .priority-category {
+      color: #607084;
+      font-size: 11px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+    }
+
+    .priority-card h3 {
+      margin: 12px 0 8px;
+      font-size: 15px;
+      line-height: 1.3;
+      letter-spacing: -0.02em;
+    }
+
+    .priority-card p {
+      margin: 0;
+      font-size: 12.5px;
+      color: #334155;
+      line-height: 1.55;
+    }
+
+    .priority-evidence {
+      margin-top: 10px;
+      border-radius: 12px;
+      background: rgba(255, 255, 255, 0.72);
+      padding: 10px;
+      font-size: 11.5px;
+      color: #334155;
+      word-break: break-word;
+    }
+
     .risk-group h3 {
       margin: 0 0 8px;
       font-size: 14px;
@@ -1131,7 +1524,7 @@ function cssStyles() {
     }
 
     .recommendation-list li {
-      font-size: 12.5px;
+      font-size: 12.8px;
       color: #1F2937;
     }
 

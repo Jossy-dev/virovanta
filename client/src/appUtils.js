@@ -147,6 +147,64 @@ export function parseErrorMessage(payload, fallback) {
   return fallback;
 }
 
+export async function triggerBlobDownload(
+  blob,
+  filename,
+  { documentRef = typeof document !== "undefined" ? document : null, urlApi = typeof URL !== "undefined" ? URL : null, windowRef = typeof window !== "undefined" ? window : null } = {}
+) {
+  if (!blob) {
+    throw new Error("Download data is unavailable.");
+  }
+
+  if (!documentRef?.body || typeof documentRef.createElement !== "function") {
+    throw new Error("Browser download is unavailable in this environment.");
+  }
+
+  if (!urlApi?.createObjectURL || !urlApi?.revokeObjectURL) {
+    throw new Error("Blob downloads are unavailable in this browser.");
+  }
+
+  const objectUrl = urlApi.createObjectURL(blob);
+  const anchor = documentRef.createElement("a");
+  anchor.href = objectUrl;
+  anchor.download = String(filename || "download");
+  anchor.rel = "noopener";
+  anchor.style.display = "none";
+  documentRef.body.appendChild(anchor);
+
+  const cleanup = () => {
+    anchor.remove();
+    urlApi.revokeObjectURL(objectUrl);
+  };
+
+  await new Promise((resolve, reject) => {
+    const clickAndResolve = () => {
+      try {
+        anchor.click();
+      } catch (error) {
+        cleanup();
+        reject(error);
+        return;
+      }
+
+      if (typeof windowRef?.setTimeout === "function") {
+        windowRef.setTimeout(cleanup, 30_000);
+      } else {
+        cleanup();
+      }
+
+      resolve();
+    };
+
+    if (typeof windowRef?.requestAnimationFrame === "function") {
+      windowRef.requestAnimationFrame(clickAndResolve);
+      return;
+    }
+
+    clickAndResolve();
+  });
+}
+
 export function getRiskMeta(score) {
   if (!Number.isFinite(score)) {
     return RISK_META.medium;

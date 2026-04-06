@@ -14,7 +14,7 @@ import {
   usernameAvailabilityQuerySchema
 } from "../validation/authSchemas.js";
 
-export function createAuthRouter({ authService, requireAuth, requireAuthMethod, preventSensitiveCaching, rateLimiters, config }) {
+export function createAuthRouter({ authService, workspaceService, requireAuth, requireAuthMethod, preventSensitiveCaching, rateLimiters, config }) {
   const authRouter = Router();
   const requireInteractiveAuth = [requireAuth, requireAuthMethod("bearer")];
 
@@ -135,10 +135,12 @@ export function createAuthRouter({ authService, requireAuth, requireAuthMethod, 
     asyncHandler(async (req, res) => {
       const user = await authService.getUserById(req.auth.user.id);
       const usage = await authService.getUsage(req.auth.user.id);
+      const workspace = workspaceService ? await workspaceService.getWorkspaceSnapshot(req.auth.user.id) : null;
 
       res.json({
         user,
         usage,
+        workspace,
         authMethod: req.auth.method,
         scanLimits: {
           maxFilesPerBatch: config.maxBatchUploadFiles,

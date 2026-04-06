@@ -1,6 +1,6 @@
 import { lazy, Suspense, useEffect, useMemo, useState } from "react";
 import { AnimatePresence, motion, useReducedMotion } from "framer-motion";
-import { BarChart3, BookOpenText, FileBarChart2, Globe2, LayoutDashboard, Settings2, ShieldCheck } from "lucide-react";
+import { BarChart3, BellRing, BookOpenText, FileBarChart2, Globe2, LayoutDashboard, Settings2, ShieldCheck } from "lucide-react";
 import { Navigate, useLocation, useNavigate } from "react-router-dom";
 import { toast } from "sonner";
 import { getUserName, resolveDesktopViewport } from "../appUtils";
@@ -18,6 +18,7 @@ const DashboardOverview = lazyNamed(() => import("./views/DashboardOverview"), "
 const AnalyticsView = lazyNamed(() => import("./views/AnalyticsView"), "AnalyticsView");
 const ProjectsView = lazyNamed(() => import("./views/ProjectsView"), "ProjectsView");
 const WebsiteSafetyView = lazyNamed(() => import("./views/WebsiteSafetyView"), "WebsiteSafetyView");
+const MonitoringView = lazyNamed(() => import("./views/MonitoringView"), "MonitoringView");
 const ReportsView = lazyNamed(() => import("./views/ReportsView"), "ReportsView");
 const SettingsView = lazyNamed(() => import("./views/SettingsView"), "SettingsView");
 const DocsView = lazyNamed(() => import("./views/DocsView"), "DocsView");
@@ -50,6 +51,13 @@ const NAV_ITEMS = [
     label: "Website Safety",
     description: "Web app trust scan",
     icon: Globe2
+  },
+  {
+    id: "monitoring",
+    path: "/app/monitoring",
+    label: "Monitoring",
+    description: "Watchlists and re-alerts",
+    icon: BellRing
   },
   {
     id: "history",
@@ -129,36 +137,63 @@ export default function DashboardShell({
   reports,
   activeJob,
   activeReport,
+  reportWorkflow,
+  reportComments,
+  reportShares,
   activeRiskMeta,
   shareState,
+  shareDraft,
   shareError,
   isCreatingShare,
   isDeletingReport,
+  isUpdatingReportWorkflow,
+  isPostingReportComment,
   shareCopied,
   apiKeys,
+  workspaceSummary,
+  monitors,
+  webhooks,
+  webhookDeliveries,
+  auditEvents,
   notifications,
   newApiKey,
   newApiKeyName,
   newApiKeyScopes,
   isCreatingKey,
+  isManagingMonitor,
+  isManagingWebhook,
+  isStartingTrial,
   setNewApiKeyName,
   setNewApiKeyScopes,
+  setShareDraft,
   onLogout,
   onNotificationsViewed,
   onFetchNotificationsPage,
   onSelectNotification,
   onSelectFiles,
   onSubmitScan,
-  onSubmitUrlScan,
+  onResolveUrlScanTargets,
+  onSubmitUrlScans,
   onSubmitWebsiteSafetyScan,
   onClearSelectedFiles,
   onOpenReport,
   onDownloadReportPdf,
+  onDownloadReportExport,
   onCreateShare,
+  onRevokeShare,
   onDeleteReport,
   onCopyShare,
+  onUpdateReportWorkflow,
+  onAddReportComment,
   onCreateApiKey,
   onRevokeApiKey,
+  onStartWorkspaceTrial,
+  onCreateMonitor,
+  onRunMonitor,
+  onDeleteMonitor,
+  onCreateWebhook,
+  onTestWebhook,
+  onDeleteWebhook,
   formatDateTime,
   formatBytes,
   pluralize,
@@ -233,6 +268,7 @@ export default function DashboardShell({
   const maxFilesPerBatch = Number(scanLimits?.maxFilesPerBatch) || 10;
   const maxUploadMb = Number(scanLimits?.maxUploadMb) || 25;
   const storedReportCount = Number(analytics?.summary?.totalReports) || 0;
+  const workspacePlanName = workspaceSummary?.profile?.planName || workspaceSummary?.profile?.effectivePlanId || "Free";
 
   if (!activeItem) {
     return <Navigate to="/app/dashboard" replace />;
@@ -324,6 +360,9 @@ export default function DashboardShell({
                 ) : null}
                 <div className="dashboard-brand-outline">{quotaText}</div>
                 <div className="rounded-full border border-slate-200 bg-white px-4 py-2 text-sm text-slate-500 dark:border-slate-800 dark:bg-slate-950 dark:text-slate-400">
+                  {workspacePlanName} workspace
+                </div>
+                <div className="rounded-full border border-slate-200 bg-white px-4 py-2 text-sm text-slate-500 dark:border-slate-800 dark:bg-slate-950 dark:text-slate-400">
                   {storedReportCount} reports stored
                 </div>
               </div>
@@ -344,12 +383,14 @@ export default function DashboardShell({
                       isSubmittingScan={isSubmittingScan}
                       onSelectFiles={onSelectFiles}
                       onSubmitScan={onSubmitScan}
-                      onSubmitUrlScan={onSubmitUrlScan}
+                      onResolveUrlScanTargets={onResolveUrlScanTargets}
+                      onSubmitUrlScans={onSubmitUrlScans}
                       onClearSelectedFiles={onClearSelectedFiles}
                       jobs={jobs}
                       reports={reports}
                       activeJob={activeJob}
                       analytics={analytics}
+                      workspaceSummary={workspaceSummary}
                       onOpenReportWorkspace={openReportWorkspace}
                       formatDateTime={formatDateTime}
                       formatBytes={formatBytes}
@@ -378,7 +419,8 @@ export default function DashboardShell({
                       isSubmittingScan={isSubmittingScan}
                       onSelectFiles={onSelectFiles}
                       onSubmitScan={onSubmitScan}
-                      onSubmitUrlScan={onSubmitUrlScan}
+                      onResolveUrlScanTargets={onResolveUrlScanTargets}
+                      onSubmitUrlScans={onSubmitUrlScans}
                       onClearSelectedFiles={onClearSelectedFiles}
                       jobs={jobs}
                       activeJob={activeJob}
@@ -404,22 +446,46 @@ export default function DashboardShell({
                     />
                   ) : null}
 
+                  {activeItem.id === "monitoring" ? (
+                    <MonitoringView
+                      monitors={monitors}
+                      workspaceSummary={workspaceSummary}
+                      isManagingMonitor={isManagingMonitor}
+                      onCreateMonitor={onCreateMonitor}
+                      onRunMonitor={onRunMonitor}
+                      onDeleteMonitor={onDeleteMonitor}
+                      formatDateTime={formatDateTime}
+                    />
+                  ) : null}
+
                   {activeItem.id === "history" ? (
                     <ReportsView
                       reports={reports}
                       activeReport={activeReport}
+                      reportWorkflow={reportWorkflow}
+                      reportComments={reportComments}
+                      reportShares={reportShares}
                       searchQuery={searchQuery}
                       verdictFilter={verdictFilter}
                       onClearVerdictFilter={() => openHistory("")}
                       onOpenReport={onOpenReport}
                       onCreateShare={onCreateShare}
+                      onRevokeShare={onRevokeShare}
                       onDeleteReport={onDeleteReport}
                       shareState={shareState}
+                      shareDraft={shareDraft}
+                      setShareDraft={setShareDraft}
                       shareError={shareError}
                       isCreatingShare={isCreatingShare}
                       isDeletingReport={isDeletingReport}
+                      isUpdatingReportWorkflow={isUpdatingReportWorkflow}
+                      isPostingReportComment={isPostingReportComment}
                       shareCopied={shareCopied}
                       onCopyShare={onCopyShare}
+                      onUpdateReportWorkflow={onUpdateReportWorkflow}
+                      onAddReportComment={onAddReportComment}
+                      onDownloadReportPdf={onDownloadReportPdf}
+                      onDownloadReportExport={onDownloadReportExport}
                       activeRiskMeta={activeRiskMeta}
                       formatDateTime={formatDateTime}
                       formatBytes={formatBytes}
@@ -431,6 +497,10 @@ export default function DashboardShell({
                   {activeItem.id === "settings" ? (
                     <SettingsView
                       session={session}
+                      workspaceSummary={workspaceSummary}
+                      webhooks={webhooks}
+                      webhookDeliveries={webhookDeliveries}
+                      auditEvents={auditEvents}
                       theme={theme}
                       onToggleTheme={onToggleTheme}
                       newApiKeyName={newApiKeyName}
@@ -442,6 +512,12 @@ export default function DashboardShell({
                       newApiKeyScopes={newApiKeyScopes}
                       onRevokeApiKey={onRevokeApiKey}
                       setNewApiKeyScopes={setNewApiKeyScopes}
+                      isManagingWebhook={isManagingWebhook}
+                      isStartingTrial={isStartingTrial}
+                      onStartWorkspaceTrial={onStartWorkspaceTrial}
+                      onCreateWebhook={onCreateWebhook}
+                      onTestWebhook={onTestWebhook}
+                      onDeleteWebhook={onDeleteWebhook}
                     />
                   ) : null}
 

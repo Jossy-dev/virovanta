@@ -1,8 +1,8 @@
 import "dotenv/config";
-import express from "express";
 import path from "path";
 import { fileURLToPath } from "url";
 import { createApp } from "./src/app/createApp.js";
+import { registerProductionClientRoutes } from "./src/app/registerProductionClientRoutes.js";
 
 async function start() {
   const { app, config, logger, services } = await createApp();
@@ -26,22 +26,7 @@ async function start() {
     const __filename = fileURLToPath(import.meta.url);
     const __dirname = path.dirname(__filename);
     const clientDistPath = path.resolve(__dirname, "../client/dist");
-    const indexFilePath = path.join(clientDistPath, "index.html");
-    const notFoundFilePath = path.join(clientDistPath, "404.html");
-
-    app.use(express.static(clientDistPath));
-
-    app.get("/", (_req, res) => {
-      res.sendFile(indexFilePath);
-    });
-
-    app.get("/index.html", (_req, res) => {
-      res.sendFile(indexFilePath);
-    });
-
-    app.get(/^\/(?!api).+/, (_req, res) => {
-      res.status(404).sendFile(notFoundFilePath);
-    });
+    registerProductionClientRoutes(app, clientDistPath);
   }
 
   if (config.runApiServer) {

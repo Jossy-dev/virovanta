@@ -7,11 +7,27 @@ import multer from "multer";
 import { config as defaultConfig } from "../config.js";
 import { asyncHandler } from "../utils/asyncHandler.js";
 import { HttpError } from "../utils/httpError.js";
+import {
+  buildReportCsvExport,
+  buildReportExportFilename,
+  buildReportJsonExport,
+  buildReportStixExport
+} from "../utils/reportExports.js";
 import { createReportShareToken } from "../utils/reportShareToken.js";
 import { buildScanReportPdf } from "../utils/reportPdf.js";
 import { API_KEY_SCOPES } from "../utils/apiKeyScopes.js";
+import { resolveUrlScanCandidates, resolveUrlScanTarget } from "../utils/urlExtraction.js";
+import { normalizeUrlInput } from "../utils/urlIntake.js";
 import { validateSchema } from "../utils/validation.js";
-import { linkScanJobSchema, paginationSchema, websiteSafetyScanJobSchema } from "../validation/scanSchemas.js";
+import {
+  linkScanJobSchema,
+  linkScanResolveSchema,
+  paginationSchema,
+  reportCommentCreateSchema,
+  reportShareCreateSchema,
+  reportWorkflowUpdateSchema,
+  websiteSafetyScanJobSchema
+} from "../validation/scanSchemas.js";
 
 function sanitizeExtension(fileName) {
   const extension = path.extname(fileName || "").toLowerCase();
@@ -25,11 +41,39 @@ function collectUploadedFiles(req) {
   return [...singleFieldFiles, ...batchFieldFiles];
 }
 
+function normalizeRequestedUrls(urls) {
+  const normalizedUrls = [];
+  const seen = new Set();
+
+  for (const value of Array.isArray(urls) ? urls : []) {
+    const trimmed = String(value || "").trim();
+    if (!trimmed) {
+      continue;
+    }
+
+    const normalized = normalizeUrlInput(trimmed).normalizedUrl;
+    const key = normalized.toLowerCase();
+    if (seen.has(key)) {
+      continue;
+    }
+
+    seen.add(key);
+    normalizedUrls.push(normalized);
+  }
+
+  if (normalizedUrls.length === 0) {
+    throw new Error("Select at least one link to scan.");
+  }
+
+  return normalizedUrls;
+}
+
 export function createScanRouter({
   requireAuth,
   requireApiKeyScopes = () => (_req, _res, next) => next(),
   scanQueueService,
   authService,
+  workspaceService = null,
   notificationService = null,
   preventSensitiveCaching,
   config = defaultConfig
@@ -89,31 +133,87 @@ export function createScanRouter({
   );
 
   scanRouter.post(
+    "/links/resolve",
+    requireApiKeyScopes(API_KEY_SCOPES.JOBS_WRITE),
+    linkScanRateLimiter,
+    asyncHandler(async (req, res) => {
+      const { url, message } = validateSchema(linkScanResolveSchema, req.body || {});
+
+      try {
+        const resolution = resolveUrlScanCandidates({ url, message });
+        res.json({ resolution });
+      } catch (error) {
+        throw new HttpError(400, error?.message || "Could not determine which links to review.", {
+          code: "URL_SCAN_TARGET_INVALID"
+        });
+      }
+    })
+  );
+
+  scanRouter.post(
     "/links/jobs",
     requireApiKeyScopes(API_KEY_SCOPES.JOBS_WRITE),
     linkScanRateLimiter,
     asyncHandler(async (req, res) => {
-      const { url } = validateSchema(linkScanJobSchema, req.body || {});
-      const quota = await authService.consumeDailyQuota(req.auth.user.id);
+      const { url, urls, message } = validateSchema(linkScanJobSchema, req.body || {});
+      let normalizedUrls = [];
+      let resolvedTarget;
 
-      if (!quota.allowed) {
-        throw new HttpError(429, "Daily scan quota exceeded for URL scans.", {
-          code: "SCAN_QUOTA_EXCEEDED",
-          details: {
-            ...quota,
-            requested: 1
-          }
+      try {
+        if (Array.isArray(urls) && urls.length > 0) {
+          normalizedUrls = normalizeRequestedUrls(urls);
+        } else {
+          resolvedTarget = resolveUrlScanTarget({ url, message });
+          normalizedUrls = [resolvedTarget.url];
+        }
+      } catch (error) {
+        throw new HttpError(400, error?.message || "Could not determine which link to scan.", {
+          code: "URL_SCAN_TARGET_INVALID"
         });
       }
 
-      const job = await scanQueueService.enqueueUrlScan({
-        userId: req.auth.user.id,
-        url
-      });
+      const requestedCount = normalizedUrls.length;
+      const quota =
+        requestedCount > 1
+          ? await authService.consumeDailyQuotaBatch(req.auth.user.id, requestedCount)
+          : await authService.consumeDailyQuota(req.auth.user.id);
+
+      if (!quota.allowed) {
+        throw new HttpError(
+          429,
+          requestedCount > 1 ? "Daily scan quota exceeded for this URL scan batch." : "Daily scan quota exceeded for URL scans.",
+          {
+            code: "SCAN_QUOTA_EXCEEDED",
+            details: {
+              ...quota,
+              requested: requestedCount
+            }
+          }
+        );
+      }
+
+      const jobs = [];
+      for (const targetUrl of normalizedUrls) {
+        const job = await scanQueueService.enqueueUrlScan({
+          userId: req.auth.user.id,
+          url: targetUrl
+        });
+        jobs.push(job);
+      }
 
       res.status(202).json({
-        job,
-        quota
+        job: jobs[0] || null,
+        jobs,
+        acceptedUrls: jobs.length,
+        quota,
+        extracted:
+          resolvedTarget?.extracted
+            ? {
+                url: resolvedTarget.url,
+                candidateCount: resolvedTarget.candidateCount,
+                source: resolvedTarget.source
+              }
+            : null
       });
     })
   );
@@ -230,6 +330,160 @@ export function createScanRouter({
   );
 
   scanRouter.get(
+    "/reports/:reportId/workflow",
+    requireApiKeyScopes(API_KEY_SCOPES.REPORTS_READ),
+    asyncHandler(async (req, res) => {
+      const report = await scanQueueService.getReportForUser(req.params.reportId, req.auth.user);
+      const workflow = await scanQueueService.store.getOrCreateReportWorkflow({
+        reportId: report.id,
+        ownerUserId: report.ownerUserId,
+        now: new Date().toISOString()
+      });
+      const comments = await scanQueueService.store.listReportComments(report.id, report.ownerUserId);
+      const shares = await scanQueueService.store.listReportShares({
+        reportId: report.id,
+        ownerUserId: report.ownerUserId
+      });
+      res.json({ workflow, comments, shares });
+    })
+  );
+
+  scanRouter.patch(
+    "/reports/:reportId/workflow",
+    requireApiKeyScopes(API_KEY_SCOPES.WORKFLOW_WRITE),
+    asyncHandler(async (req, res) => {
+      const report = await scanQueueService.getReportForUser(req.params.reportId, req.auth.user);
+      const payload = validateSchema(reportWorkflowUpdateSchema, req.body || {});
+      const updatedAt = new Date().toISOString();
+      const workflow = await scanQueueService.store.updateReportWorkflow({
+        reportId: report.id,
+        ownerUserId: report.ownerUserId,
+        updates: payload,
+        updatedAt
+      });
+
+      await scanQueueService.store.createAuditEvent?.({
+        userId: req.auth.user.id,
+        action: "report.workflow.updated",
+        metadata: {
+          reportId: report.id,
+          fields: Object.keys(payload)
+        },
+        createdAt: updatedAt
+      });
+
+      await notificationService?.create({
+        userId: req.auth.user.id,
+        type: "report_workflow_updated",
+        tone: "info",
+        title: "Report workflow updated",
+        detail: `${report.fileName || "Report"} workflow fields were updated.`,
+        entityType: "report",
+        entityId: report.id,
+        dedupeKey: `report-workflow-updated:${report.id}:${updatedAt}`
+      });
+
+      await workspaceService?.dispatchEvent?.({
+        userId: req.auth.user.id,
+        eventType: "report.workflow.updated",
+        payload: {
+          reportId: report.id,
+          workflow
+        },
+        entityType: "report",
+        entityId: report.id
+      });
+
+      res.json({ workflow });
+    })
+  );
+
+  scanRouter.post(
+    "/reports/:reportId/comments",
+    requireApiKeyScopes(API_KEY_SCOPES.WORKFLOW_WRITE),
+    asyncHandler(async (req, res) => {
+      const report = await scanQueueService.getReportForUser(req.params.reportId, req.auth.user);
+      const payload = validateSchema(reportCommentCreateSchema, req.body || {});
+      const createdAt = new Date().toISOString();
+      const comment = await scanQueueService.store.createReportComment({
+        reportId: report.id,
+        ownerUserId: report.ownerUserId,
+        authorUserId: req.auth.user.id,
+        authorName: req.auth.user.name || req.auth.user.username || req.auth.user.email || "Analyst",
+        body: payload.body,
+        createdAt
+      });
+
+      await scanQueueService.store.createAuditEvent?.({
+        userId: req.auth.user.id,
+        action: "report.comment.created",
+        metadata: {
+          reportId: report.id,
+          commentId: comment.id
+        },
+        createdAt
+      });
+
+      await notificationService?.create({
+        userId: req.auth.user.id,
+        type: "report_comment_created",
+        tone: "info",
+        title: "Comment added",
+        detail: `${report.fileName || "Report"} now includes a new analyst note.`,
+        entityType: "report",
+        entityId: report.id,
+        dedupeKey: `report-comment:${comment.id}`
+      });
+
+      await workspaceService?.dispatchEvent?.({
+        userId: req.auth.user.id,
+        eventType: "report.comment.created",
+        payload: {
+          reportId: report.id,
+          comment
+        },
+        entityType: "report",
+        entityId: report.id
+      });
+
+      res.status(201).json({ comment });
+    })
+  );
+
+  scanRouter.get(
+    "/reports/:reportId/export.json",
+    requireApiKeyScopes(API_KEY_SCOPES.REPORTS_READ),
+    asyncHandler(async (req, res) => {
+      const report = await scanQueueService.getReportForUser(req.params.reportId, req.auth.user);
+      res.setHeader("Content-Type", "application/json");
+      res.setHeader("Content-Disposition", `attachment; filename="${buildReportExportFilename(report, "json")}"`);
+      res.status(200).send(JSON.stringify(buildReportJsonExport(report), null, 2));
+    })
+  );
+
+  scanRouter.get(
+    "/reports/:reportId/export.csv",
+    requireApiKeyScopes(API_KEY_SCOPES.REPORTS_READ),
+    asyncHandler(async (req, res) => {
+      const report = await scanQueueService.getReportForUser(req.params.reportId, req.auth.user);
+      res.setHeader("Content-Type", "text/csv; charset=utf-8");
+      res.setHeader("Content-Disposition", `attachment; filename="${buildReportExportFilename(report, "csv")}"`);
+      res.status(200).send(buildReportCsvExport(report));
+    })
+  );
+
+  scanRouter.get(
+    "/reports/:reportId/export.stix",
+    requireApiKeyScopes(API_KEY_SCOPES.REPORTS_READ),
+    asyncHandler(async (req, res) => {
+      const report = await scanQueueService.getReportForUser(req.params.reportId, req.auth.user);
+      res.setHeader("Content-Type", "application/json");
+      res.setHeader("Content-Disposition", `attachment; filename="${buildReportExportFilename(report, "stix.json")}"`);
+      res.status(200).send(JSON.stringify(buildReportStixExport(report), null, 2));
+    })
+  );
+
+  scanRouter.get(
     "/reports/:reportId/pdf",
     requireApiKeyScopes(API_KEY_SCOPES.REPORTS_READ),
     asyncHandler(async (req, res) => {
@@ -241,6 +495,19 @@ export function createScanRouter({
       res.setHeader("Content-Disposition", `attachment; filename="${safeReportId}.pdf"`);
       res.setHeader("Cache-Control", "private, no-store, max-age=0");
       res.status(200).send(pdfBuffer);
+    })
+  );
+
+  scanRouter.get(
+    "/reports/:reportId/shares",
+    requireApiKeyScopes(API_KEY_SCOPES.REPORTS_READ),
+    asyncHandler(async (req, res) => {
+      const report = await scanQueueService.getReportForUser(req.params.reportId, req.auth.user);
+      const shares = await scanQueueService.store.listReportShares({
+        reportId: report.id,
+        ownerUserId: report.ownerUserId
+      });
+      res.json({ shares });
     })
   );
 
@@ -286,9 +553,27 @@ export function createScanRouter({
     requireApiKeyScopes(API_KEY_SCOPES.REPORTS_SHARE),
     asyncHandler(async (req, res) => {
       const report = await scanQueueService.getReportForUser(req.params.reportId, req.auth.user);
+      const payload = validateSchema(reportShareCreateSchema, req.body || {});
+      const workspace = workspaceService ? await workspaceService.getWorkspaceSnapshot(req.auth.user.id) : null;
+      const maxTtlHours = Number(workspace?.entitlements?.limits?.shareTtlHours) || Number(payload.ttlHours || 72);
+      if (Number(payload.ttlHours || 72) > maxTtlHours) {
+        throw new HttpError(400, `Share link duration exceeds the workspace limit of ${maxTtlHours} hours.`, {
+          code: "REPORT_SHARE_TTL_LIMIT"
+        });
+      }
+      const createdAt = new Date().toISOString();
+      const expiresAt = new Date(Date.now() + Number(payload.ttlHours || 72) * 60 * 60 * 1000).toISOString();
+      const shareRecord = await scanQueueService.store.createReportShare({
+        reportId: report.id,
+        ownerUserId: report.ownerUserId,
+        label: payload.label || "",
+        expiresAt,
+        createdAt
+      });
       const share = createReportShareToken({
         reportId: report.id,
         ownerUserId: report.ownerUserId,
+        shareId: shareRecord.id,
         config
       });
 
@@ -307,11 +592,84 @@ export function createScanRouter({
         entityId: report.id
       });
 
+      await scanQueueService.store.createAuditEvent?.({
+        userId: req.auth.user.id,
+        action: "report.share.created",
+        metadata: {
+          reportId: report.id,
+          shareId: shareRecord.id
+        },
+        createdAt
+      });
+
+      await workspaceService?.dispatchEvent?.({
+        userId: req.auth.user.id,
+        eventType: "report.share.created",
+        payload: {
+          reportId: report.id,
+          shareId: shareRecord.id,
+          label: shareRecord.label,
+          expiresAt: shareRecord.expiresAt,
+          shareUrl
+        },
+        entityType: "report",
+        entityId: report.id
+      });
+
       res.json({
+        shareId: shareRecord.id,
         shareToken: share.token,
-        expiresAt: share.expiresAt,
+        expiresAt: shareRecord.expiresAt || share.expiresAt,
         publicApiPath,
-        shareUrl
+        shareUrl,
+        label: shareRecord.label
+      });
+    })
+  );
+
+  scanRouter.delete(
+    "/reports/:reportId/shares/:shareId",
+    requireApiKeyScopes(API_KEY_SCOPES.REPORTS_SHARE),
+    asyncHandler(async (req, res) => {
+      const report = await scanQueueService.getReportForUser(req.params.reportId, req.auth.user);
+      const revokedAt = new Date().toISOString();
+      const share = await scanQueueService.store.revokeReportShare({
+        shareId: req.params.shareId,
+        ownerUserId: report.ownerUserId,
+        revokedAt
+      });
+
+      if (!share || share.reportId !== report.id) {
+        throw new HttpError(404, "Share link not found.", {
+          code: "REPORT_SHARE_NOT_FOUND"
+        });
+      }
+
+      await scanQueueService.store.createAuditEvent?.({
+        userId: req.auth.user.id,
+        action: "report.share.revoked",
+        metadata: {
+          reportId: report.id,
+          shareId: share.id
+        },
+        createdAt: revokedAt
+      });
+
+      await workspaceService?.dispatchEvent?.({
+        userId: req.auth.user.id,
+        eventType: "report.share.revoked",
+        payload: {
+          reportId: report.id,
+          shareId: share.id,
+          revokedAt
+        },
+        entityType: "report",
+        entityId: report.id
+      });
+
+      res.json({
+        revoked: true,
+        share
       });
     })
   );

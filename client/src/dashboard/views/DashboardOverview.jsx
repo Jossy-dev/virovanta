@@ -13,12 +13,14 @@ export function DashboardOverview({
   isSubmittingScan,
   onSelectFiles,
   onSubmitScan,
-  onSubmitUrlScan,
+  onResolveUrlScanTargets,
+  onSubmitUrlScans,
   onClearSelectedFiles,
   jobs,
   reports,
   activeJob,
   analytics,
+  workspaceSummary,
   onOpenReportWorkspace,
   formatDateTime,
   formatBytes,
@@ -29,6 +31,7 @@ export function DashboardOverview({
   const queuedJobs = Number(analytics?.summary?.activeJobs) || jobs.filter((job) => job.status === "queued" || job.status === "processing").length;
   const completedReports = Number(analytics?.summary?.totalReports) || reports.length;
   const flaggedReports = Number(analytics?.summary?.flaggedReports) || reports.filter((report) => report.verdict !== "clean").length;
+  const activeMonitors = Number(workspaceSummary?.usage?.monitorsActive) || 0;
 
   return (
     <div className="space-y-6">
@@ -80,7 +83,7 @@ export function DashboardOverview({
           </div>
         </div>
 
-        <div className="mt-6 grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+        <div className="mt-6 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
           <div className="dashboard-brand-stat rounded-3xl px-4 py-4">
             <div className="flex items-center gap-3">
               <span className="dashboard-brand-icon inline-flex h-10 w-10 items-center justify-center rounded-2xl border bg-white dark:bg-slate-950">
@@ -116,6 +119,17 @@ export function DashboardOverview({
               </div>
             </div>
           </div>
+          <div className="dashboard-brand-stat rounded-3xl px-4 py-4">
+            <div className="flex items-center gap-3">
+              <span className="dashboard-brand-icon inline-flex h-10 w-10 items-center justify-center rounded-2xl border bg-white dark:bg-slate-950">
+                <FileBarChart2 size={18} />
+              </span>
+              <div>
+                <p className="dashboard-label">Active monitors</p>
+                <p className="mt-1 text-2xl font-semibold tracking-[-0.04em] text-slate-950 dark:text-white">{activeMonitors}</p>
+              </div>
+            </div>
+          </div>
         </div>
       </section>
 
@@ -128,7 +142,8 @@ export function DashboardOverview({
         isSubmittingScan={isSubmittingScan}
         onSelectFiles={onSelectFiles}
         onSubmitScan={onSubmitScan}
-        onSubmitUrlScan={onSubmitUrlScan}
+        onResolveUrlScanTargets={onResolveUrlScanTargets}
+        onSubmitUrlScans={onSubmitUrlScans}
         onClearSelectedFiles={onClearSelectedFiles}
         jobs={jobs}
         activeJob={activeJob}

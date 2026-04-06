@@ -47,7 +47,7 @@ function toPublicReport(report, findingsLimit = 8) {
   };
 }
 
-export function createPublicRouter({ scanner, config, scanQueueService, preventSensitiveCaching }) {
+export function createPublicRouter({ scanner, config, scanQueueService, store, preventSensitiveCaching }) {
   const publicRouter = Router();
 
   const uploadStorage = multer.diskStorage({
@@ -128,6 +128,26 @@ export function createPublicRouter({ scanner, config, scanQueueService, preventS
       }
 
       const claims = verifyReportShareToken(req.params.token, config);
+      if (claims.shareId && store?.findReportShareById) {
+        const share = await store.findReportShareById(claims.shareId);
+        if (
+          !share ||
+          share.reportId !== claims.reportId ||
+          share.ownerUserId !== claims.ownerUserId ||
+          share.revokedAt ||
+          (share.expiresAt && Date.parse(share.expiresAt) <= Date.now())
+        ) {
+          throw new HttpError(404, "Shared report not found.", {
+            code: "SHARED_REPORT_NOT_FOUND"
+          });
+        }
+
+        await store.markReportShareAccessed?.({
+          shareId: share.id,
+          accessedAt: new Date().toISOString()
+        });
+      }
+
       const report = await scanQueueService.getReportById(claims.reportId);
 
       if (!report || report.ownerUserId !== claims.ownerUserId) {

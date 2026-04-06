@@ -1,4 +1,4 @@
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import App from "./App";
@@ -24,7 +24,13 @@ function createDashboardFetchMock({
   jobs = [],
   reports = [],
   reportDetailsById = {},
-  userId = "user_1"
+  monitors = [],
+  webhooks = [],
+  webhookDeliveries = [],
+  auditEvents = [],
+  userId = "user_1",
+  onUrlResolve = null,
+  onUrlScanSubmit = null
 } = {}) {
   return vi.fn(async (input, init = {}) => {
     const url = String(input);
@@ -47,6 +53,58 @@ function createDashboardFetchMock({
             remaining: 39,
             limit: 40
           },
+          workspace: {
+            profile: {
+              planId: "free",
+              effectivePlanId: "free",
+              planName: "Free",
+              headline: "Best for individual evaluation and lightweight triage"
+            },
+            trial: {
+              status: "available",
+              trialPlanId: "pro",
+              trialStartedAt: null,
+              trialEndsAt: null,
+              trialDays: 14
+            },
+            billing: {
+              provider: null,
+              customerId: null,
+              subscriptionId: null,
+              status: "not_configured"
+            },
+            entitlements: {
+              limits: {
+                dailyScans: 40,
+                monitors: 3,
+                webhooks: 1,
+                apiKeys: 3,
+                shareTtlHours: 72,
+                retentionDays: 90
+              },
+              features: {
+                comments: true,
+                workflow: true,
+                monitoring: true,
+                webhooks: true
+              }
+            },
+            usage: {
+              scans: {
+                windowStartedAt: "2026-03-13T00:00:00.000Z",
+                used: 1,
+                remaining: 39,
+                limit: 40
+              },
+              monitorsActive: monitors.length,
+              webhooksActive: webhooks.length,
+              apiKeysActive: 0
+            },
+            upgradePath: {
+              recommendedPlanId: "pro",
+              trialAvailable: true
+            }
+          },
           scanLimits: {
             maxFilesPerBatch: 10,
             maxUploadMb: 25
@@ -60,6 +118,97 @@ function createDashboardFetchMock({
       );
     }
 
+    if (url.includes("/api/workspace/summary")) {
+      return new Response(
+        JSON.stringify({
+          workspace: {
+            profile: {
+              planId: "free",
+              effectivePlanId: "free",
+              planName: "Free",
+              headline: "Best for individual evaluation and lightweight triage"
+            },
+            trial: {
+              status: "available",
+              trialPlanId: "pro",
+              trialStartedAt: null,
+              trialEndsAt: null,
+              trialDays: 14
+            },
+            billing: {
+              provider: null,
+              customerId: null,
+              subscriptionId: null,
+              status: "not_configured"
+            },
+            entitlements: {
+              limits: {
+                dailyScans: 40,
+                monitors: 3,
+                webhooks: 1,
+                apiKeys: 3,
+                shareTtlHours: 72,
+                retentionDays: 90
+              },
+              features: {
+                comments: true,
+                workflow: true,
+                monitoring: true,
+                webhooks: true
+              }
+            },
+            usage: {
+              scans: {
+                windowStartedAt: "2026-03-13T00:00:00.000Z",
+                used: 1,
+                remaining: 39,
+                limit: 40
+              },
+              monitorsActive: monitors.length,
+              webhooksActive: webhooks.length,
+              apiKeysActive: 0
+            },
+            upgradePath: {
+              recommendedPlanId: "pro",
+              trialAvailable: true
+            }
+          }
+        }),
+        {
+          status: 200,
+          headers: { "Content-Type": "application/json" }
+        }
+      );
+    }
+
+    if (url.includes("/api/workspace/monitors")) {
+      return new Response(JSON.stringify({ monitors }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" }
+      });
+    }
+
+    if (url.includes("/api/workspace/webhooks/deliveries")) {
+      return new Response(JSON.stringify({ deliveries: webhookDeliveries }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" }
+      });
+    }
+
+    if (url.includes("/api/workspace/webhooks")) {
+      return new Response(JSON.stringify({ webhooks }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" }
+      });
+    }
+
+    if (url.includes("/api/workspace/audit")) {
+      return new Response(JSON.stringify({ events: auditEvents }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" }
+      });
+    }
+
     if (url.includes("/api/scans/jobs")) {
       return new Response(JSON.stringify({ jobs }), {
         status: 200,
@@ -67,7 +216,130 @@ function createDashboardFetchMock({
       });
     }
 
+    if (url.includes("/api/scans/links/resolve") && method === "POST") {
+      const body = init?.body ? JSON.parse(init.body) : {};
+      onUrlResolve?.(body);
+
+      return new Response(
+        JSON.stringify({
+          resolution: {
+            inputMode: "message",
+            primaryUrl: "https://secure-billing.example.com/login/reset",
+            extracted: true,
+            candidateCount: 2,
+            source: "explicit",
+            candidates: [
+              {
+                rank: 1,
+                url: "https://secure-billing.example.com/login/reset",
+                hostname: "secure-billing.example.com",
+                source: "explicit",
+                score: 86,
+                isPrimary: true
+              },
+              {
+                rank: 2,
+                url: "https://news.example.com/unsubscribe",
+                hostname: "news.example.com",
+                source: "explicit",
+                score: 18,
+                isPrimary: false
+              }
+            ]
+          }
+        }),
+        {
+          status: 200,
+          headers: { "Content-Type": "application/json" }
+        }
+      );
+    }
+
+    if (url.includes("/api/scans/links/jobs") && method === "POST") {
+      const body = init?.body ? JSON.parse(init.body) : {};
+      onUrlScanSubmit?.(body);
+
+      return new Response(
+        JSON.stringify({
+          job: {
+            id: "job_url_message_1",
+            sourceType: "url",
+            status: "queued",
+            createdAt: "2026-03-16T18:08:06.410Z",
+            startedAt: null,
+            completedAt: null,
+            originalName: Array.isArray(body?.urls) ? body.urls[0] : "https://secure-billing.example.com/login/reset",
+            fileSize: 0,
+            targetUrl: Array.isArray(body?.urls) ? body.urls[0] : "https://secure-billing.example.com/login/reset",
+            reportId: null,
+            errorMessage: null
+          },
+          jobs: Array.isArray(body?.urls)
+            ? body.urls.map((targetUrl, index) => ({
+                id: `job_url_message_${index + 1}`,
+                sourceType: "url",
+                status: "queued",
+                createdAt: "2026-03-16T18:08:06.410Z",
+                startedAt: null,
+                completedAt: null,
+                originalName: targetUrl,
+                fileSize: 0,
+                targetUrl,
+                reportId: null,
+                errorMessage: null
+              }))
+            : undefined,
+          acceptedUrls: Array.isArray(body?.urls) ? body.urls.length : 1,
+          quota: {
+            allowed: true,
+            limit: 40,
+            used: Array.isArray(body?.urls) ? 8 : 7,
+            remaining: Array.isArray(body?.urls) ? 32 : 33,
+            windowStartedAt: "2026-03-15T19:18:06.304Z"
+          },
+          extracted: body?.message
+            ? {
+                url: "https://secure-billing.example.com/login/reset",
+                candidateCount: 1,
+                source: "explicit"
+              }
+            : null
+        }),
+        {
+          status: 202,
+          headers: { "Content-Type": "application/json" }
+        }
+      );
+    }
+
     if (url.includes("/api/scans/reports/")) {
+      if (url.includes("/workflow")) {
+        return new Response(
+          JSON.stringify({
+            workflow: {
+              id: "workflow_report_1",
+              reportId: "report_1",
+              ownerUserId: userId,
+              caseStatus: "new",
+              severity: "medium",
+              assigneeLabel: "",
+              clientLabel: "",
+              recommendedAction: "",
+              notesSummary: "",
+              createdAt: "2026-03-16T18:08:06.410Z",
+              updatedAt: "2026-03-16T18:08:06.410Z",
+              lastCommentedAt: null
+            },
+            comments: [],
+            shares: []
+          }),
+          {
+            status: 200,
+            headers: { "Content-Type": "application/json" }
+          }
+        );
+      }
+
       const reportId = url.split("/api/scans/reports/")[1]?.split("?")[0] || "";
       const detailedReport = reportDetailsById[reportId] || null;
       if (!detailedReport) {
@@ -590,6 +862,123 @@ describe("App", () => {
         expect.stringContaining("/api/auth/notifications/read"),
         expect.objectContaining({ method: "POST" })
       );
+    } finally {
+      restoreMatchMedia();
+    }
+  });
+
+  it("submits pasted phishing-style messages through the URL scan intake", async () => {
+    const restoreMatchMedia = setDesktopMatchMedia(true);
+    window.history.replaceState({}, "", "/app/projects");
+
+    localStorage.setItem(
+      SESSION_STORAGE_KEY,
+      JSON.stringify({
+        accessToken: "access-token",
+        refreshToken: "refresh-token",
+        user: {
+          username: "analyst_ops",
+          name: "analyst_ops",
+          email: "analyst@example.com",
+          role: "user"
+        },
+        usage: null
+      })
+    );
+
+    let resolvedBody = null;
+    let submittedBody = null;
+    const fetchMock = createDashboardFetchMock({
+      onUrlResolve: (body) => {
+        resolvedBody = body;
+      },
+      onUrlScanSubmit: (body) => {
+        submittedBody = body;
+      }
+    });
+
+    vi.stubGlobal("fetch", fetchMock);
+
+    try {
+      render(<App />);
+
+      const intakeField = await screen.findByLabelText(/suspicious link or pasted message/i);
+      fireEvent.change(intakeField, {
+        target: {
+          value: "Please review immediately at hxxps[:]//secure-billing[.]example.com/login/reset"
+        }
+      });
+      await userEvent.click(screen.getByRole("button", { name: /extract & queue scan/i }));
+
+      expect(await screen.findByRole("dialog", { name: /choose suspicious links to scan/i })).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: /^scan all$/i })).toBeInTheDocument();
+      await userEvent.click(screen.getByRole("button", { name: /^scan all$/i }));
+
+      await waitFor(() => {
+        expect(resolvedBody).toEqual({
+          message: "Please review immediately at hxxps[:]//secure-billing[.]example.com/login/reset"
+        });
+        expect(submittedBody).toEqual({
+          urls: ["https://secure-billing.example.com/login/reset", "https://news.example.com/unsubscribe"]
+        });
+      });
+    } finally {
+      restoreMatchMedia();
+    }
+  });
+
+  it("switches the chooser CTA from Scan All to Scan when some extracted links are deselected", async () => {
+    const restoreMatchMedia = setDesktopMatchMedia(true);
+    window.history.replaceState({}, "", "/app/projects");
+
+    localStorage.setItem(
+      SESSION_STORAGE_KEY,
+      JSON.stringify({
+        accessToken: "access-token",
+        refreshToken: "refresh-token",
+        user: {
+          username: "analyst_ops",
+          name: "analyst_ops",
+          email: "analyst@example.com",
+          role: "user"
+        },
+        usage: null
+      })
+    );
+
+    let submittedBody = null;
+    const fetchMock = createDashboardFetchMock({
+      onUrlScanSubmit: (body) => {
+        submittedBody = body;
+      }
+    });
+
+    vi.stubGlobal("fetch", fetchMock);
+
+    try {
+      render(<App />);
+
+      const intakeField = await screen.findByLabelText(/suspicious link or pasted message/i);
+      fireEvent.change(intakeField, {
+        target: {
+          value: "Review at hxxps[:]//secure-billing[.]example.com/login/reset or https://news.example.com/unsubscribe"
+        }
+      });
+      await userEvent.click(screen.getByRole("button", { name: /extract & queue scan/i }));
+
+      const dialog = await screen.findByRole("dialog", { name: /choose suspicious links to scan/i });
+      const candidateRows = within(dialog).getAllByRole("checkbox");
+      await userEvent.click(candidateRows[1]);
+
+      expect(within(dialog).getByRole("button", { name: /^scan$/i })).toBeInTheDocument();
+
+      await userEvent.click(within(dialog).getByRole("button", { name: /^scan$/i }));
+
+      await waitFor(() => {
+        expect(submittedBody).toEqual({
+          url: "https://secure-billing.example.com/login/reset"
+        });
+      });
     } finally {
       restoreMatchMedia();
     }

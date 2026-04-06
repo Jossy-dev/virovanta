@@ -143,6 +143,8 @@ const ANALYTICS_WINDOW_DAYS = 30;
 const ANALYTICS_MONTH_BUCKETS = 6;
 const DEFAULT_QUEUE_ENQUEUE_TIMEOUT_MS = 12_000;
 const DEFAULT_OBJECT_STAGE_TIMEOUT_MS = 20_000;
+const DEFAULT_MONITOR_POLL_INTERVAL_MS = 5 * 60 * 1000;
+const DEFAULT_MONITOR_POLL_BATCH_SIZE = 10;
 
 
 function resolveQueueServiceMode(config) {
@@ -502,7 +504,8 @@ export class ScanQueueService {
     logger,
     config,
     objectStorageService = null,
-    notificationService = null
+    notificationService = null,
+    workspaceService = null
   }) {
     this.store = store;
     this.scanner = scanner;
@@ -512,6 +515,7 @@ export class ScanQueueService {
     this.config = config;
     this.objectStorageService = objectStorageService;
     this.notificationService = notificationService;
+    this.workspaceService = workspaceService;
     this.queue = [];
     this.processing = 0;
     this.started = false;
@@ -521,6 +525,17 @@ export class ScanQueueService {
     this.bullLinkWorker = null;
     this.bullQueueRedis = null;
     this.bullWorkerRedis = null;
+    this.monitorPoller = null;
+    this.monitorDispatchInFlight = false;
+    this.monitorDispatchState = {
+      enabled: Boolean(this.workspaceService && this.config.runScanWorker),
+      intervalSeconds: Math.max(30, Number(this.config.monitorPollIntervalSeconds) || 300),
+      lastStartedAt: null,
+      lastCompletedAt: null,
+      lastClaimed: 0,
+      lastEnqueued: 0,
+      lastError: null
+    };
     this.runtimeState = {
       status: "idle",
       ready: false,
@@ -591,11 +606,97 @@ export class ScanQueueService {
         inMemoryDepth: this.queue.length,
         activeInProcess: this.processing
       },
+      monitoring: {
+        enabled: this.monitorDispatchState.enabled,
+        intervalSeconds: this.monitorDispatchState.intervalSeconds,
+        lastStartedAt: this.monitorDispatchState.lastStartedAt,
+        lastCompletedAt: this.monitorDispatchState.lastCompletedAt,
+        lastClaimed: this.monitorDispatchState.lastClaimed,
+        lastEnqueued: this.monitorDispatchState.lastEnqueued,
+        lastError: this.monitorDispatchState.lastError
+      },
       alerts: this.runtimeState.lastError ? [this.runtimeState.lastError] : [],
       lastStartedAt: this.runtimeState.lastStartedAt,
       lastReadyAt: this.runtimeState.lastReadyAt,
       lastError: this.runtimeState.lastError
     };
+  }
+
+  #shouldRunMonitorScheduler() {
+    return Boolean(this.workspaceService && this.config.runScanWorker);
+  }
+
+  #startMonitorScheduler() {
+    this.monitorDispatchState = {
+      ...this.monitorDispatchState,
+      enabled: this.#shouldRunMonitorScheduler(),
+      intervalSeconds: Math.max(30, Number(this.config.monitorPollIntervalSeconds) || 300)
+    };
+
+    if (!this.#shouldRunMonitorScheduler() || this.monitorPoller) {
+      return;
+    }
+
+    const intervalMs = Math.max(
+      30_000,
+      Number(this.config.monitorPollIntervalSeconds) * 1000 || DEFAULT_MONITOR_POLL_INTERVAL_MS
+    );
+
+    const runPoll = () => {
+      void this.#dispatchDueMonitorRuns();
+    };
+
+    this.monitorPoller = setInterval(runPoll, intervalMs);
+    this.monitorPoller.unref?.();
+    runPoll();
+  }
+
+  async #dispatchDueMonitorRuns() {
+    if (!this.#shouldRunMonitorScheduler() || this.monitorDispatchInFlight || !this.runtimeState.ready) {
+      return;
+    }
+
+    this.monitorDispatchInFlight = true;
+    this.monitorDispatchState = {
+      ...this.monitorDispatchState,
+      lastStartedAt: new Date().toISOString(),
+      lastError: null
+    };
+
+    try {
+      const result = await this.workspaceService.dispatchDueMonitors({
+        limit: Math.max(1, Number(this.config.monitorPollBatchSize) || DEFAULT_MONITOR_POLL_BATCH_SIZE),
+        enqueueUrlScan: (params) => this.enqueueUrlScan(params),
+        enqueueWebsiteSafetyScan: (params) => this.enqueueWebsiteSafetyScan(params)
+      });
+
+      this.monitorDispatchState = {
+        ...this.monitorDispatchState,
+        lastCompletedAt: new Date().toISOString(),
+        lastClaimed: Number(result?.claimed) || 0,
+        lastEnqueued: Number(result?.enqueued) || 0,
+        lastError: null
+      };
+
+      if ((Number(result?.enqueued) || 0) > 0) {
+        this.logger.info(
+          {
+            claimed: result.claimed,
+            enqueued: result.enqueued
+          },
+          "Dispatched due monitor checks"
+        );
+      }
+    } catch (error) {
+      this.monitorDispatchState = {
+        ...this.monitorDispatchState,
+        lastCompletedAt: new Date().toISOString(),
+        lastError: serializeOperationalError(error, "monitor_dispatch")
+      };
+      this.logger.error({ err: error }, "Failed to dispatch due monitor checks");
+    } finally {
+      this.monitorDispatchInFlight = false;
+    }
   }
 
   async start() {
@@ -624,6 +725,7 @@ export class ScanQueueService {
           lastReadyAt: new Date().toISOString(),
           lastError: null
         };
+        this.#startMonitorScheduler();
         return;
       }
 
@@ -642,6 +744,7 @@ export class ScanQueueService {
         lastReadyAt: new Date().toISOString(),
         lastError: null
       };
+      this.#startMonitorScheduler();
     } catch (error) {
       this.markOperationalDegraded(error);
       throw error;
@@ -650,6 +753,11 @@ export class ScanQueueService {
 
   async stop() {
     this.started = false;
+
+    if (this.monitorPoller) {
+      clearInterval(this.monitorPoller);
+      this.monitorPoller = null;
+    }
 
     for (const worker of new Set([this.bullFileWorker, this.bullLinkWorker].filter(Boolean))) {
       await worker.close();
@@ -1001,6 +1109,20 @@ export class ScanQueueService {
       entityType: "report",
       entityId: reportId,
       dedupeKey: `report-deleted:${reportId}`
+    });
+
+    await this.workspaceService?.dispatchEvent?.({
+      userId: user.id,
+      eventType: "report.deleted",
+      payload: {
+        reportId,
+        deletedAt,
+        sourceType: report.sourceType
+      },
+      entityType: "report",
+      entityId: reportId
+    }).catch((error) => {
+      this.logger.error({ err: error, reportId }, "Workspace delete event failed");
     });
 
     return result;
@@ -1361,6 +1483,10 @@ export class ScanQueueService {
           artifacts
         });
       }
+
+      await this.workspaceService?.recordCompletedReport?.(persistedReport).catch((error) => {
+        this.logger.error({ err: error, reportId: persistedReport.id }, "Workspace post-processing failed");
+      });
 
       await this.notificationService?.create({
         userId: item.userId,
