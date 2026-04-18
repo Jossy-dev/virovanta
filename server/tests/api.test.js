@@ -414,6 +414,41 @@ describe("ViroVanta API", () => {
     expect(limited.status).toBe(429);
   });
 
+  it("isolates scan job polling behind a dedicated per-user limiter", async () => {
+    const app = await setupTestApp({
+      configOverrides: {
+        requestsPerWindow: 2,
+        requestWindowMinutes: 15,
+        jobPollingRequestsPerWindow: 2,
+        jobPollingWindowMinutes: 15
+      }
+    });
+    const session = await registerAndGetToken(app, "job-polling@example.com");
+
+    const pollOne = await request(app)
+      .get("/api/scans/jobs?limit=5")
+      .set("Authorization", `Bearer ${session.accessToken}`);
+
+    const healthOne = await request(app).get("/api/health");
+    const healthTwo = await request(app).get("/api/health");
+
+    const pollTwo = await request(app)
+      .get("/api/scans/jobs?limit=5")
+      .set("Authorization", `Bearer ${session.accessToken}`);
+
+    const pollThree = await request(app)
+      .get("/api/scans/jobs?limit=5")
+      .set("Authorization", `Bearer ${session.accessToken}`);
+
+    expect(pollOne.status).toBe(200);
+    expect(healthOne.status).toBe(200);
+    expect(healthTwo.status).toBe(429);
+    expect(healthTwo.body.error.code).toBe("RATE_LIMIT_GLOBAL");
+    expect(pollTwo.status).toBe(200);
+    expect(pollThree.status).toBe(429);
+    expect(pollThree.body.error.code).toBe("SCAN_POLL_RATE_LIMIT_EXCEEDED");
+  });
+
   it("returns reliability and limits metadata from the public status endpoint", async () => {
     const app = await setupTestApp();
 
@@ -1785,12 +1820,12 @@ describe("ViroVanta API", () => {
     const failed = await waitForJobCompletion(app, session.accessToken, submit.body.job.id);
     expect(failed.status).toBe("failed");
 
-    const notifications = await request(app)
-      .get("/api/auth/notifications?limit=20")
-      .set("Authorization", `Bearer ${session.accessToken}`);
+    const { notification: failedNotification } = await waitForNotification(
+      app,
+      session.accessToken,
+      (candidate) => candidate.type === "scan_failed"
+    );
 
-    expect(notifications.status).toBe(200);
-    const failedNotification = notifications.body.notifications.find((candidate) => candidate.type === "scan_failed");
     expect(failedNotification).toBeTruthy();
     expect(failedNotification.title).toBe("Scan failed");
     expect(failedNotification.tone).toBe("danger");

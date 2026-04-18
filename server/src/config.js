@@ -203,6 +203,8 @@ const resolvedConfig = {
   scanHistoryLimit: envNumber("SCAN_HISTORY_LIMIT", 2000, { min: 100, max: 50000 }),
   requestWindowMinutes: envNumber("REQUEST_WINDOW_MINUTES", 15, { min: 1, max: 1440 }),
   requestsPerWindow: envNumber("REQUESTS_PER_WINDOW", 240, { min: 10, max: 10000 }),
+  jobPollingWindowMinutes: envNumber("JOB_POLLING_WINDOW_MINUTES", 5, { min: 1, max: 1440 }),
+  jobPollingRequestsPerWindow: envNumber("JOB_POLLING_REQUESTS_PER_WINDOW", 120, { min: 10, max: 10000 }),
   authRateLimitWindowMinutes: envNumber("AUTH_RATE_LIMIT_WINDOW_MINUTES", 15, { min: 1, max: 1440 }),
   authLoginRequestsPerWindow: envNumber("AUTH_LOGIN_REQUESTS_PER_WINDOW", 10, { min: 3, max: 200 }),
   authMutationRequestsPerWindow: envNumber("AUTH_MUTATION_REQUESTS_PER_WINDOW", 20, { min: 5, max: 500 }),

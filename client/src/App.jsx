@@ -96,6 +96,7 @@ const API_REQUEST_TIMEOUT_DEFAULT_MS = 20 * 1000;
 const API_REQUEST_TIMEOUT_UPLOAD_MS = 45 * 1000;
 const API_REQUEST_TIMEOUT_AUTH_COLD_START_MS = 65 * 1000;
 const API_REQUEST_TIMEOUT_WAKE_PROBE_MS = 15 * 1000;
+const ACTIVE_JOB_POLL_INTERVAL_MS = 5 * 1000;
 const AUTH_INVALID_CODES = new Set([
   "AUTH_REFRESH_INVALID",
   "AUTH_TOKEN_INVALID",
@@ -650,6 +651,8 @@ function AppContent() {
   const lastActivityTouchRef = useRef(0);
   const dashboardCacheRef = useRef(null);
   const activeReportId = activeReport?.id || null;
+  const activeJobId = activeJob?.id || null;
+  const activeJobStatus = activeJob?.status || null;
 
   const heroBackground = useMemo(() => {
     const variant = resolveHeroBackgroundVariant(HERO_BG_DEFAULT, HERO_BG_VARIANTS);
@@ -1256,32 +1259,42 @@ function AppContent() {
   }, [session?.accessToken]);
 
   useEffect(() => {
-    if (!session || !activeJob?.id || activeJob.status === "completed" || activeJob.status === "failed") {
+    if (!session || !activeJobId || activeJobStatus === "completed" || activeJobStatus === "failed") {
       return;
     }
 
     const timer = setInterval(async () => {
       try {
-        const payload = await apiRequest(`/api/scans/jobs/${activeJob.id}`, {
+        const payload = await apiRequest(`/api/scans/jobs/${activeJobId}`, {
           authSession: session
         });
 
-        setActiveJob(payload.job);
-        await Promise.all([refreshJobs(session), refreshAnalytics(session)]);
+        const nextJob = payload?.job || null;
+        const statusChanged = nextJob?.status !== activeJobStatus;
 
-        if (payload.job.status === "completed" && payload.job.reportId) {
-          await openReport(payload.job.reportId, session);
+        setActiveJob(nextJob);
+
+        if (statusChanged) {
+          await Promise.all([refreshJobs(session), refreshAnalytics(session)]);
+        }
+
+        if (nextJob?.status === "completed" && nextJob.reportId) {
+          await openReport(nextJob.reportId, session);
           await Promise.all([refreshReports(session), refreshNotifications(session), refreshAnalytics(session)]);
-        } else if (payload.job.status === "failed") {
+        } else if (nextJob?.status === "failed") {
           await Promise.all([refreshNotifications(session), refreshAnalytics(session)]);
         }
       } catch (error) {
+        if (Number(error?.status) === 429) {
+          return;
+        }
+
         toast.error(error.message || "Could not refresh scan job.");
       }
-    }, 1400);
+    }, ACTIVE_JOB_POLL_INTERVAL_MS);
 
     return () => clearInterval(timer);
-  }, [activeJob, session]);
+  }, [activeJobId, activeJobStatus, session]);
 
   useEffect(() => {
     setShareState({ url: "", expiresAt: "" });

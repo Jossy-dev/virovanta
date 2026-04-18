@@ -16,6 +16,7 @@ import {
 import { createReportShareToken } from "../utils/reportShareToken.js";
 import { buildScanReportPdf } from "../utils/reportPdf.js";
 import { API_KEY_SCOPES } from "../utils/apiKeyScopes.js";
+import { buildAuthRateLimitKey, buildRateLimitHandler } from "../utils/rateLimit.js";
 import { resolveUrlScanCandidates, resolveUrlScanTarget } from "../utils/urlExtraction.js";
 import { normalizeUrlInput } from "../utils/urlIntake.js";
 import { validateSchema } from "../utils/validation.js";
@@ -79,19 +80,43 @@ export function createScanRouter({
   config = defaultConfig
 }) {
   const scanRouter = Router();
+  const jobPollingRateLimiter = rateLimit({
+    windowMs: config.jobPollingWindowMinutes * 60 * 1000,
+    limit: config.jobPollingRequestsPerWindow,
+    keyGenerator: (req) => buildAuthRateLimitKey(req, { prefix: "scan-job-poll" }),
+    standardHeaders: true,
+    legacyHeaders: false,
+    handler: buildRateLimitHandler({
+      code: "SCAN_POLL_RATE_LIMIT_EXCEEDED",
+      message: "Job polling rate limit exceeded. Reduce polling frequency and retry shortly.",
+      details: (_req, _res, options) => ({
+        scope: "job_polling",
+        limit: options.limit,
+        windowMs: options.windowMs
+      })
+    })
+  });
   const linkScanRateLimiter = rateLimit({
     windowMs: config.urlScanRateLimitWindowMinutes * 60 * 1000,
     limit: config.urlScanRateLimitRequestsPerWindow,
     keyGenerator: (req) => req.auth?.user?.id || ipKeyGenerator(req.ip || ""),
     standardHeaders: true,
-    legacyHeaders: false
+    legacyHeaders: false,
+    handler: buildRateLimitHandler({
+      code: "URL_SCAN_RATE_LIMIT_EXCEEDED",
+      message: "URL scan submission rate limit exceeded. Retry shortly."
+    })
   });
   const websiteSafetyRateLimiter = rateLimit({
     windowMs: config.urlScanRateLimitWindowMinutes * 60 * 1000,
     limit: config.urlScanRateLimitRequestsPerWindow,
     keyGenerator: (req) => req.auth?.user?.id || ipKeyGenerator(req.ip || ""),
     standardHeaders: true,
-    legacyHeaders: false
+    legacyHeaders: false,
+    handler: buildRateLimitHandler({
+      code: "WEBSITE_SCAN_RATE_LIMIT_EXCEEDED",
+      message: "Website safety submission rate limit exceeded. Retry shortly."
+    })
   });
   const storage = multer.diskStorage({
     destination: (_req, _file, callback) => {
@@ -115,6 +140,7 @@ export function createScanRouter({
 
   scanRouter.get(
     "/jobs",
+    jobPollingRateLimiter,
     requireApiKeyScopes(API_KEY_SCOPES.JOBS_READ),
     asyncHandler(async (req, res) => {
       const { limit, sourceType } = validateSchema(paginationSchema, req.query);
@@ -125,6 +151,7 @@ export function createScanRouter({
 
   scanRouter.get(
     "/jobs/:jobId",
+    jobPollingRateLimiter,
     requireApiKeyScopes(API_KEY_SCOPES.JOBS_READ),
     asyncHandler(async (req, res) => {
       const job = await scanQueueService.getJobForUser(req.params.jobId, req.auth.user);

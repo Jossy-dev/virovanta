@@ -29,6 +29,7 @@ import { ScanQueueService } from "../services/scanQueueService.js";
 import { WorkspaceService } from "../services/workspaceService.js";
 import { ObjectStorageService } from "../services/storage/objectStorageService.js";
 import { PersistentStore } from "../store/persistentStore.js";
+import { buildRateLimitHandler, isScanPollingRequest } from "../utils/rateLimit.js";
 
 function buildOpenApiSpec(runtimeConfig) {
   return {
@@ -199,7 +200,11 @@ export async function createApp(options = {}) {
       windowMs: windowMinutes * 60 * 1000,
       limit,
       standardHeaders: true,
-      legacyHeaders: false
+      legacyHeaders: false,
+      handler: buildRateLimitHandler({
+        code: "RATE_LIMIT_EXCEEDED",
+        message: "Too many requests. Slow down and retry after the current window resets."
+      })
     });
 
   const authRateLimiters = {
@@ -280,7 +285,17 @@ export async function createApp(options = {}) {
       windowMs: runtimeConfig.requestWindowMinutes * 60 * 1000,
       limit: runtimeConfig.requestsPerWindow,
       standardHeaders: true,
-      legacyHeaders: false
+      legacyHeaders: false,
+      skip: isScanPollingRequest,
+      handler: buildRateLimitHandler({
+        code: "RATE_LIMIT_GLOBAL",
+        message: "Too many requests across the API. Retry shortly.",
+        details: (_req, _res, options) => ({
+          scope: "global",
+          limit: options.limit,
+          windowMs: options.windowMs
+        })
+      })
     })
   );
 
