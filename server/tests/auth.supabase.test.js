@@ -17,7 +17,10 @@ function jsonResponse(payload, status = 200) {
   });
 }
 
-async function setupSupabaseApp({ supabaseJwtSecret = "supabase-test-secret" } = {}) {
+async function setupSupabaseApp({
+  supabaseJwtSecret = "supabase-test-secret",
+  supabasePasswordResetRedirectUrl = ""
+} = {}) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "virovanta-supabase-test-"));
   const uploadDir = path.join(root, "uploads");
   const dataFilePath = path.join(root, "store.json");
@@ -39,6 +42,7 @@ async function setupSupabaseApp({ supabaseJwtSecret = "supabase-test-secret" } =
       supabaseJwtAudience,
       supabaseJwtAlgorithm: "HS256",
       supabaseJwksUrl: "https://example.supabase.co/auth/v1/.well-known/jwks.json",
+      supabasePasswordResetRedirectUrl,
       requestsPerWindow: 5000,
       requestWindowMinutes: 15,
       enableClamAv: false,
@@ -122,7 +126,7 @@ describe("Supabase auth mode", () => {
         });
       }
 
-      if (normalizedUrl.endsWith("/auth/v1/recover")) {
+      if (normalizedUrl.includes("/auth/v1/recover")) {
         return jsonResponse({});
       }
 
@@ -220,7 +224,9 @@ describe("Supabase auth mode", () => {
   });
 
   it("supports register/login/refresh/logout/forgot-password via API routes", async () => {
-    const { app } = await setupSupabaseApp();
+    const { app } = await setupSupabaseApp({
+      supabasePasswordResetRedirectUrl: "https://app.virovanta.test/reset-password"
+    });
 
     const register = await request(app).post("/api/auth/register").send({
       email: "newuser@example.com",
@@ -257,6 +263,12 @@ describe("Supabase auth mode", () => {
     });
     expect(forgot.status).toBe(202);
     expect(forgot.body.accepted).toBe(true);
+    expect(fetch).toHaveBeenCalledWith(
+      "https://example.supabase.co/auth/v1/recover?redirect_to=https%3A%2F%2Fapp.virovanta.test%2Freset-password%3Femail%3Dsupa%2540example.com",
+      expect.objectContaining({
+        method: "POST"
+      })
+    );
 
     const reset = await request(app).post("/api/auth/reset-password").send({
       accessToken: "recovery-token-abcdefghijklmnopqrstuvwxyz",

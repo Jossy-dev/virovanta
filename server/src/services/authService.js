@@ -49,6 +49,23 @@ function resolveUsername(name, email) {
   return candidate.length >= 2 ? candidate : `${fallback}_01`;
 }
 
+function appendEmailQuery(urlLike, email) {
+  const base = String(urlLike || "").trim();
+  const normalizedEmail = normalizeEmail(email);
+
+  if (!base || !normalizedEmail) {
+    return base;
+  }
+
+  try {
+    const url = new URL(base);
+    url.searchParams.set("email", normalizedEmail);
+    return url.toString();
+  } catch {
+    return base;
+  }
+}
+
 function buildUsernameSuggestions(preferredUsername, users, count = USERNAME_SUGGESTION_COUNT) {
   const taken = new Set((users || []).map((user) => normalizeUsername(user?.name)));
   const rawBase = normalizeUsername(preferredUsername)
@@ -938,9 +955,8 @@ export class AuthService {
     const normalizedEmail = normalizeEmail(email);
 
     if (this.config.authProvider === "supabase") {
-      const recoverPath = this.config.supabasePasswordResetRedirectUrl
-        ? `/auth/v1/recover?redirect_to=${encodeURIComponent(this.config.supabasePasswordResetRedirectUrl)}`
-        : "/auth/v1/recover";
+      const redirectUrl = appendEmailQuery(this.config.supabasePasswordResetRedirectUrl, normalizedEmail);
+      const recoverPath = redirectUrl ? `/auth/v1/recover?redirect_to=${encodeURIComponent(redirectUrl)}` : "/auth/v1/recover";
 
       await this.#supabaseRequest(recoverPath, {
         method: "POST",
