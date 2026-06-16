@@ -132,6 +132,31 @@ export function pluralize(label, count) {
 }
 
 export function parseErrorMessage(payload, fallback) {
+  const validationDetails = Array.isArray(payload?.error?.details) ? payload.error.details : [];
+  const primaryValidationDetail = validationDetails.find((detail) => String(detail?.message || "").trim());
+
+  if (primaryValidationDetail) {
+    const fieldLabel = String(primaryValidationDetail.path || "")
+      .split(".")
+      .filter((segment) => segment && !/^\d+$/.test(segment))
+      .slice(-1)[0]
+      ?.replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+      ?.replace(/[_-]+/g, " ")
+      ?.trim();
+    const normalizedFieldLabel = fieldLabel ? `${fieldLabel.charAt(0).toUpperCase()}${fieldLabel.slice(1)}` : "";
+    const normalizedMessage = String(primaryValidationDetail.message || "").trim();
+
+    if (/^required$/i.test(normalizedMessage) && normalizedFieldLabel) {
+      return `${normalizedFieldLabel} is required.`;
+    }
+
+    if (normalizedFieldLabel) {
+      return `${normalizedFieldLabel}: ${normalizedMessage}`;
+    }
+
+    return normalizedMessage;
+  }
+
   if (payload?.error?.message) {
     return payload.error.message;
   }
@@ -265,17 +290,28 @@ export function formatVerdictLabel(value) {
 }
 
 export function isPendingJob(job) {
-  return job?.status === "queued" || job?.status === "processing";
+  return job?.status === "queued" || job?.status === "processing" || job?.status === "cancelling";
+}
+
+export function isTerminalJob(job) {
+  return job?.status === "completed" || job?.status === "failed" || job?.status === "cancelled";
 }
 
 export function selectHighlightedJob(jobList, currentJobId = "") {
+  const currentJob = typeof currentJobId === "string" ? null : currentJobId;
+  const resolvedCurrentJobId = typeof currentJobId === "string" ? currentJobId : currentJobId?.id || "";
+
   if (!Array.isArray(jobList) || jobList.length === 0) {
-    return null;
+    return isPendingJob(currentJob) ? currentJob : null;
   }
 
-  const currentPendingJob = jobList.find((job) => job.id === currentJobId && isPendingJob(job));
+  const currentPendingJob = jobList.find((job) => job.id === resolvedCurrentJobId && isPendingJob(job));
   if (currentPendingJob) {
     return currentPendingJob;
+  }
+
+  if (isPendingJob(currentJob)) {
+    return currentJob;
   }
 
   const nextPendingJob = jobList.find((job) => isPendingJob(job));
@@ -283,9 +319,9 @@ export function selectHighlightedJob(jobList, currentJobId = "") {
     return nextPendingJob;
   }
 
-  const currentJob = jobList.find((job) => job.id === currentJobId);
-  if (currentJob) {
-    return currentJob;
+  const matchingCurrentJob = jobList.find((job) => job.id === resolvedCurrentJobId);
+  if (matchingCurrentJob) {
+    return matchingCurrentJob;
   }
 
   return jobList[0];

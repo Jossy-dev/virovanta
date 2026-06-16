@@ -411,6 +411,32 @@ const ROUTES = [
     })
   },
   {
+    id: "app-website-safety",
+    path: "/app/website-safety",
+    title: `Website Safety | ${APP_NAME}`,
+    description: `Authenticated ${APP_NAME} website safety workspace.`,
+    robots: PRIVATE_ROBOTS,
+    indexable: false,
+    staticRender: true,
+    snapshotHtml: buildPrivateSnapshot({
+      heading: `${APP_NAME} website safety`,
+      description: "Scan websites, inspect posture findings, and review queued website safety jobs after signing in."
+    })
+  },
+  {
+    id: "app-monitoring",
+    path: "/app/monitoring",
+    title: `Monitoring | ${APP_NAME}`,
+    description: `Authenticated ${APP_NAME} monitoring workspace.`,
+    robots: PRIVATE_ROBOTS,
+    indexable: false,
+    staticRender: true,
+    snapshotHtml: buildPrivateSnapshot({
+      heading: `${APP_NAME} monitoring`,
+      description: "Manage watchlists, recurring checks, and monitor activity after signing in."
+    })
+  },
+  {
     id: "app-settings",
     path: "/app/settings",
     title: `Settings | ${APP_NAME}`,

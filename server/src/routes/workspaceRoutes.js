@@ -6,7 +6,8 @@ import {
   createMonitorSchema,
   createWebhookSchema,
   listWebhookDeliveriesQuerySchema,
-  startTrialSchema
+  startTrialSchema,
+  updateMonitorStatusSchema
 } from "../validation/workspaceSchemas.js";
 
 function toPublicWebhook(webhook) {
@@ -99,6 +100,23 @@ export function createWorkspaceRouter({
         enqueueWebsiteSafetyScan: (params) => scanQueueService.enqueueWebsiteSafetyScan(params)
       });
       res.status(202).json({ job });
+    })
+  );
+
+  workspaceRouter.patch(
+    "/monitors/:monitorId",
+    asyncHandler(async (req, res) => {
+      const payload = validateSchema(updateMonitorStatusSchema, req.body || {});
+      const monitor = await workspaceService.updateMonitorStatus(req.auth.user.id, req.params.monitorId, payload.status);
+      await workspaceService.store.createAuditEvent?.({
+        userId: req.auth.user.id,
+        action: payload.status === "paused" ? "workspace.monitor.paused" : "workspace.monitor.resumed",
+        metadata: {
+          monitorId: monitor?.id || req.params.monitorId,
+          status: payload.status
+        }
+      });
+      res.json({ monitor });
     })
   );
 

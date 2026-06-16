@@ -160,6 +160,15 @@ export function createScanRouter({
   );
 
   scanRouter.post(
+    "/jobs/:jobId/cancel",
+    requireApiKeyScopes(API_KEY_SCOPES.JOBS_WRITE),
+    asyncHandler(async (req, res) => {
+      const job = await scanQueueService.cancelJobForUser(req.params.jobId, req.auth.user);
+      res.json({ job });
+    })
+  );
+
+  scanRouter.post(
     "/links/resolve",
     requireApiKeyScopes(API_KEY_SCOPES.JOBS_WRITE),
     linkScanRateLimiter,

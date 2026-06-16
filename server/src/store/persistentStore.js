@@ -182,6 +182,11 @@ function mapJobRow(row) {
     updatedAt: toIsoOrNull(row.updated_at),
     startedAt: toIsoOrNull(row.started_at),
     completedAt: toIsoOrNull(row.completed_at),
+    progressPercent: Number(row.progress_percent) || 0,
+    progressStage: row.progress_stage || null,
+    progressDetail: row.progress_detail || null,
+    cancelRequestedAt: toIsoOrNull(row.cancel_requested_at),
+    cancelledAt: toIsoOrNull(row.cancelled_at),
     reportId: row.report_id || null,
     errorMessage: row.error_message || null
   };
@@ -2285,6 +2290,35 @@ export class PersistentStore {
     return mapMonitorRow(result.rows[0]);
   }
 
+  async updateMonitorStatus({ userId, monitorId, status, nextCheckAt, updatedAt }) {
+    if (this.driver !== "postgres") {
+      return this.write((state) => {
+        const monitor = (state.monitors || []).find(
+          (candidate) => candidate.id === monitorId && candidate.userId === userId && !candidate.deletedAt
+        );
+        if (!monitor) {
+          return null;
+        }
+
+        monitor.status = status;
+        monitor.nextCheckAt = nextCheckAt;
+        monitor.updatedAt = updatedAt;
+        return monitor;
+      });
+    }
+
+    const result = await this.pool.query(
+      `
+        UPDATE ${this.monitorsTable}
+        SET status = $3, next_check_at = $4, updated_at = $5
+        WHERE id = $1 AND user_id = $2 AND deleted_at IS NULL
+        RETURNING *
+      `,
+      [monitorId, userId, status, nextCheckAt, updatedAt]
+    );
+    return mapMonitorRow(result.rows[0]);
+  }
+
   async deleteMonitor({ userId, monitorId, deletedAt }) {
     if (this.driver !== "postgres") {
       return this.write((state) => {
@@ -2325,7 +2359,7 @@ export class PersistentStore {
           (monitor) =>
             monitor.userId === userId &&
             !monitor.deletedAt &&
-            monitor.status === "active" &&
+            (monitor.status === "active" || monitor.status === "paused") &&
             candidates.includes(String(monitor.normalizedTarget || ""))
         )
       );
@@ -2336,10 +2370,10 @@ export class PersistentStore {
         SELECT * FROM ${this.monitorsTable}
         WHERE user_id = $1
           AND deleted_at IS NULL
-          AND status = 'active'
+          AND status = ANY($3::text[])
           AND normalized_target = ANY($2::text[])
       `,
-      [userId, candidates]
+      [userId, candidates, ["active", "paused"]]
     );
     return result.rows.map(mapMonitorRow);
   }
@@ -2358,7 +2392,6 @@ export class PersistentStore {
           lastRiskScore: riskScore,
           lastSnapshot: snapshot,
           lastChangeSummary,
-          status: "active",
           lastCheckedAt: checkedAt,
           nextCheckAt,
           updatedAt: checkedAt
@@ -2377,7 +2410,6 @@ export class PersistentStore {
           last_risk_score = $4,
           last_snapshot = $5::jsonb,
           last_change_summary = $6::jsonb,
-          status = 'active',
           last_checked_at = $7,
           next_check_at = $8,
           updated_at = $7
@@ -2403,7 +2435,7 @@ export class PersistentStore {
             completed: completedJobs,
             failed: failedJobs,
             queued: state.jobs.filter((job) => job.status === "queued").length,
-            processing: state.jobs.filter((job) => job.status === "processing").length
+            processing: state.jobs.filter((job) => job.status === "processing" || job.status === "cancelling").length
           },
           auditEvents: state.auditEvents.length
         };
@@ -2420,7 +2452,7 @@ export class PersistentStore {
             COUNT(*) FILTER (WHERE status = 'completed')::int AS completed,
             COUNT(*) FILTER (WHERE status = 'failed')::int AS failed,
             COUNT(*) FILTER (WHERE status = 'queued')::int AS queued,
-            COUNT(*) FILTER (WHERE status = 'processing')::int AS processing
+            COUNT(*) FILTER (WHERE status IN ('processing', 'cancelling'))::int AS processing
           FROM ${this.jobsTable}
         `
       ),
@@ -2727,10 +2759,13 @@ export class PersistentStore {
     if (this.driver !== "postgres") {
       await this.write((state) => {
         for (const job of state.jobs) {
-          if (job.status === "queued" || job.status === "processing") {
+          if (job.status === "queued" || job.status === "processing" || job.status === "cancelling") {
             job.status = "failed";
             job.completedAt = now;
             job.updatedAt = now;
+            job.progressPercent = 100;
+            job.progressStage = "Failed";
+            job.progressDetail = reason;
             job.errorMessage = reason;
           }
         }
@@ -2741,8 +2776,15 @@ export class PersistentStore {
     await this.pool.query(
       `
         UPDATE ${this.jobsTable}
-        SET status = 'failed', completed_at = $2, updated_at = $2, error_message = $3
-        WHERE status IN ('queued', 'processing')
+        SET
+          status = 'failed',
+          completed_at = $2,
+          updated_at = $2,
+          progress_percent = 100,
+          progress_stage = 'Failed',
+          progress_detail = $3,
+          error_message = $3
+        WHERE status IN ('queued', 'processing', 'cancelling')
       `,
       [now, now, reason]
     );
@@ -2758,7 +2800,19 @@ export class PersistentStore {
             job.status = "queued";
             job.updatedAt = now;
             job.startedAt = null;
+            job.progressPercent = Math.min(Number(job.progressPercent) || 0, 8);
+            job.progressStage = "Queued";
+            job.progressDetail = "Waiting for an available worker.";
             job.errorMessage = null;
+          } else if (job.status === "cancelling") {
+            job.status = "cancelled";
+            job.updatedAt = now;
+            job.completedAt = now;
+            job.cancelledAt = now;
+            job.progressPercent = 100;
+            job.progressStage = "Cancelled";
+            job.progressDetail = "Cancelled while the worker was recovering.";
+            job.errorMessage = "Cancelled by user.";
           }
         }
       });
@@ -2768,8 +2822,17 @@ export class PersistentStore {
     await this.pool.query(
       `
         UPDATE ${this.jobsTable}
-        SET status = 'queued', updated_at = $1, started_at = NULL, error_message = NULL
-        WHERE status = 'processing'
+        SET
+          status = CASE WHEN status = 'cancelling' THEN 'cancelled' ELSE 'queued' END,
+          updated_at = $1,
+          started_at = CASE WHEN status = 'cancelling' THEN started_at ELSE NULL END,
+          completed_at = CASE WHEN status = 'cancelling' THEN $1 ELSE completed_at END,
+          cancelled_at = CASE WHEN status = 'cancelling' THEN $1 ELSE cancelled_at END,
+          progress_percent = CASE WHEN status = 'cancelling' THEN 100 ELSE LEAST(progress_percent, 8) END,
+          progress_stage = CASE WHEN status = 'cancelling' THEN 'Cancelled' ELSE 'Queued' END,
+          progress_detail = CASE WHEN status = 'cancelling' THEN 'Cancelled while the worker was recovering.' ELSE 'Waiting for an available worker.' END,
+          error_message = CASE WHEN status = 'cancelling' THEN 'Cancelled by user.' ELSE NULL END
+        WHERE status IN ('processing', 'cancelling')
       `,
       [now]
     );
@@ -2796,6 +2859,11 @@ export class PersistentStore {
           updatedAt: createdAt,
           startedAt: null,
           completedAt: null,
+          progressPercent: 8,
+          progressStage: "Queued",
+          progressDetail: "Waiting for an available worker.",
+          cancelRequestedAt: null,
+          cancelledAt: null,
           reportId: null,
           errorMessage: null
         };
@@ -2840,6 +2908,11 @@ export class PersistentStore {
         updatedAt: createdAt,
         startedAt: null,
         completedAt: null,
+        progressPercent: 8,
+        progressStage: "Queued",
+        progressDetail: "Waiting for an available worker.",
+        cancelRequestedAt: null,
+        cancelledAt: null,
         reportId: null,
         errorMessage: null
       };
@@ -2859,9 +2932,14 @@ export class PersistentStore {
             updated_at,
             started_at,
             completed_at,
+            progress_percent,
+            progress_stage,
+            progress_detail,
+            cancel_requested_at,
+            cancelled_at,
             report_id,
             error_message
-          ) VALUES ($1, $2, $3, $4, 'queued', $5, $6, $7, $8, $8, NULL, NULL, NULL, NULL)
+          ) VALUES ($1, $2, $3, $4, 'queued', $5, $6, $7, $8, $8, NULL, NULL, 8, 'Queued', 'Waiting for an available worker.', NULL, NULL, NULL, NULL)
         `,
         [
           nextJob.id,
@@ -2899,44 +2977,343 @@ export class PersistentStore {
 
   async markJobFailed({ jobId, reason, failedAt }) {
     if (this.driver !== "postgres") {
-      await this.write((state) => {
+      return this.write((state) => {
         const job = state.jobs.find((candidate) => candidate.id === jobId);
         if (!job) {
-          return;
+          return null;
+        }
+
+        if (job.status === "cancelled" || job.status === "cancelling") {
+          return job;
         }
 
         job.status = "failed";
         job.completedAt = failedAt;
         job.updatedAt = failedAt;
+        job.progressPercent = 100;
+        job.progressStage = "Failed";
+        job.progressDetail = reason;
         job.errorMessage = reason;
+        return job;
       });
-      return;
     }
 
-    await this.pool.query(
-      `UPDATE ${this.jobsTable} SET status = 'failed', completed_at = $2, updated_at = $2, error_message = $3 WHERE id = $1`,
+    const result = await this.pool.query(
+      `
+        UPDATE ${this.jobsTable}
+        SET
+          status = 'failed',
+          completed_at = $2,
+          updated_at = $2,
+          progress_percent = 100,
+          progress_stage = 'Failed',
+          progress_detail = $3,
+          error_message = $3
+        WHERE id = $1
+          AND status NOT IN ('cancelled', 'cancelling')
+        RETURNING *
+      `,
       [jobId, failedAt, reason]
     );
+    return mapJobRow(result.rows[0]);
   }
 
   async markJobProcessing({ jobId, startedAt }) {
     if (this.driver !== "postgres") {
-      await this.write((state) => {
+      return this.write((state) => {
         const job = state.jobs.find((candidate) => candidate.id === jobId);
         if (!job) {
-          return;
+          return null;
         }
+
+        if (job.status === "cancelled" || job.status === "cancelling") {
+          return job;
+        }
+
         job.status = "processing";
         job.startedAt = startedAt;
         job.updatedAt = startedAt;
+        job.progressPercent = Math.max(Number(job.progressPercent) || 0, 15);
+        job.progressStage = "Preparing scan";
+        job.progressDetail = "Worker picked up the scan job.";
+        return job;
       });
-      return;
     }
 
-    await this.pool.query(
-      `UPDATE ${this.jobsTable} SET status = 'processing', started_at = $2, updated_at = $2 WHERE id = $1`,
-      [jobId, startedAt]
+    return this.#withTransaction(async (client) => {
+      const result = await client.query(`SELECT * FROM ${this.jobsTable} WHERE id = $1 LIMIT 1 FOR UPDATE`, [jobId]);
+      const job = mapJobRow(result.rows[0]);
+
+      if (!job) {
+        return null;
+      }
+
+      if (job.status === "cancelled" || job.status === "cancelling") {
+        return job;
+      }
+
+      const updated = await client.query(
+        `
+          UPDATE ${this.jobsTable}
+          SET
+            status = 'processing',
+            started_at = $2,
+            updated_at = $2,
+            progress_percent = GREATEST(progress_percent, 15),
+            progress_stage = 'Preparing scan',
+            progress_detail = 'Worker picked up the scan job.'
+          WHERE id = $1
+          RETURNING *
+        `,
+        [jobId, startedAt]
+      );
+      return mapJobRow(updated.rows[0]);
+    });
+  }
+
+  async updateJobProgress({ jobId, progressPercent, progressStage = null, progressDetail = null, updatedAt }) {
+    const safePercent = Math.max(0, Math.min(100, Number(progressPercent) || 0));
+
+    if (this.driver !== "postgres") {
+      return this.write((state) => {
+        const job = state.jobs.find((candidate) => candidate.id === jobId);
+        if (!job) {
+          return null;
+        }
+
+        if (job.status === "completed" || job.status === "failed" || job.status === "cancelled") {
+          return job;
+        }
+
+        job.progressPercent = safePercent;
+        job.progressStage = progressStage;
+        job.progressDetail = progressDetail;
+        job.updatedAt = updatedAt;
+        return job;
+      });
+    }
+
+    const result = await this.pool.query(
+      `
+        UPDATE ${this.jobsTable}
+        SET
+          progress_percent = $2,
+          progress_stage = $3,
+          progress_detail = $4,
+          updated_at = $5
+        WHERE id = $1
+          AND status NOT IN ('completed', 'failed', 'cancelled')
+        RETURNING *
+      `,
+      [jobId, safePercent, progressStage, progressDetail, updatedAt]
     );
+    return mapJobRow(result.rows[0]);
+  }
+
+  async requestJobCancellation({ jobId, userId, requestedAt }) {
+    if (this.driver !== "postgres") {
+      return this.write((state) => {
+        const job = state.jobs.find((candidate) => candidate.id === jobId);
+        if (!job) {
+          return null;
+        }
+
+        if (job.status === "completed" || job.status === "failed" || job.status === "cancelled") {
+          return job;
+        }
+
+        job.cancelRequestedAt = requestedAt;
+        job.updatedAt = requestedAt;
+
+        if (job.status === "queued") {
+          job.status = "cancelled";
+          job.completedAt = requestedAt;
+          job.cancelledAt = requestedAt;
+          job.progressPercent = 100;
+          job.progressStage = "Cancelled";
+          job.progressDetail = "Cancelled before processing started.";
+          job.errorMessage = "Cancelled by user.";
+        } else {
+          job.status = "cancelling";
+          job.progressStage = "Cancelling";
+          job.progressDetail = "Waiting for the current scan step to finish.";
+        }
+
+        state.auditEvents.unshift({
+          id: `audit_${crypto.randomUUID()}`,
+          userId,
+          action: job.status === "cancelled" ? "scan.job.cancelled" : "scan.job.cancel_requested",
+          ipAddress: null,
+          userAgent: "",
+          metadata: {
+            jobId: job.id,
+            ownerUserId: job.userId,
+            status: job.status
+          },
+          createdAt: requestedAt
+        });
+
+        return job;
+      });
+    }
+
+    return this.#withTransaction(async (client) => {
+      const existing = await client.query(`SELECT * FROM ${this.jobsTable} WHERE id = $1 LIMIT 1 FOR UPDATE`, [jobId]);
+      const currentJob = mapJobRow(existing.rows[0]);
+      if (!currentJob) {
+        return null;
+      }
+
+      if (currentJob.status === "completed" || currentJob.status === "failed" || currentJob.status === "cancelled") {
+        return currentJob;
+      }
+
+      const shouldCancelImmediately = currentJob.status === "queued";
+      const shouldRecordAudit = currentJob.status !== "cancelling";
+      const updated = await client.query(
+        `
+          UPDATE ${this.jobsTable}
+          SET
+            status = $2,
+            updated_at = $3,
+            completed_at = CASE WHEN $2 = 'cancelled' THEN $3 ELSE completed_at END,
+            progress_percent = CASE WHEN $2 = 'cancelled' THEN 100 ELSE progress_percent END,
+            progress_stage = CASE WHEN $2 = 'cancelled' THEN 'Cancelled' ELSE 'Cancelling' END,
+            progress_detail = CASE WHEN $2 = 'cancelled' THEN 'Cancelled before processing started.' ELSE 'Waiting for the current scan step to finish.' END,
+            cancel_requested_at = COALESCE(cancel_requested_at, $3),
+            cancelled_at = CASE WHEN $2 = 'cancelled' THEN $3 ELSE cancelled_at END,
+            error_message = CASE WHEN $2 = 'cancelled' THEN 'Cancelled by user.' ELSE error_message END
+          WHERE id = $1
+          RETURNING *
+        `,
+        [jobId, shouldCancelImmediately ? "cancelled" : "cancelling", requestedAt]
+      );
+
+      const nextJob = mapJobRow(updated.rows[0]);
+
+      if (shouldRecordAudit) {
+        await client.query(
+          `
+            INSERT INTO ${this.auditEventsTable} (id, user_id, action, ip_address, user_agent, metadata, created_at)
+            VALUES ($1, $2, $3, NULL, '', $4::jsonb, $5)
+          `,
+          [
+            `audit_${crypto.randomUUID()}`,
+            userId,
+            shouldCancelImmediately ? "scan.job.cancelled" : "scan.job.cancel_requested",
+            JSON.stringify({
+              jobId,
+              ownerUserId: currentJob.userId,
+              status: nextJob?.status || (shouldCancelImmediately ? "cancelled" : "cancelling")
+            }),
+            requestedAt
+          ]
+        );
+      }
+
+      return nextJob;
+    });
+  }
+
+  async markJobCancelled({ jobId, userId, sourceType, targetUrl = null, cancelledAt, reason }) {
+    if (this.driver !== "postgres") {
+      return this.write((state) => {
+        const job = state.jobs.find((candidate) => candidate.id === jobId);
+        if (!job) {
+          return null;
+        }
+
+        if (job.status === "cancelled") {
+          return job;
+        }
+
+        job.status = "cancelled";
+        job.sourceType = normalizeSourceType(sourceType);
+        job.targetUrl = sourceType === "url" || sourceType === "website" ? targetUrl : null;
+        job.updatedAt = cancelledAt;
+        job.completedAt = cancelledAt;
+        job.cancelRequestedAt = job.cancelRequestedAt || cancelledAt;
+        job.cancelledAt = cancelledAt;
+        job.progressPercent = 100;
+        job.progressStage = "Cancelled";
+        job.progressDetail = reason;
+        job.errorMessage = "Cancelled by user.";
+
+        state.auditEvents.unshift({
+          id: `audit_${crypto.randomUUID()}`,
+          userId,
+          action: "scan.job.cancelled",
+          ipAddress: null,
+          userAgent: "",
+          metadata: {
+            jobId,
+            sourceType,
+            targetUrl: sourceType === "url" || sourceType === "website" ? targetUrl : null,
+            reason
+          },
+          createdAt: cancelledAt
+        });
+
+        return job;
+      });
+    }
+
+    return this.#withTransaction(async (client) => {
+      const existing = await client.query(`SELECT * FROM ${this.jobsTable} WHERE id = $1 LIMIT 1 FOR UPDATE`, [jobId]);
+      const currentJob = mapJobRow(existing.rows[0]);
+      if (!currentJob) {
+        return null;
+      }
+
+      if (currentJob.status === "cancelled") {
+        return currentJob;
+      }
+
+      if (currentJob.status === "completed" || currentJob.status === "failed") {
+        return currentJob;
+      }
+
+      const updated = await client.query(
+        `
+          UPDATE ${this.jobsTable}
+          SET
+            status = 'cancelled',
+            source_type = $2,
+            target_url = $3,
+            updated_at = $4,
+            completed_at = $4,
+            cancel_requested_at = COALESCE(cancel_requested_at, $4),
+            cancelled_at = $4,
+            progress_percent = 100,
+            progress_stage = 'Cancelled',
+            progress_detail = $5,
+            error_message = 'Cancelled by user.'
+          WHERE id = $1
+          RETURNING *
+        `,
+        [jobId, normalizeSourceType(sourceType), sourceType === "url" || sourceType === "website" ? targetUrl : null, cancelledAt, reason]
+      );
+
+      await client.query(
+        `
+          INSERT INTO ${this.auditEventsTable} (id, user_id, action, ip_address, user_agent, metadata, created_at)
+          VALUES ($1, $2, 'scan.job.cancelled', NULL, '', $3::jsonb, $4)
+        `,
+        [
+          `audit_${crypto.randomUUID()}`,
+          userId,
+          JSON.stringify({
+            jobId,
+            sourceType: normalizeSourceType(sourceType),
+            targetUrl: sourceType === "url" || sourceType === "website" ? targetUrl : null,
+            reason
+          }),
+          cancelledAt
+        ]
+      );
+
+      return mapJobRow(updated.rows[0]);
+    });
   }
 
   async getHistoricalHashIntel(sha256) {
@@ -3018,11 +3395,18 @@ export class PersistentStore {
           return null;
         }
 
+        if (job.status === "cancelling" || job.status === "cancelled") {
+          return null;
+        }
+
         state.reports.unshift(report);
         job.status = "completed";
         job.reportId = report.id;
         job.completedAt = completedAt;
         job.updatedAt = completedAt;
+        job.progressPercent = 100;
+        job.progressStage = "Completed";
+        job.progressDetail = "Report ready.";
         job.errorMessage = null;
         job.sourceType = normalizeSourceType(sourceType);
         job.targetUrl = sourceType === "url" || sourceType === "website" ? targetUrl : null;
@@ -3049,8 +3433,13 @@ export class PersistentStore {
     }
 
     return this.#withTransaction(async (client) => {
-      const jobResult = await client.query(`SELECT id FROM ${this.jobsTable} WHERE id = $1 LIMIT 1 FOR UPDATE`, [jobId]);
-      if (jobResult.rowCount === 0) {
+      const jobResult = await client.query(`SELECT * FROM ${this.jobsTable} WHERE id = $1 LIMIT 1 FOR UPDATE`, [jobId]);
+      const currentJob = mapJobRow(jobResult.rows[0]);
+      if (!currentJob) {
+        return null;
+      }
+
+      if (currentJob.status === "cancelling" || currentJob.status === "cancelled") {
         return null;
       }
 
@@ -3104,6 +3493,9 @@ export class PersistentStore {
             report_id = $2,
             completed_at = $3,
             updated_at = $3,
+            progress_percent = 100,
+            progress_stage = 'Completed',
+            progress_detail = 'Report ready.',
             error_message = NULL,
             source_type = $4,
             target_url = $5
@@ -3233,9 +3625,16 @@ export class PersistentStore {
           return;
         }
 
+        if (job.status === "cancelled" || job.status === "cancelling") {
+          return;
+        }
+
         job.status = "failed";
         job.completedAt = failedAt;
         job.updatedAt = failedAt;
+        job.progressPercent = 100;
+        job.progressStage = "Failed";
+        job.progressDetail = errorMessage;
         job.errorMessage = errorMessage;
         state.auditEvents.unshift({
           id: `audit_${crypto.randomUUID()}`,
@@ -3256,10 +3655,23 @@ export class PersistentStore {
     }
 
     await this.#withTransaction(async (client) => {
+      const existing = await client.query(`SELECT status FROM ${this.jobsTable} WHERE id = $1 LIMIT 1 FOR UPDATE`, [jobId]);
+      const currentStatus = existing.rows[0]?.status || null;
+      if (!currentStatus || currentStatus === "cancelled" || currentStatus === "cancelling") {
+        return;
+      }
+
       await client.query(
         `
           UPDATE ${this.jobsTable}
-          SET status = 'failed', completed_at = $2, updated_at = $2, error_message = $3
+          SET
+            status = 'failed',
+            completed_at = $2,
+            updated_at = $2,
+            progress_percent = 100,
+            progress_stage = 'Failed',
+            progress_detail = $3,
+            error_message = $3
           WHERE id = $1
         `,
         [jobId, failedAt, errorMessage]
@@ -3549,7 +3961,7 @@ export class PersistentStore {
           SELECT
             COUNT(*)::int AS total_jobs,
             COUNT(*) FILTER (WHERE status = 'queued')::int AS queued_jobs,
-            COUNT(*) FILTER (WHERE status = 'processing')::int AS processing_jobs,
+            COUNT(*) FILTER (WHERE status IN ('processing', 'cancelling'))::int AS processing_jobs,
             COUNT(*) FILTER (WHERE status = 'completed')::int AS completed_jobs,
             COUNT(*) FILTER (WHERE status = 'failed')::int AS failed_jobs
           FROM ${this.jobsTable}

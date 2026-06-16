@@ -160,7 +160,7 @@ export default function DashboardShell({
   newApiKeyName,
   newApiKeyScopes,
   isCreatingKey,
-  isManagingMonitor,
+  isCreatingMonitor,
   isManagingWebhook,
   isStartingTrial,
   setNewApiKeyName,
@@ -175,6 +175,7 @@ export default function DashboardShell({
   onResolveUrlScanTargets,
   onSubmitUrlScans,
   onSubmitWebsiteSafetyScan,
+  onCancelJob,
   onClearSelectedFiles,
   onOpenReport,
   onDownloadReportPdf,
@@ -190,6 +191,7 @@ export default function DashboardShell({
   onStartWorkspaceTrial,
   onCreateMonitor,
   onRunMonitor,
+  onUpdateMonitorStatus,
   onDeleteMonitor,
   onCreateWebhook,
   onTestWebhook,
@@ -386,6 +388,7 @@ export default function DashboardShell({
                       onResolveUrlScanTargets={onResolveUrlScanTargets}
                       onSubmitUrlScans={onSubmitUrlScans}
                       onClearSelectedFiles={onClearSelectedFiles}
+                      onCancelJob={onCancelJob}
                       jobs={jobs}
                       reports={reports}
                       activeJob={activeJob}
@@ -422,6 +425,7 @@ export default function DashboardShell({
                       onResolveUrlScanTargets={onResolveUrlScanTargets}
                       onSubmitUrlScans={onSubmitUrlScans}
                       onClearSelectedFiles={onClearSelectedFiles}
+                      onCancelJob={onCancelJob}
                       jobs={jobs}
                       activeJob={activeJob}
                       onOpenReportWorkspace={openReportWorkspace}
@@ -439,6 +443,7 @@ export default function DashboardShell({
                       activeReport={activeReport}
                       isSubmittingScan={isSubmittingScan}
                       onSubmitWebsiteSafetyScan={onSubmitWebsiteSafetyScan}
+                      onCancelJob={onCancelJob}
                       onOpenReport={onOpenReport}
                       onDownloadReportPdf={onDownloadReportPdf}
                       formatDateTime={formatDateTime}
@@ -450,9 +455,10 @@ export default function DashboardShell({
                     <MonitoringView
                       monitors={monitors}
                       workspaceSummary={workspaceSummary}
-                      isManagingMonitor={isManagingMonitor}
+                      isCreatingMonitor={isCreatingMonitor}
                       onCreateMonitor={onCreateMonitor}
                       onRunMonitor={onRunMonitor}
+                      onUpdateMonitorStatus={onUpdateMonitorStatus}
                       onDeleteMonitor={onDeleteMonitor}
                       formatDateTime={formatDateTime}
                     />

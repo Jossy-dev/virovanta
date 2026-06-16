@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { triggerBlobDownload } from "./appUtils";
+import { parseErrorMessage, selectHighlightedJob, triggerBlobDownload } from "./appUtils";
 
 describe("triggerBlobDownload", () => {
   it("keeps the object URL alive until after the browser click has been handed off", async () => {
@@ -39,5 +39,56 @@ describe("triggerBlobDownload", () => {
 
     expect(anchor.remove).toHaveBeenCalledTimes(1);
     expect(urlApi.revokeObjectURL).toHaveBeenCalledWith("blob:test-pdf");
+  });
+});
+
+describe("parseErrorMessage", () => {
+  it("prefers field-level validation details over the generic payload error message", () => {
+    const message = parseErrorMessage(
+      {
+        error: {
+          code: "VALIDATION_ERROR",
+          message: "Invalid request payload.",
+          details: [{ path: "name", message: "Required" }]
+        }
+      },
+      "Request failed"
+    );
+
+    expect(message).toBe("Name is required.");
+  });
+
+  it("formats non-required validation messages with the field label", () => {
+    const message = parseErrorMessage(
+      {
+        error: {
+          code: "VALIDATION_ERROR",
+          message: "Invalid request payload.",
+          details: [{ path: "targetType", message: "Invalid enum value. Expected 'url' | 'website'" }]
+        }
+      },
+      "Request failed"
+    );
+
+    expect(message).toBe("Target Type: Invalid enum value. Expected 'url' | 'website'");
+  });
+});
+
+describe("selectHighlightedJob", () => {
+  it("keeps a pending active job highlighted when the jobs list has not caught up yet", () => {
+    const activeJob = {
+      id: "job_new_1",
+      status: "queued",
+      sourceType: "website"
+    };
+    const olderJob = {
+      id: "job_old_1",
+      status: "completed",
+      sourceType: "url"
+    };
+
+    const highlighted = selectHighlightedJob([olderJob], activeJob);
+
+    expect(highlighted).toEqual(activeJob);
   });
 });

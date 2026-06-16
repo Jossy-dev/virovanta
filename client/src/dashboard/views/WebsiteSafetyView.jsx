@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Download, Globe2, ShieldCheck, ShieldX, TerminalSquare } from "lucide-react";
+import Button from "../../ui/Button";
+import { JobProgressBar } from "../components/JobProgressBar";
 import { WidgetCard } from "../components/WidgetCard";
 import { filterCollection } from "../dashboardUtils";
 import { SkeletonBlock } from "../../ui/Skeleton";
@@ -7,7 +9,7 @@ import ButtonSpinner from "../../ui/ButtonSpinner";
 
 const REPORTS_PAGE_SIZE = 12;
 const MAX_INDICATOR_ROWS = 28;
-const PENDING_JOB_STATES = new Set(["queued", "processing"]);
+const PENDING_JOB_STATES = new Set(["queued", "processing", "cancelling"]);
 
 function normalizePendingJob(job, fallbackTarget = "") {
   if (!job?.id) {
@@ -19,12 +21,21 @@ function normalizePendingJob(job, fallbackTarget = "") {
     id: job.id,
     reportId: job.reportId || null,
     status: status || "queued",
+    progressPercent: Number(job.progressPercent) || 0,
+    progressStage: job.progressStage || null,
+    progressDetail: job.progressDetail || null,
+    cancelRequestedAt: job.cancelRequestedAt || null,
+    cancelledAt: job.cancelledAt || null,
     targetUrl: String(job.targetUrl || job.originalName || fallbackTarget || "").trim(),
     createdAt: job.createdAt || new Date().toISOString()
   };
 }
 
 function pendingStatusLabel(status) {
+  if (status === "cancelling") {
+    return "Cancelling";
+  }
+
   if (status === "processing") {
     return "Processing";
   }
@@ -316,6 +327,7 @@ export function WebsiteSafetyView({
   activeReport,
   isSubmittingScan,
   onSubmitWebsiteSafetyScan = async () => {},
+  onCancelJob = async () => {},
   onOpenReport = async () => {},
   onDownloadReportPdf = async () => {},
   formatDateTime,
@@ -621,7 +633,20 @@ export function WebsiteSafetyView({
                           </span>
                         </div>
                         <p className="mt-1 text-xs text-slate-500 dark:text-slate-300">{formatDateTime(pendingJob.createdAt)}</p>
-                        <p className="mt-2 text-xs text-slate-500 dark:text-slate-400">Running checks in background. Report will appear here when ready.</p>
+                        <JobProgressBar job={pendingJob} className="mt-3" />
+                        <div className="mt-3 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                          <p className="text-xs text-slate-500 dark:text-slate-400">Running checks in background. Report will appear here when ready.</p>
+                          <Button
+                            type="button"
+                            variant="secondary"
+                            size="sm"
+                            className="w-full justify-center sm:w-auto"
+                            onClick={() => onCancelJob(pendingJob.id)}
+                            disabled={pendingJob.status === "cancelling"}
+                          >
+                            {pendingJob.status === "cancelling" ? "Cancelling..." : "Cancel"}
+                          </Button>
+                        </div>
                       </div>
                     );
                   }

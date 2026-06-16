@@ -1194,7 +1194,7 @@ describe("App", () => {
       expect(screen.queryByRole("heading", { name: /website safety jobs/i })).not.toBeInTheDocument();
       expect(screen.getByRole("heading", { name: /website safety reports/i })).toBeInTheDocument();
       expect(screen.getByText(/https:\/\/pending\.virovanta\.test/i)).toBeInTheDocument();
-      expect(screen.getByText(/^processing$/i)).toBeInTheDocument();
+      expect(screen.getAllByText(/^processing$/i).length).toBeGreaterThan(0);
     } finally {
       restoreMatchMedia();
     }

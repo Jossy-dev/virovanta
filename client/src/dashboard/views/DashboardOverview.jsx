@@ -16,6 +16,7 @@ export function DashboardOverview({
   onResolveUrlScanTargets,
   onSubmitUrlScans,
   onClearSelectedFiles,
+  onCancelJob,
   jobs,
   reports,
   activeJob,
@@ -28,7 +29,7 @@ export function DashboardOverview({
   onCreateProject,
   onOpenReports
 }) {
-  const queuedJobs = Number(analytics?.summary?.activeJobs) || jobs.filter((job) => job.status === "queued" || job.status === "processing").length;
+  const queuedJobs = Number(analytics?.summary?.activeJobs) || jobs.filter((job) => job.status === "queued" || job.status === "processing" || job.status === "cancelling").length;
   const completedReports = Number(analytics?.summary?.totalReports) || reports.length;
   const flaggedReports = Number(analytics?.summary?.flaggedReports) || reports.filter((report) => report.verdict !== "clean").length;
   const activeMonitors = Number(workspaceSummary?.usage?.monitorsActive) || 0;
@@ -145,6 +146,7 @@ export function DashboardOverview({
         onResolveUrlScanTargets={onResolveUrlScanTargets}
         onSubmitUrlScans={onSubmitUrlScans}
         onClearSelectedFiles={onClearSelectedFiles}
+        onCancelJob={onCancelJob}
         jobs={jobs}
         activeJob={activeJob}
         onOpenReportWorkspace={onOpenReportWorkspace}

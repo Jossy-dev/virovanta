@@ -29,6 +29,7 @@ import {
   getDisplayFileType,
   getRiskMeta,
   getThemePalette,
+  isTerminalJob,
   parseErrorMessage,
   pluralize,
   readResetFlowState,
@@ -638,7 +639,7 @@ function AppContent() {
   const [isDeletingReport, setIsDeletingReport] = useState(false);
   const [isUpdatingReportWorkflow, setIsUpdatingReportWorkflow] = useState(false);
   const [isPostingReportComment, setIsPostingReportComment] = useState(false);
-  const [isManagingMonitor, setIsManagingMonitor] = useState(false);
+  const [isCreatingMonitor, setIsCreatingMonitor] = useState(false);
   const [isManagingWebhook, setIsManagingWebhook] = useState(false);
   const [isStartingTrial, setIsStartingTrial] = useState(false);
   const [shareCopied, setShareCopied] = useState(false);
@@ -811,7 +812,7 @@ function AppContent() {
     setApiKeys(normalized.apiKeys);
     setAnalytics(normalized.analytics);
     setActiveReport(normalized.activeReport);
-    setActiveJob((current) => selectHighlightedJob(normalized.jobs, current?.id || ""));
+    setActiveJob((current) => selectHighlightedJob(normalized.jobs, current));
   }
 
   function updateDashboardCache(activeSession, patch = {}) {
@@ -1259,7 +1260,7 @@ function AppContent() {
   }, [session?.accessToken]);
 
   useEffect(() => {
-    if (!session || !activeJobId || activeJobStatus === "completed" || activeJobStatus === "failed") {
+    if (!session || !activeJobId || isTerminalJob({ status: activeJobStatus })) {
       return;
     }
 
@@ -1273,6 +1274,7 @@ function AppContent() {
         const statusChanged = nextJob?.status !== activeJobStatus;
 
         setActiveJob(nextJob);
+        setJobs((current) => current.map((job) => (job.id === activeJobId ? { ...job, ...nextJob } : job)));
 
         if (statusChanged) {
           await Promise.all([refreshJobs(session), refreshAnalytics(session)]);
@@ -1281,7 +1283,7 @@ function AppContent() {
         if (nextJob?.status === "completed" && nextJob.reportId) {
           await openReport(nextJob.reportId, session);
           await Promise.all([refreshReports(session), refreshNotifications(session), refreshAnalytics(session)]);
-        } else if (nextJob?.status === "failed") {
+        } else if (nextJob?.status === "failed" || nextJob?.status === "cancelled") {
           await Promise.all([refreshNotifications(session), refreshAnalytics(session)]);
         }
       } catch (error) {
@@ -1566,7 +1568,7 @@ function AppContent() {
     const payload = await apiRequest("/api/scans/jobs?limit=12", { authSession: activeSession });
     const nextJobs = Array.isArray(payload?.jobs) ? payload.jobs : [];
     setJobs(nextJobs);
-    setActiveJob((current) => selectHighlightedJob(nextJobs, current?.id || ""));
+    setActiveJob((current) => selectHighlightedJob(nextJobs, current));
     updateDashboardCache(activeSession, { jobs: nextJobs });
   }
 
@@ -2105,6 +2107,32 @@ function AppContent() {
     }
   }
 
+  async function cancelScanJob(jobId) {
+    if (!session || !jobId) {
+      return null;
+    }
+
+    try {
+      const payload = await apiRequest(`/api/scans/jobs/${jobId}/cancel`, {
+        method: "POST",
+        authSession: session
+      });
+      const nextJob = payload?.job || null;
+
+      if (nextJob) {
+        setActiveJob((current) => (current?.id === jobId ? nextJob : current));
+        setJobs((current) => current.map((job) => (job.id === jobId ? { ...job, ...nextJob } : job)));
+      }
+
+      await Promise.all([refreshJobs(session), refreshNotifications(session), refreshAnalytics(session)]);
+      toast.success(nextJob?.status === "cancelled" ? "Scan cancelled." : "Cancellation requested.");
+      return nextJob;
+    } catch (error) {
+      toast.error(error.message || "Could not cancel scan job.");
+      throw error;
+    }
+  }
+
   async function createApiKey(requestInput = null) {
     if (!session || isCreatingKey) {
       return;
@@ -2536,11 +2564,11 @@ function AppContent() {
   }
 
   async function createMonitor(input) {
-    if (!session || isManagingMonitor) {
+    if (!session || isCreatingMonitor) {
       return;
     }
 
-    setIsManagingMonitor(true);
+    setIsCreatingMonitor(true);
 
     try {
       await apiRequest("/api/workspace/monitors", {
@@ -2554,7 +2582,7 @@ function AppContent() {
       toast.error(error.message || "Could not create monitor.");
       throw error;
     } finally {
-      setIsManagingMonitor(false);
+      setIsCreatingMonitor(false);
     }
   }
 
@@ -2572,7 +2600,13 @@ function AppContent() {
       if (payload?.job) {
         setActiveJob(payload.job);
       }
-      await Promise.all([refreshJobs(session), refreshNotifications(session), refreshAnalytics(session), refreshAuditEvents(session)]);
+      await Promise.all([
+        refreshJobs(session),
+        refreshMonitors(session),
+        refreshNotifications(session),
+        refreshAnalytics(session),
+        refreshAuditEvents(session)
+      ]);
       toast.success("Monitor run queued.");
     } catch (error) {
       toast.error(error.message || "Could not queue monitor run.");
@@ -2581,11 +2615,9 @@ function AppContent() {
   }
 
   async function deleteMonitor(monitorId) {
-    if (!session || !monitorId || isManagingMonitor) {
+    if (!session || !monitorId) {
       return;
     }
-
-    setIsManagingMonitor(true);
 
     try {
       await apiRequest(`/api/workspace/monitors/${encodeURIComponent(monitorId)}`, {
@@ -2597,8 +2629,25 @@ function AppContent() {
     } catch (error) {
       toast.error(error.message || "Could not delete monitor.");
       throw error;
-    } finally {
-      setIsManagingMonitor(false);
+    }
+  }
+
+  async function updateMonitorStatus(monitorId, status) {
+    if (!session || !monitorId || !status) {
+      return;
+    }
+
+    try {
+      await apiRequest(`/api/workspace/monitors/${encodeURIComponent(monitorId)}`, {
+        method: "PATCH",
+        body: { status },
+        authSession: session
+      });
+      await Promise.all([refreshMonitors(session), refreshWorkspaceSummary(session), refreshNotifications(session), refreshAuditEvents(session)]);
+      toast.success(status === "paused" ? "Monitor paused." : "Monitor resumed.");
+    } catch (error) {
+      toast.error(error.message || "Could not update monitor.");
+      throw error;
     }
   }
 
@@ -2844,7 +2893,7 @@ function AppContent() {
                       newApiKeyName={newApiKeyName}
                       newApiKeyScopes={newApiKeyScopes}
                       isCreatingKey={isCreatingKey}
-                      isManagingMonitor={isManagingMonitor}
+                      isCreatingMonitor={isCreatingMonitor}
                       isManagingWebhook={isManagingWebhook}
                       isStartingTrial={isStartingTrial}
                       setNewApiKeyName={setNewApiKeyName}
@@ -2860,6 +2909,7 @@ function AppContent() {
                       onResolveUrlScanTargets={resolveUrlScanTargets}
                       onSubmitUrlScans={submitUrlScans}
                       onSubmitWebsiteSafetyScan={submitWebsiteSafetyScan}
+                      onCancelJob={cancelScanJob}
                       onClearSelectedFiles={clearSelectedFiles}
                       onOpenReport={openReport}
                       onDownloadReportPdf={downloadReportPdf}
@@ -2875,6 +2925,7 @@ function AppContent() {
                       onStartWorkspaceTrial={startWorkspaceTrial}
                       onCreateMonitor={createMonitor}
                       onRunMonitor={runMonitorNow}
+                      onUpdateMonitorStatus={updateMonitorStatus}
                       onDeleteMonitor={deleteMonitor}
                       onCreateWebhook={createWebhook}
                       onTestWebhook={testWebhook}

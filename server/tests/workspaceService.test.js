@@ -75,4 +75,86 @@ describe("WorkspaceService", () => {
       monitors: []
     });
   });
+
+  it("pauses a monitor without scheduling another automatic run", async () => {
+    const store = {
+      findMonitorById: vi.fn(async () => ({
+        id: "monitor_1",
+        userId: "usr_1",
+        cadenceHours: 24,
+        status: "active",
+        deletedAt: null
+      })),
+      updateMonitorStatus: vi.fn(async (input) => ({
+        id: input.monitorId,
+        userId: input.userId,
+        cadenceHours: 24,
+        status: input.status,
+        nextCheckAt: input.nextCheckAt,
+        deletedAt: null
+      }))
+    };
+    const workspaceService = new WorkspaceService({
+      store,
+      config: {},
+      logger: {
+        warn: vi.fn()
+      }
+    });
+
+    const monitor = await workspaceService.updateMonitorStatus("usr_1", "monitor_1", "paused");
+
+    expect(store.updateMonitorStatus).toHaveBeenCalledWith(
+      expect.objectContaining({
+        userId: "usr_1",
+        monitorId: "monitor_1",
+        status: "paused",
+        nextCheckAt: null
+      })
+    );
+    expect(monitor.status).toBe("paused");
+    expect(monitor.nextCheckAt).toBeNull();
+  });
+
+  it("resumes a paused monitor with a fresh next check time", async () => {
+    const store = {
+      findMonitorById: vi.fn(async () => ({
+        id: "monitor_1",
+        userId: "usr_1",
+        cadenceHours: 12,
+        status: "paused",
+        deletedAt: null
+      })),
+      updateMonitorStatus: vi.fn(async (input) => ({
+        id: input.monitorId,
+        userId: input.userId,
+        cadenceHours: 12,
+        status: input.status,
+        nextCheckAt: input.nextCheckAt,
+        deletedAt: null
+      }))
+    };
+    const workspaceService = new WorkspaceService({
+      store,
+      config: {},
+      logger: {
+        warn: vi.fn()
+      }
+    });
+
+    const beforeResumeMs = Date.now();
+    const monitor = await workspaceService.updateMonitorStatus("usr_1", "monitor_1", "active");
+    const resumedNextCheckMs = Date.parse(monitor.nextCheckAt);
+
+    expect(store.updateMonitorStatus).toHaveBeenCalledWith(
+      expect.objectContaining({
+        userId: "usr_1",
+        monitorId: "monitor_1",
+        status: "active"
+      })
+    );
+    expect(Number.isFinite(resumedNextCheckMs)).toBe(true);
+    expect(resumedNextCheckMs).toBeGreaterThan(beforeResumeMs);
+    expect(monitor.status).toBe("active");
+  });
 });

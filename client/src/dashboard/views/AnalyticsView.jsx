@@ -105,6 +105,30 @@ function normalizeVerdictLabel(value) {
   return "";
 }
 
+function getQueueOutcomeDescription(label) {
+  const normalized = String(label || "")
+    .trim()
+    .toLowerCase();
+
+  if (normalized === "queued") {
+    return "Accepted and waiting for an available worker.";
+  }
+
+  if (normalized === "processing") {
+    return "Actively scanning or finishing an in-flight check.";
+  }
+
+  if (normalized === "completed") {
+    return "Finished successfully and saved as a report.";
+  }
+
+  if (normalized === "failed") {
+    return "Stopped before a report could be completed.";
+  }
+
+  return "Recorded queue state.";
+}
+
 export function AnalyticsView({ analytics, formatDateTime, themePalette, onSelectPosture = () => {} }) {
   const comparisonWindowDays = Number(analytics?.comparisonWindowDays) || 30;
   const summary = analytics?.summary || {};
@@ -250,25 +274,49 @@ export function AnalyticsView({ analytics, formatDateTime, themePalette, onSelec
           {queueTotal === 0 ? (
             <ChartEmptyState message="No authenticated scan jobs have been recorded yet." />
           ) : (
-            <div className="h-[280px] sm:h-[320px]">
-              <ResponsiveContainer width="100%" height="100%" minWidth={280} minHeight={280}>
-                <PieChart>
-                  <Pie
-                    data={analytics.queueBreakdown}
-                    dataKey="value"
-                    nameKey="label"
-                    innerRadius={72}
-                    outerRadius={110}
-                    paddingAngle={4}
-                    stroke="none"
+            <div className="space-y-4">
+              <div className="h-[280px] sm:h-[320px]">
+                <ResponsiveContainer width="100%" height="100%" minWidth={280} minHeight={280}>
+                  <PieChart>
+                    <Pie
+                      data={analytics.queueBreakdown}
+                      dataKey="value"
+                      nameKey="label"
+                      innerRadius={72}
+                      outerRadius={110}
+                      paddingAngle={4}
+                      stroke="none"
+                    >
+                      {analytics.queueBreakdown.map((entry, index) => (
+                        <Cell key={entry.label} fill={themePalette.pie[index % themePalette.pie.length]} />
+                      ))}
+                    </Pie>
+                    <Tooltip content={<ChartTooltip />} />
+                  </PieChart>
+                </ResponsiveContainer>
+              </div>
+
+              <div className="grid gap-3 sm:grid-cols-2">
+                {analytics.queueBreakdown.map((entry, index) => (
+                  <div
+                    key={entry.label}
+                    className="rounded-2xl border border-slate-200/80 bg-white/80 px-4 py-3 dark:border-slate-800/80 dark:bg-slate-950/60"
                   >
-                    {analytics.queueBreakdown.map((entry, index) => (
-                      <Cell key={entry.label} fill={themePalette.pie[index % themePalette.pie.length]} />
-                    ))}
-                  </Pie>
-                  <Tooltip content={<ChartTooltip />} />
-                </PieChart>
-              </ResponsiveContainer>
+                    <div className="flex items-center gap-3">
+                      <span
+                        className="inline-flex h-3 w-3 shrink-0 rounded-full"
+                        style={{ backgroundColor: themePalette.pie[index % themePalette.pie.length] }}
+                        aria-hidden="true"
+                      />
+                      <span className="text-sm font-semibold text-slate-950 dark:text-white">{entry.label}</span>
+                      <span className="ml-auto text-sm font-medium text-slate-500 dark:text-slate-400">{entry.value}</span>
+                    </div>
+                    <p className="mt-2 text-xs leading-6 text-slate-500 dark:text-slate-400">
+                      {getQueueOutcomeDescription(entry.label)}
+                    </p>
+                  </div>
+                ))}
+              </div>
             </div>
           )}
         </ChartCard>

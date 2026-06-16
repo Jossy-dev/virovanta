@@ -282,7 +282,12 @@ async function registerAndGetToken(app, email = "user@example.com", password = "
 }
 
 async function waitForJobCompletion(app, token, jobId, timeoutMs = 5000) {
+  return waitForJobStatus(app, token, jobId, ["completed", "failed", "cancelled"], timeoutMs);
+}
+
+async function waitForJobStatus(app, token, jobId, statuses, timeoutMs = 5000) {
   const deadline = Date.now() + timeoutMs;
+  const expectedStatuses = Array.isArray(statuses) ? statuses : [statuses];
 
   while (Date.now() < deadline) {
     const response = await request(app)
@@ -291,14 +296,14 @@ async function waitForJobCompletion(app, token, jobId, timeoutMs = 5000) {
 
     expect(response.status).toBe(200);
 
-    if (response.body.job.status === "completed" || response.body.job.status === "failed") {
+    if (expectedStatuses.includes(response.body.job.status)) {
       return response.body.job;
     }
 
     await new Promise((resolve) => setTimeout(resolve, 40));
   }
 
-  throw new Error(`Job ${jobId} did not complete within timeout`);
+  throw new Error(`Job ${jobId} did not reach ${expectedStatuses.join(", ")} within timeout`);
 }
 
 async function waitForNotification(app, token, matcher, timeoutMs = 5000) {
@@ -391,6 +396,20 @@ describe("ViroVanta API", () => {
     expect(apiPing.status).toBe(200);
     expect(apiPing.text).toBe("pong");
     expect(apiPing.headers["content-type"]).toContain("text/plain");
+  });
+
+  it("allows PATCH monitor requests through CORS preflight", async () => {
+    const app = await setupTestApp();
+
+    const preflight = await request(app)
+      .options("/api/workspace/monitors/monitor_1")
+      .set("Origin", "http://localhost:5173")
+      .set("Access-Control-Request-Method", "PATCH")
+      .set("Access-Control-Request-Headers", "content-type,authorization");
+
+    expect(preflight.status).toBe(204);
+    expect(preflight.headers["access-control-allow-origin"]).toBe("http://localhost:5173");
+    expect(preflight.headers["access-control-allow-methods"]).toContain("PATCH");
   });
 
   it("does not count ping traffic against the global request limiter", async () => {
@@ -678,6 +697,218 @@ describe("ViroVanta API", () => {
     expect(submit.body.jobs).toHaveLength(2);
     expect(submit.body.jobs[0].sourceType).toBe("url");
     expect(submit.body.jobs[1].targetUrl).toBe("https://support-check.example.net/portal");
+  });
+
+  it("cancels a queued job before the worker reaches it", async () => {
+    let releaseFirstScan = null;
+    let firstScanStarted = false;
+    const urlScanner = async ({ url }) => {
+      const parsed = new URL(String(url || "https://example.com"));
+      if (!firstScanStarted) {
+        firstScanStarted = true;
+        await new Promise((resolve) => {
+          releaseFirstScan = resolve;
+        });
+      }
+
+      return {
+        id: `scan_${Math.random().toString(36).slice(2, 10)}`,
+        createdAt: new Date().toISOString(),
+        completedAt: new Date().toISOString(),
+        sourceType: "url",
+        verdict: "clean",
+        riskScore: 5,
+        file: {
+          originalName: parsed.toString(),
+          extension: "(url)",
+          size: 512,
+          sizeDisplay: "512 B",
+          declaredMimeType: "text/url",
+          detectedMimeType: "text/html",
+          detectedFileType: "url",
+          magicType: "URL target",
+          entropy: 0,
+          printableRatio: 1,
+          hashes: {
+            md5: crypto.createHash("md5").update(parsed.toString()).digest("hex"),
+            sha1: crypto.createHash("sha1").update(parsed.toString()).digest("hex"),
+            sha256: crypto.createHash("sha256").update(parsed.toString()).digest("hex")
+          }
+        },
+        findings: [],
+        engines: {
+          heuristics: {
+            status: "completed",
+            matchedRules: [],
+            findingCount: 0
+          },
+          urlFetch: {
+            status: "ok",
+            detail: "URL fetched successfully.",
+            statusCode: 200,
+            finalUrl: parsed.toString(),
+            redirects: [],
+            truncated: false
+          },
+          ssrfGuard: {
+            status: "passed",
+            blockedReason: null,
+            resolvedAddresses: []
+          }
+        },
+        recommendations: ["No high-risk indicators detected from this first-pass URL scan."],
+        url: {
+          input: parsed.toString(),
+          normalized: parsed.toString(),
+          final: parsed.toString(),
+          protocol: parsed.protocol.replace(/:$/, ""),
+          hostname: parsed.hostname,
+          statusCode: 200,
+          contentType: "text/html",
+          title: "Example",
+          redirects: [],
+          resolvedAddresses: [],
+          truncated: false
+        }
+      };
+    };
+
+    const app = await setupTestApp({
+      urlScanner,
+      configOverrides: {
+        scanWorkerConcurrency: 1
+      }
+    });
+    const session = await registerAndGetToken(app, "queue-cancel@example.com");
+
+    const firstSubmit = await request(app)
+      .post("/api/scans/links/jobs")
+      .set("Authorization", `Bearer ${session.accessToken}`)
+      .send({ url: "https://example.com/one" });
+
+    const secondSubmit = await request(app)
+      .post("/api/scans/links/jobs")
+      .set("Authorization", `Bearer ${session.accessToken}`)
+      .send({ url: "https://example.com/two" });
+
+    expect(firstSubmit.status).toBe(202);
+    expect(secondSubmit.status).toBe(202);
+
+    await waitForJobStatus(app, session.accessToken, firstSubmit.body.job.id, "processing");
+    await waitForJobStatus(app, session.accessToken, secondSubmit.body.job.id, "queued");
+
+    const cancelResponse = await request(app)
+      .post(`/api/scans/jobs/${secondSubmit.body.job.id}/cancel`)
+      .set("Authorization", `Bearer ${session.accessToken}`);
+
+    expect(cancelResponse.status).toBe(200);
+    expect(cancelResponse.body.job.status).toBe("cancelled");
+    expect(cancelResponse.body.job.progressPercent).toBe(100);
+
+    const cancelledJob = await waitForJobStatus(app, session.accessToken, secondSubmit.body.job.id, "cancelled");
+    expect(cancelledJob.progressStage).toBe("Cancelled");
+
+    releaseFirstScan?.();
+    const firstFinished = await waitForJobCompletion(app, session.accessToken, firstSubmit.body.job.id);
+    expect(firstFinished.status).toBe("completed");
+  });
+
+  it("marks an in-flight job as cancelling and finalizes it as cancelled", async () => {
+    let releaseScan = null;
+    const urlScanner = async ({ url }) => {
+      const parsed = new URL(String(url || "https://example.com"));
+
+      await new Promise((resolve) => {
+        releaseScan = resolve;
+      });
+
+      return {
+        id: `scan_${Math.random().toString(36).slice(2, 10)}`,
+        createdAt: new Date().toISOString(),
+        completedAt: new Date().toISOString(),
+        sourceType: "url",
+        verdict: "clean",
+        riskScore: 5,
+        file: {
+          originalName: parsed.toString(),
+          extension: "(url)",
+          size: 512,
+          sizeDisplay: "512 B",
+          declaredMimeType: "text/url",
+          detectedMimeType: "text/html",
+          detectedFileType: "url",
+          magicType: "URL target",
+          entropy: 0,
+          printableRatio: 1,
+          hashes: {
+            md5: crypto.createHash("md5").update(parsed.toString()).digest("hex"),
+            sha1: crypto.createHash("sha1").update(parsed.toString()).digest("hex"),
+            sha256: crypto.createHash("sha256").update(parsed.toString()).digest("hex")
+          }
+        },
+        findings: [],
+        engines: {
+          heuristics: {
+            status: "completed",
+            matchedRules: [],
+            findingCount: 0
+          },
+          urlFetch: {
+            status: "ok",
+            detail: "URL fetched successfully.",
+            statusCode: 200,
+            finalUrl: parsed.toString(),
+            redirects: [],
+            truncated: false
+          },
+          ssrfGuard: {
+            status: "passed",
+            blockedReason: null,
+            resolvedAddresses: []
+          }
+        },
+        recommendations: ["No high-risk indicators detected from this first-pass URL scan."],
+        url: {
+          input: parsed.toString(),
+          normalized: parsed.toString(),
+          final: parsed.toString(),
+          protocol: parsed.protocol.replace(/:$/, ""),
+          hostname: parsed.hostname,
+          statusCode: 200,
+          contentType: "text/html",
+          title: "Example",
+          redirects: [],
+          resolvedAddresses: [],
+          truncated: false
+        }
+      };
+    };
+
+    const app = await setupTestApp({ urlScanner });
+    const session = await registerAndGetToken(app, "processing-cancel@example.com");
+
+    const submit = await request(app)
+      .post("/api/scans/links/jobs")
+      .set("Authorization", `Bearer ${session.accessToken}`)
+      .send({ url: "https://example.com/live" });
+
+    expect(submit.status).toBe(202);
+
+    const processingJob = await waitForJobStatus(app, session.accessToken, submit.body.job.id, "processing");
+    expect(processingJob.progressStage).toBeTruthy();
+
+    const cancelResponse = await request(app)
+      .post(`/api/scans/jobs/${submit.body.job.id}/cancel`)
+      .set("Authorization", `Bearer ${session.accessToken}`);
+
+    expect(cancelResponse.status).toBe(200);
+    expect(cancelResponse.body.job.status).toBe("cancelling");
+
+    releaseScan?.();
+
+    const cancelledJob = await waitForJobStatus(app, session.accessToken, submit.body.job.id, "cancelled");
+    expect(cancelledJob.errorMessage).toBe("Cancelled by user.");
+    expect(cancelledJob.progressPercent).toBe(100);
   });
 
   it("rejects pasted messages when no scannable link can be extracted", async () => {

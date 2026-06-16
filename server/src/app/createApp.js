@@ -261,7 +261,7 @@ export async function createApp(options = {}) {
 
         return callback(new Error("CORS origin denied"));
       },
-      methods: ["GET", "POST", "DELETE"],
+      methods: ["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
       allowedHeaders: ["Content-Type", "Authorization", "x-api-key", "x-request-id"],
       maxAge: 600
     })

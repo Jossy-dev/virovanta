@@ -73,6 +73,11 @@ function toJobSummary(job) {
     createdAt: job.createdAt,
     startedAt: job.startedAt || null,
     completedAt: job.completedAt || null,
+    progressPercent: Math.max(0, Math.min(100, Number(job.progressPercent) || 0)),
+    progressStage: job.progressStage || null,
+    progressDetail: job.progressDetail || null,
+    cancelRequestedAt: job.cancelRequestedAt || null,
+    cancelledAt: job.cancelledAt || null,
     originalName: job.originalName,
     fileSize: job.fileSize,
     targetUrl: sourceType === "url" || sourceType === "website" ? job.targetUrl || null : null,
@@ -299,9 +304,9 @@ function summarizeReports(reports) {
 function summarizeJobs(jobs) {
   return {
     totalJobs: jobs.length,
-    activeJobs: jobs.filter((job) => job?.status === "queued" || job?.status === "processing").length,
+    activeJobs: jobs.filter((job) => job?.status === "queued" || job?.status === "processing" || job?.status === "cancelling").length,
     queuedJobs: jobs.filter((job) => job?.status === "queued").length,
-    processingJobs: jobs.filter((job) => job?.status === "processing").length,
+    processingJobs: jobs.filter((job) => job?.status === "processing" || job?.status === "cancelling").length,
     completedJobs: jobs.filter((job) => job?.status === "completed").length,
     failedJobs: jobs.filter((job) => job?.status === "failed").length
   };
@@ -1042,6 +1047,36 @@ export class ScanQueueService {
     return toJobSummary(job);
   }
 
+  async cancelJobForUser(jobId, user) {
+    const job = await this.store.findJobById(jobId);
+
+    if (!job) {
+      throw new HttpError(404, "Scan job not found.", { code: "SCAN_JOB_NOT_FOUND" });
+    }
+
+    if (user.role !== "admin" && job.userId !== user.id) {
+      throw new HttpError(403, "Forbidden.", { code: "SCAN_FORBIDDEN" });
+    }
+
+    if (job.status === "completed" || job.status === "failed" || job.status === "cancelled") {
+      return toJobSummary(job);
+    }
+
+    const nextJob = await this.store.requestJobCancellation({
+      jobId,
+      userId: user.id,
+      requestedAt: new Date().toISOString()
+    });
+
+    if (nextJob?.status === "cancelled") {
+      await this.#removeQueuedWorkItem(nextJob).catch((error) => {
+        this.logger.warn({ err: error, jobId }, "Cancelled job could not be removed from queue immediately");
+      });
+    }
+
+    return toJobSummary(nextJob || job);
+  }
+
   async listJobsForUser(user, limit = 20, sourceType = undefined) {
     const jobs = await this.store.listJobsForUser(user, limit, sourceType);
     return jobs.map(toJobSummary);
@@ -1293,6 +1328,137 @@ export class ScanQueueService {
     });
   }
 
+  async #removeQueuedWorkItem(job) {
+    if (!job?.id) {
+      return false;
+    }
+
+    if (this.config.queueProvider === "bullmq") {
+      const sourceType = normalizeSourceType(job.sourceType);
+      const queue = sourceType === "file" ? this.bullFileQueue : this.bullLinkQueue;
+      if (!queue) {
+        return false;
+      }
+
+      const bullJob = await queue.getJob(job.id);
+      if (!bullJob) {
+        return false;
+      }
+
+      try {
+        if (bullJob.data?.stagedUpload?.key && this.objectStorageService?.enabled) {
+          await this.objectStorageService
+            .deleteObject({
+              key: bullJob.data.stagedUpload.key
+            })
+            .catch(() => {});
+        }
+        await bullJob.remove();
+        return true;
+      } catch (error) {
+        this.logger.warn({ err: error, jobId: job.id }, "BullMQ job removal skipped because the job was already being processed");
+        return false;
+      }
+    }
+
+    const queuedItem = this.queue.find((item) => item?.jobId === job.id) || null;
+    const initialDepth = this.queue.length;
+    this.queue = this.queue.filter((item) => item?.jobId !== job.id);
+    if (queuedItem?.stagedUpload?.key && this.objectStorageService?.enabled) {
+      await this.objectStorageService
+        .deleteObject({
+          key: queuedItem.stagedUpload.key
+        })
+        .catch(() => {});
+    }
+    return this.queue.length !== initialDepth;
+  }
+
+  async #getCancellationState(jobId) {
+    const latestJob = await this.store.findJobById(jobId);
+    if (!latestJob) {
+      return null;
+    }
+
+    if (latestJob.status === "cancelling" || latestJob.status === "cancelled") {
+      return latestJob;
+    }
+
+    return null;
+  }
+
+  async #updateQueueJobProgress(item, progressPercent, progressStage, progressDetail) {
+    const cancellationState = await this.#getCancellationState(item.jobId);
+    if (cancellationState) {
+      return {
+        cancelled: true,
+        job: cancellationState
+      };
+    }
+
+    await this.store.updateJobProgress({
+      jobId: item.jobId,
+      progressPercent,
+      progressStage,
+      progressDetail,
+      updatedAt: new Date().toISOString()
+    });
+
+    const updatedCancellationState = await this.#getCancellationState(item.jobId);
+    if (updatedCancellationState) {
+      return {
+        cancelled: true,
+        job: updatedCancellationState
+      };
+    }
+
+    return {
+      cancelled: false,
+      job: null
+    };
+  }
+
+  async #finalizeCancellation(item, reason = "Cancelled by user.") {
+    const currentJob = await this.store.findJobById(item.jobId);
+    if (!currentJob) {
+      return null;
+    }
+
+    if (currentJob.status === "cancelled") {
+      return currentJob;
+    }
+
+    const cancelledJob = await this.store.markJobCancelled({
+      jobId: item.jobId,
+      userId: item.userId,
+      sourceType: normalizeSourceType(item?.sourceType),
+      targetUrl: item?.sourceType === "url" || item?.sourceType === "website" ? item.targetUrl || null : null,
+      cancelledAt: new Date().toISOString(),
+      reason
+    });
+
+    await this.notificationService?.create({
+      userId: item.userId,
+      type: "scan_cancelled",
+      tone: "warning",
+      title: "Scan cancelled",
+      detail: `${describeQueueItem(item)} was cancelled before completion.`,
+      entityType: "job",
+      entityId: item.jobId,
+      dedupeKey: `scan-cancelled:${item.jobId}`
+    });
+
+    if (item.stagedUpload?.key && this.objectStorageService?.enabled) {
+      await this.objectStorageService
+        .deleteObject({
+          key: item.stagedUpload.key
+        })
+        .catch(() => {});
+    }
+
+    return cancelledJob;
+  }
+
   #drainQueue() {
     while (this.processing < this.config.scanWorkerConcurrency && this.queue.length > 0) {
       const item = this.queue.shift();
@@ -1363,10 +1529,19 @@ export class ScanQueueService {
 
   async #processQueueItem(item) {
     const startedAt = new Date().toISOString();
-    await this.store.markJobProcessing({
+    const startedJob = await this.store.markJobProcessing({
       jobId: item.jobId,
       startedAt
     });
+
+    if (startedJob?.status === "cancelled") {
+      return;
+    }
+
+    if (startedJob?.status === "cancelling") {
+      await this.#finalizeCancellation(item, "Cancelled before scan execution began.");
+      return;
+    }
 
     const sourceType = normalizeSourceType(item?.sourceType);
     let scanFilePath = sourceType === "file" ? item.filePath : null;
@@ -1379,6 +1554,19 @@ export class ScanQueueService {
         const targetUrl = String(item.targetUrl || item.originalName || "").trim();
         if (!targetUrl) {
           throw new Error("URL scan target is missing.");
+        }
+
+        const scanStartProgress = await this.#updateQueueJobProgress(
+          item,
+          42,
+          sourceType === "website" ? "Collecting website evidence" : "Checking link reputation",
+          sourceType === "website"
+            ? "Running DNS, TLS, header, and content checks."
+            : "Fetching the link and evaluating reputation and redirects."
+        );
+        if (scanStartProgress.cancelled) {
+          await this.#finalizeCancellation(item, "Cancelled before the remote target was fully scanned.");
+          return;
         }
 
         if (sourceType === "website") {
@@ -1413,6 +1601,17 @@ export class ScanQueueService {
           report = validatedLinkReport.data;
         }
       } else {
+        const filePrepProgress = await this.#updateQueueJobProgress(
+          item,
+          28,
+          "Preparing file artifacts",
+          "Resolving the uploaded file for worker processing."
+        );
+        if (filePrepProgress.cancelled) {
+          await this.#finalizeCancellation(item, "Cancelled before the file scan began.");
+          return;
+        }
+
         if (!scanFilePath) {
           const stagedKey = item.stagedUpload?.key;
 
@@ -1431,11 +1630,33 @@ export class ScanQueueService {
           shouldDeleteScanFile = true;
         }
 
+        const fileScanProgress = await this.#updateQueueJobProgress(
+          item,
+          48,
+          "Running file heuristics",
+          "Inspecting file type, hashes, and scan engine findings."
+        );
+        if (fileScanProgress.cancelled) {
+          await this.#finalizeCancellation(item, "Cancelled before the file scan finished.");
+          return;
+        }
+
         report = await this.scanner({
           filePath: scanFilePath,
           originalName: item.originalName,
           declaredMimeType: item.mimeType
         });
+      }
+
+      const enrichmentProgress = await this.#updateQueueJobProgress(
+        item,
+        74,
+        "Enriching findings",
+        "Attaching historical context, evidence, and report metadata."
+      );
+      if (enrichmentProgress.cancelled) {
+        await this.#finalizeCancellation(item, "Cancelled while the report was being prepared.");
+        return;
       }
 
       const completedAt = new Date().toISOString();
@@ -1457,6 +1678,18 @@ export class ScanQueueService {
           keyId: this.config.reportIntegrityKeyId
         }
       );
+
+      const persistProgress = await this.#updateQueueJobProgress(
+        item,
+        92,
+        "Finalizing report",
+        "Saving the signed report and final scan evidence."
+      );
+      if (persistProgress.cancelled) {
+        await this.#finalizeCancellation(item, "Cancelled before the report was saved.");
+        return;
+      }
+
       const persistedReport = await this.store.completeJob({
         jobId: item.jobId,
         userId: item.userId,
@@ -1467,6 +1700,7 @@ export class ScanQueueService {
       });
 
       if (!persistedReport) {
+        await this.#finalizeCancellation(item, "Cancelled before the report was committed.");
         return;
       }
 
@@ -1500,6 +1734,12 @@ export class ScanQueueService {
       });
     } catch (error) {
       const failedAt = new Date().toISOString();
+      const cancellationState = await this.#getCancellationState(item.jobId);
+      if (cancellationState) {
+        await this.#finalizeCancellation(item, "Cancelled before the scan could finish.");
+        return;
+      }
+
       await this.store.failJob({
         jobId: item.jobId,
         userId: item.userId,

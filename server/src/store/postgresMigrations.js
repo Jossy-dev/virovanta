@@ -347,6 +347,34 @@ function buildCommercialWorkspaceSql({
   `;
 }
 
+function buildQueueProgressAndCancellationSql({
+  jobsTable
+}) {
+  return `
+    ALTER TABLE ${jobsTable}
+      ADD COLUMN IF NOT EXISTS progress_percent INTEGER NOT NULL DEFAULT 0,
+      ADD COLUMN IF NOT EXISTS progress_stage TEXT NULL,
+      ADD COLUMN IF NOT EXISTS progress_detail TEXT NULL,
+      ADD COLUMN IF NOT EXISTS cancel_requested_at TIMESTAMPTZ NULL,
+      ADD COLUMN IF NOT EXISTS cancelled_at TIMESTAMPTZ NULL;
+
+    DO $$
+    BEGIN
+      IF EXISTS (SELECT 1 FROM pg_constraint WHERE conname = '${jobsTable}_status_check') THEN
+        EXECUTE 'ALTER TABLE ${jobsTable} DROP CONSTRAINT ${jobsTable}_status_check';
+      END IF;
+
+      EXECUTE 'ALTER TABLE ${jobsTable} ADD CONSTRAINT ${jobsTable}_status_check CHECK (status IN (''queued'', ''processing'', ''cancelling'', ''completed'', ''failed'', ''cancelled''))';
+
+      IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = '${jobsTable}_progress_percent_check') THEN
+        EXECUTE 'ALTER TABLE ${jobsTable} ADD CONSTRAINT ${jobsTable}_progress_percent_check CHECK (progress_percent >= 0 AND progress_percent <= 100)';
+      END IF;
+    END $$;
+
+    CREATE INDEX IF NOT EXISTS ${jobsTable}_cancel_requested_idx ON ${jobsTable}(cancel_requested_at DESC NULLS LAST);
+  `;
+}
+
 export function buildStoreMigrations(context) {
   const migrations = [
     {
@@ -360,6 +388,10 @@ export function buildStoreMigrations(context) {
     {
       name: "003_commercial_workspace_foundations",
       sql: buildCommercialWorkspaceSql(context)
+    },
+    {
+      name: "004_queue_progress_and_cancellation",
+      sql: buildQueueProgressAndCancellationSql(context)
     }
   ];
 

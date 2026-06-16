@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { motion, useReducedMotion } from "framer-motion";
 import { ArrowRight, Check, FolderOpen, Link2, ListFilter, ShieldAlert, UploadCloud, X } from "lucide-react";
 import { DataTable } from "../components/DataTable";
+import { JobProgressBar } from "../components/JobProgressBar";
 import { WidgetCard } from "../components/WidgetCard";
 import { cn, filterCollection } from "../dashboardUtils";
 import Button from "../../ui/Button";
@@ -46,6 +47,7 @@ export function ProjectsView({
   onResolveUrlScanTargets = async () => null,
   onSubmitUrlScans = async () => {},
   onClearSelectedFiles,
+  onCancelJob = async () => {},
   jobs,
   activeJob,
   onOpenReportWorkspace,
@@ -93,7 +95,7 @@ export function ProjectsView({
     }
   }, [jobsPage, totalJobPages]);
 
-  const pendingJobs = jobs.filter((job) => job.status === "queued" || job.status === "processing").length;
+  const pendingJobs = jobs.filter((job) => job.status === "queued" || job.status === "processing" || job.status === "cancelling").length;
   const completedJobs = jobs.filter((job) => job.status === "completed").length;
   const selectedFileNames = selectedFiles.map((file) => file?.name).filter(Boolean);
   const normalizedUrlTarget = String(urlTarget || "").trim();
@@ -109,6 +111,10 @@ export function ProjectsView({
     y: 4,
     duration: 0.16
   });
+
+  function canCancelJob(job) {
+    return job?.status === "queued" || job?.status === "processing" || job?.status === "cancelling";
+  }
 
   function closeUrlCandidateModal() {
     setUrlCandidateModal(EMPTY_URL_CANDIDATE_MODAL);
@@ -218,6 +224,12 @@ export function ProjectsView({
       )
     },
     {
+      key: "progress",
+      label: "Progress",
+      className: "min-w-[210px]",
+      render: (row) => <JobProgressBar job={row} compact />
+    },
+    {
       key: "createdAt",
       label: "Queued",
       render: (row) => formatDateTime(row.createdAt)
@@ -236,7 +248,28 @@ export function ProjectsView({
             <ArrowRight size={14} />
           </button>
         ) : (
-          <span className="text-sm text-slate-400 dark:text-slate-500">{row.status === "failed" ? "Failed" : "Not ready"}</span>
+          <span className="text-sm text-slate-400 dark:text-slate-500">
+            {row.status === "failed" ? "Failed" : row.status === "cancelled" ? "Cancelled" : "Not ready"}
+          </span>
+        )
+    },
+    {
+      key: "actions",
+      label: "Action",
+      render: (row) =>
+        canCancelJob(row) ? (
+          <Button
+            type="button"
+            variant="secondary"
+            size="sm"
+            className="min-w-[108px] justify-center"
+            onClick={() => onCancelJob(row.id)}
+            disabled={row.status === "cancelling"}
+          >
+            {row.status === "cancelling" ? "Cancelling..." : "Cancel"}
+          </Button>
+        ) : (
+          <span className="text-sm text-slate-400 dark:text-slate-500">-</span>
         )
     }
   ];
@@ -437,7 +470,20 @@ export function ProjectsView({
               <p className="mt-2 inline-flex rounded-full bg-slate-100 px-2.5 py-1 text-xs font-medium text-slate-600 dark:bg-slate-900 dark:text-slate-300">
                 {activeJob.status}
               </p>
+              <JobProgressBar job={activeJob} className="mt-4" />
               <p className="mt-3 text-sm text-slate-500 dark:text-slate-400">{formatDateTime(activeJob.createdAt)}</p>
+              {canCancelJob(activeJob) ? (
+                <Button
+                  type="button"
+                  variant="secondary"
+                  size="sm"
+                  className="mt-4 w-full justify-center"
+                  onClick={() => onCancelJob(activeJob.id)}
+                  disabled={activeJob.status === "cancelling"}
+                >
+                  {activeJob.status === "cancelling" ? "Cancelling..." : "Cancel job"}
+                </Button>
+              ) : null}
             </div>
           ) : (
             <p className="text-sm leading-7 text-slate-500 dark:text-slate-400">No active jobs yet. New submissions will appear here.</p>

@@ -233,7 +233,7 @@ export function buildActivityRows({ jobs, reports, session }) {
 }
 
 export function buildWidgetCollections({ jobs, reports, apiKeys }) {
-  const pendingJobs = (jobs || []).filter((job) => job.status === "queued" || job.status === "processing").length;
+  const pendingJobs = (jobs || []).filter((job) => job.status === "queued" || job.status === "processing" || job.status === "cancelling").length;
   const flaggedReports = (reports || []).filter((report) => report.verdict !== "clean").length;
   const newestReport = reports?.[0];
 

@@ -38,6 +38,11 @@ function normalizeMonitorTarget(target) {
   }
 }
 
+function buildNextMonitorCheckAt(cadenceHours, now = new Date()) {
+  const safeCadenceHours = Math.max(1, Math.floor(Number(cadenceHours) || DEFAULT_MONITOR_CADENCE_HOURS));
+  return new Date(now.getTime() + safeCadenceHours * 60 * 60 * 1000).toISOString();
+}
+
 function buildMonitorSnapshot(report) {
   if (!report) {
     return null;
@@ -264,9 +269,41 @@ export class WorkspaceService {
     return monitor;
   }
 
+  async updateMonitorStatus(userId, monitorId, nextStatus) {
+    const monitor = await this.store.findMonitorById(monitorId);
+    if (!monitor || monitor.userId !== userId || monitor.deletedAt || monitor.status === "deleted") {
+      throw new HttpError(404, "Monitor not found.", {
+        code: "MONITOR_NOT_FOUND"
+      });
+    }
+
+    if (nextStatus !== "active" && nextStatus !== "paused") {
+      throw new HttpError(400, "Invalid monitor status.", {
+        code: "MONITOR_STATUS_INVALID"
+      });
+    }
+
+    const updatedAt = new Date().toISOString();
+    const updatedMonitor = await this.store.updateMonitorStatus({
+      userId,
+      monitorId,
+      status: nextStatus,
+      nextCheckAt: nextStatus === "paused" ? null : buildNextMonitorCheckAt(monitor.cadenceHours),
+      updatedAt
+    });
+
+    if (!updatedMonitor) {
+      throw new HttpError(404, "Monitor not found.", {
+        code: "MONITOR_NOT_FOUND"
+      });
+    }
+
+    return updatedMonitor;
+  }
+
   async runMonitorNow(user, monitorId, { enqueueUrlScan, enqueueWebsiteSafetyScan }) {
     const monitor = await this.store.findMonitorById(monitorId);
-    if (!monitor || monitor.userId !== user.id) {
+    if (!monitor || monitor.userId !== user.id || monitor.deletedAt || monitor.status === "deleted") {
       throw new HttpError(404, "Monitor not found.", {
         code: "MONITOR_NOT_FOUND"
       });

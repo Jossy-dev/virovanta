@@ -14,6 +14,8 @@ describe("routeSeo", () => {
   it("marks auth and app routes as noindex", () => {
     expect(getSeoForPath("/signin").robots).toMatch(/^noindex/i);
     expect(getSeoForPath("/app/dashboard").robots).toMatch(/^noindex/i);
+    expect(getSeoForPath("/app/website-safety").robots).toMatch(/^noindex/i);
+    expect(getSeoForPath("/app/monitoring").robots).toMatch(/^noindex/i);
     expect(getSeoForPath("/app/docs").robots).toMatch(/^noindex/i);
     expect(getSeoForPath("/report/example-token").robots).toMatch(/^noindex/i);
   });
@@ -27,6 +29,8 @@ describe("routeSeo", () => {
     );
     expect(sitemapEntries).toHaveLength(9);
     expect(staticRoutes.some((route) => route.path === "/app/dashboard")).toBe(true);
+    expect(staticRoutes.some((route) => route.path === "/app/website-safety")).toBe(true);
+    expect(staticRoutes.some((route) => route.path === "/app/monitoring")).toBe(true);
     expect(staticRoutes.some((route) => route.path === "/signup")).toBe(true);
     expect(staticRoutes.some((route) => route.path === "/features")).toBe(true);
   });
