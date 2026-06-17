@@ -82,7 +82,7 @@ const NAV_ITEMS = [
   }
 ];
 
-const VERDICT_FILTER_VALUES = Object.freeze(["clean", "suspicious", "malicious"]);
+const VERDICT_FILTER_VALUES = Object.freeze(["clean", "unknown", "suspicious", "malicious"]);
 
 function normalizeVerdictFilterValue(value) {
   const normalized = String(value || "")

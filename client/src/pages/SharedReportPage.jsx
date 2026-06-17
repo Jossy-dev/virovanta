@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { motion, useReducedMotion } from "framer-motion";
 import { Link, useParams } from "react-router-dom";
-import { motionPreset, formatDateTime, formatBytes, formatVerdictLabel, getDisplayFileType, getRiskMeta } from "../appUtils";
+import { motionPreset, formatDateTime, formatBytes, formatVerdictLabel, getDisplayFileType, getReportSummaryReason, getRiskMeta, getVerdictQualifier } from "../appUtils";
 
 export default function SharedReportPage({ appName, logoAltText, brandMarks, onLoadSharedReport }) {
   const prefersReducedMotion = useReducedMotion();
@@ -72,11 +72,18 @@ export default function SharedReportPage({ appName, logoAltText, brandMarks, onL
               <h2>Shared Report</h2>
               <span className={`pill ${riskMeta.tone}`}>{formatVerdictLabel(report.verdict)}</span>
             </div>
+            <p className="muted" style={{ marginTop: "0.35rem" }}>
+              <strong>{getVerdictQualifier(report.verdict) || "Report summary"}:</strong> {getReportSummaryReason(report)}
+            </p>
             <div className="summary-grid">
               <div>
                 <span>Risk Score</span>
                 <strong className={`risk-score ${riskMeta.tone}`}>{report.riskScore}/100</strong>
                 <small className={`risk-label ${riskMeta.tone}`}>{riskMeta.label}</small>
+              </div>
+              <div>
+                <span>Confidence</span>
+                <strong>{report.confidence?.score != null ? `${report.confidence.score}/100` : "Not collected"}</strong>
               </div>
               <div>
                 <span>File Type</span>
@@ -92,6 +99,8 @@ export default function SharedReportPage({ appName, logoAltText, brandMarks, onL
               </div>
             </div>
 
+            {report.confidence?.summary ? <p className="muted" style={{ marginTop: "0.75rem" }}>{report.confidence.summary}</p> : null}
+
             {report.findings?.length ? (
               <ul className="guest-findings">
                 {report.findings.map((finding) => (
@@ -99,6 +108,7 @@ export default function SharedReportPage({ appName, logoAltText, brandMarks, onL
                     <div className="guest-finding-copy">
                       <strong>{finding.title}</strong>
                       <small>{finding.description}</small>
+                      {finding.whyItMatters ? <small>{finding.whyItMatters}</small> : null}
                     </div>
                     <span>{finding.severity}</span>
                   </li>

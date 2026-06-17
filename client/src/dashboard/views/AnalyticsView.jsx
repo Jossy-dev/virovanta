@@ -98,7 +98,7 @@ function normalizeVerdictLabel(value) {
     .trim()
     .toLowerCase();
 
-  if (normalized === "clean" || normalized === "suspicious" || normalized === "malicious") {
+  if (normalized === "clean" || normalized === "unknown" || normalized === "suspicious" || normalized === "malicious") {
     return normalized;
   }
 
@@ -155,9 +155,9 @@ export function AnalyticsView({ analytics, formatDateTime, themePalette, onSelec
     },
     {
       id: "clean-rate",
-      title: "Clean rate",
+      title: "First-pass clean rate",
       value: formatPercent(summary.cleanRate),
-      description: "Share of stored reports marked clean",
+      description: "Share of stored reports where no strong indicators were found",
       ...buildDeltaMeta(currentWindow.cleanRate, previousWindow.cleanRate)
     },
     {

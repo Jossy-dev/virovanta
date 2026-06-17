@@ -233,6 +233,7 @@ export default function LandingPage({
               <h3>Guest Result</h3>
               <span className={`pill ${guestVerdictMeta.tone}`}>{guestVerdictMeta.label}</span>
             </div>
+            <p className="muted">{guestReport?.plainLanguageReasons?.[0] || "No strong indicators were found in this first-pass scan."}</p>
             <div className="summary-grid">
               <div>
                 <span>Risk Score</span>

@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { parseErrorMessage, selectHighlightedJob, triggerBlobDownload } from "./appUtils";
+import { getFileScanEngineUsage, mergeCollectionById, parseErrorMessage, selectHighlightedJob, triggerBlobDownload } from "./appUtils";
 
 describe("triggerBlobDownload", () => {
   it("keeps the object URL alive until after the browser click has been handed off", async () => {
@@ -90,5 +90,88 @@ describe("selectHighlightedJob", () => {
     const highlighted = selectHighlightedJob([olderJob], activeJob);
 
     expect(highlighted).toEqual(activeJob);
+  });
+});
+
+describe("mergeCollectionById", () => {
+  it("merges updated items by id and keeps the newest entries first", () => {
+    const merged = mergeCollectionById(
+      [
+        {
+          id: "job_old",
+          status: "queued",
+          createdAt: "2026-03-16T18:08:06.410Z"
+        },
+        {
+          id: "job_older",
+          status: "completed",
+          createdAt: "2026-03-15T10:00:00.000Z",
+          completedAt: "2026-03-15T10:05:00.000Z"
+        }
+      ],
+      [
+        {
+          id: "job_old",
+          status: "completed",
+          createdAt: "2026-03-16T18:08:06.410Z",
+          completedAt: "2026-03-16T18:10:00.000Z"
+        },
+        {
+          id: "job_new",
+          status: "queued",
+          createdAt: "2026-03-16T18:11:00.000Z"
+        }
+      ]
+    );
+
+    expect(merged.map((item) => item.id)).toEqual(["job_new", "job_old", "job_older"]);
+    expect(merged.find((item) => item.id === "job_old")).toMatchObject({
+      status: "completed",
+      completedAt: "2026-03-16T18:10:00.000Z"
+    });
+  });
+});
+
+describe("getFileScanEngineUsage", () => {
+  it("maps file scan engines to used and not-used badges", () => {
+    const usage = getFileScanEngineUsage({
+      sourceType: "file",
+      engines: {
+        clamav: {
+          status: "clean"
+        },
+        yara: {
+          status: "disabled"
+        }
+      }
+    });
+
+    expect(usage).toEqual([
+      {
+        label: "ClamAV",
+        used: true,
+        badge: "Used",
+        detail: "ClamAV status: clean"
+      },
+      {
+        label: "YARA",
+        used: false,
+        badge: "Not Used",
+        detail: "YARA status: disabled"
+      }
+    ]);
+  });
+
+  it("returns no engine usage rows for URL-based reports", () => {
+    expect(
+      getFileScanEngineUsage({
+        sourceType: "url",
+        engines: {
+          clamav: {
+            status: "clean"
+          }
+        }
+      })
+    ).toEqual([]);
   });
 });

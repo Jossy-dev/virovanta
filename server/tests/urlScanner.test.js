@@ -66,7 +66,7 @@ describe("URL scanner", () => {
     expect(Array.isArray(report.engines.reputation.providers)).toBe(true);
     expect(report.engines.reputation.providers.every((provider) => provider.status === "disabled")).toBe(true);
     expect(report.engines.reputation.providers.map((provider) => provider.provider)).toEqual(
-      expect.arrayContaining(["virustotal", "google_safe_browsing", "urlhaus"])
+      expect.arrayContaining(["external_reputation", "google_safe_browsing", "urlhaus"])
     );
   });
 });

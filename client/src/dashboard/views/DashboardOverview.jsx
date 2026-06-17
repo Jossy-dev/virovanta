@@ -31,7 +31,9 @@ export function DashboardOverview({
 }) {
   const queuedJobs = Number(analytics?.summary?.activeJobs) || jobs.filter((job) => job.status === "queued" || job.status === "processing" || job.status === "cancelling").length;
   const completedReports = Number(analytics?.summary?.totalReports) || reports.length;
-  const flaggedReports = Number(analytics?.summary?.flaggedReports) || reports.filter((report) => report.verdict !== "clean").length;
+  const flaggedReports =
+    Number(analytics?.summary?.flaggedReports) ||
+    reports.filter((report) => report.verdict === "suspicious" || report.verdict === "malicious").length;
   const activeMonitors = Number(workspaceSummary?.usage?.monitorsActive) || 0;
 
   return (

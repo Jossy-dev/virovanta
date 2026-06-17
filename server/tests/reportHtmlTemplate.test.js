@@ -110,7 +110,7 @@ function createWebsiteReport() {
           flaggedProviders: [],
           providers: [
             {
-              provider: "virustotal",
+              provider: "external_reputation",
               status: "clean"
             }
           ]

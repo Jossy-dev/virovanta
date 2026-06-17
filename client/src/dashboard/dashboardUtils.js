@@ -2,6 +2,10 @@ export function cn(...classes) {
   return classes.filter(Boolean).join(" ");
 }
 
+function isFlaggedVerdict(verdict) {
+  return verdict === "suspicious" || verdict === "malicious";
+}
+
 function createMonthBuckets(count = 6) {
   const today = new Date();
   const buckets = [];
@@ -37,6 +41,7 @@ export function createEmptyAnalytics() {
       failedJobs: 0,
       totalReports: 0,
       cleanReports: 0,
+      unknownReports: 0,
       suspiciousReports: 0,
       maliciousReports: 0,
       flaggedReports: 0,
@@ -68,6 +73,7 @@ export function createEmptyAnalytics() {
     })),
     postureBreakdown: [
       { label: "Clean", value: 0 },
+      { label: "Unknown", value: 0 },
       { label: "Suspicious", value: 0 },
       { label: "Malicious", value: 0 }
     ],
@@ -234,7 +240,7 @@ export function buildActivityRows({ jobs, reports, session }) {
 
 export function buildWidgetCollections({ jobs, reports, apiKeys }) {
   const pendingJobs = (jobs || []).filter((job) => job.status === "queued" || job.status === "processing" || job.status === "cancelling").length;
-  const flaggedReports = (reports || []).filter((report) => report.verdict !== "clean").length;
+  const flaggedReports = (reports || []).filter((report) => isFlaggedVerdict(report?.verdict)).length;
   const newestReport = reports?.[0];
 
   return {
@@ -293,7 +299,7 @@ export function buildTeamRows({ session, jobs, reports }) {
   const userEmail = session?.user?.email || "analyst@virovanta.com";
   const storedUsername = String(session?.user?.username || session?.user?.name || "").trim();
   const fallbackUserName = userEmail.split("@")[0].replace(/[._-]+/g, " ");
-  const riskyReports = (reports || []).filter((report) => report.verdict !== "clean").length;
+  const riskyReports = (reports || []).filter((report) => isFlaggedVerdict(report?.verdict)).length;
   const queuePressure = (jobs || []).filter((job) => job.status !== "completed").length;
 
   return [

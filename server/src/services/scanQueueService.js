@@ -2,18 +2,13 @@ import crypto from "crypto";
 import fs from "fs/promises";
 import path from "path";
 import { Queue, Worker } from "bullmq";
+import { isFlaggedReportVerdict, reportVerdictRank } from "../constants/reportVerdicts.js";
 import { createRedisClient } from "../infrastructure/redis/createRedisClient.js";
 import { normalizeWebsiteSafetyReport } from "../scanner/websiteSafetyScanner.js";
 import { HttpError } from "../utils/httpError.js";
 import { signReport, verifySignedReport } from "../utils/reportIntegrity.js";
 import { enrichReportThreatIntel } from "../utils/threatIntel.js";
 import { linkReportSchema, websiteSafetyReportSchema } from "../validation/scanSchemas.js";
-
-const VERDICT_RANK = {
-  clean: 1,
-  suspicious: 2,
-  malicious: 3
-};
 
 function worstVerdictForReports(reports) {
   if (!Array.isArray(reports) || reports.length === 0) {
@@ -24,7 +19,7 @@ function worstVerdictForReports(reports) {
 
   for (const report of reports) {
     const verdict = report?.verdict || "clean";
-    if ((VERDICT_RANK[verdict] || 1) > (VERDICT_RANK[worst] || 1)) {
+    if (reportVerdictRank(verdict) > reportVerdictRank(worst)) {
       worst = verdict;
     }
   }
@@ -284,6 +279,7 @@ function average(values) {
 
 function summarizeReports(reports) {
   const cleanReports = reports.filter((report) => report?.verdict === "clean").length;
+  const unknownReports = reports.filter((report) => report?.verdict === "unknown").length;
   const suspiciousReports = reports.filter((report) => report?.verdict === "suspicious").length;
   const maliciousReports = reports.filter((report) => report?.verdict === "malicious").length;
   const flaggedReports = suspiciousReports + maliciousReports;
@@ -292,6 +288,7 @@ function summarizeReports(reports) {
   return {
     totalReports: reports.length,
     cleanReports,
+    unknownReports,
     suspiciousReports,
     maliciousReports,
     flaggedReports,
@@ -403,7 +400,7 @@ function buildAnalyticsSnapshot({ jobs, reports }) {
     }
 
     bucket.reports += 1;
-    if (report?.verdict === "suspicious" || report?.verdict === "malicious") {
+    if (isFlaggedReportVerdict(report?.verdict)) {
       bucket.flagged += 1;
     }
   }
@@ -458,6 +455,7 @@ function buildAnalyticsSnapshot({ jobs, reports }) {
     timeSeries: Array.from(monthMap.values()),
     postureBreakdown: [
       { label: "Clean", value: reportSummary.cleanReports },
+      { label: "Unknown", value: reportSummary.unknownReports },
       { label: "Suspicious", value: reportSummary.suspiciousReports },
       { label: "Malicious", value: reportSummary.maliciousReports }
     ],
@@ -1725,9 +1723,12 @@ export class ScanQueueService {
       await this.notificationService?.create({
         userId: item.userId,
         type: "report_ready",
-        tone: report.verdict === "malicious" ? "danger" : report.verdict === "suspicious" ? "warning" : "success",
+        tone: report.verdict === "malicious" ? "danger" : report.verdict === "suspicious" ? "warning" : report.verdict === "unknown" ? "info" : "success",
         title: "Report ready",
-        detail: `${describeQueueItem(item)} finished scanning with a ${report.verdict} verdict.`,
+        detail:
+          report.verdict === "clean"
+            ? `${describeQueueItem(item)} finished scanning with no strong indicators found in the current pass.`
+            : `${describeQueueItem(item)} finished scanning with a ${report.verdict} verdict.`,
         entityType: "report",
         entityId: persistedReport.id,
         dedupeKey: `report-ready:${persistedReport.id}`

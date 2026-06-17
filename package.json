@@ -15,7 +15,9 @@
     "start:worker": "npm run start:worker --prefix server",
     "test": "npm run test --prefix server && npm run test --prefix client",
     "test:server": "npm run test --prefix server",
+    "test:file-scanner": "npm run test:file-scanner --prefix server",
     "test:client": "npm run test --prefix client",
-    "test:e2e": "npm run test:e2e --prefix server"
+    "test:e2e": "npm run test:e2e --prefix server",
+    "bench:file-scanner": "npm run bench:file-scanner --prefix server"
   }
 }

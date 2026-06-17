@@ -23,7 +23,7 @@ function createCsv(rows) {
 function buildFindingRows(report) {
   const findings = Array.isArray(report?.findings) ? report.findings : [];
   if (findings.length === 0) {
-    return [["summary", "No findings", "", "", ""]];
+    return [["summary", "No findings", "", "", "", "", ""]];
   }
 
   return findings.map((finding, index) => [
@@ -31,7 +31,9 @@ function buildFindingRows(report) {
     finding?.severity || "info",
     finding?.title || "",
     finding?.description || "",
-    finding?.indicator || ""
+    finding?.evidence || finding?.indicator || "",
+    finding?.whyItMatters || "",
+    Array.isArray(finding?.evidenceItems) ? finding.evidenceItems.join(" | ") : ""
   ]);
 }
 
@@ -113,13 +115,16 @@ export function buildReportCsvExport(report) {
     ["source_type", report?.sourceType || ""],
     ["verdict", report?.verdict || ""],
     ["risk_score", report?.riskScore ?? ""],
+    ["confidence_score", report?.confidence?.score ?? ""],
+    ["confidence_level", report?.confidence?.level || ""],
+    ["confidence_summary", report?.confidence?.summary || ""],
     ["target", report?.fileName || report?.url?.final || report?.url?.input || report?.file?.originalName || ""],
     ["completed_at", report?.completedAt || ""],
     ["plain_language_reasons", (Array.isArray(report?.plainLanguageReasons) ? report.plainLanguageReasons : []).join(" | ")],
     ["recommendations", (Array.isArray(report?.recommendations) ? report.recommendations : []).join(" | ")]
   ];
 
-  const findingRows = [["finding_index", "severity", "title", "description", "indicator"], ...buildFindingRows(report)];
+  const findingRows = [["finding_index", "severity", "title", "description", "evidence", "why_it_matters", "evidence_items"], ...buildFindingRows(report)];
   const indicatorRows = [
     ["indicator_type", "value"],
     ...buildIndicatorRows(report).map((indicator) => [indicator.type, indicator.value])

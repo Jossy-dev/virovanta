@@ -1,4 +1,4 @@
-import { Suspense, lazy, useEffect, useMemo, useRef, useState } from "react";
+import { Suspense, lazy, startTransition, useEffect, useMemo, useRef, useState } from "react";
 import { AnimatePresence, motion, useReducedMotion } from "framer-motion";
 import { BrowserRouter, Navigate, Route, Routes, useLocation, useNavigate } from "react-router-dom";
 import { Toaster, toast } from "sonner";
@@ -26,10 +26,12 @@ import {
   formatBytes,
   formatDateTime,
   formatVerdictLabel,
+  getFileScanEngineUsage,
   getDisplayFileType,
   getRiskMeta,
   getThemePalette,
   isTerminalJob,
+  mergeCollectionById,
   parseErrorMessage,
   pluralize,
   readResetFlowState,
@@ -98,6 +100,7 @@ const API_REQUEST_TIMEOUT_UPLOAD_MS = 45 * 1000;
 const API_REQUEST_TIMEOUT_AUTH_COLD_START_MS = 65 * 1000;
 const API_REQUEST_TIMEOUT_WAKE_PROBE_MS = 15 * 1000;
 const ACTIVE_JOB_POLL_INTERVAL_MS = 5 * 1000;
+const FILE_SCAN_ENGINE_POPUP_DURATION_MS = 10 * 1000;
 const AUTH_INVALID_CODES = new Set([
   "AUTH_REFRESH_INVALID",
   "AUTH_TOKEN_INVALID",
@@ -310,6 +313,46 @@ function isDetailedReportPayload(report) {
   }
 
   return true;
+}
+
+function FileScanEngineToast({ reportName, engineUsage, onOpenReport }) {
+  return (
+    <div className="w-[min(92vw,22rem)] rounded-[26px] border border-slate-200/80 bg-white/98 p-4 shadow-[0_24px_80px_rgba(15,23,42,0.18)] backdrop-blur dark:border-slate-800/80 dark:bg-slate-950/96">
+      <p className="text-[0.7rem] font-semibold uppercase tracking-[0.16em] text-viro-600 dark:text-emerald-300">Scan coverage</p>
+      <p className="mt-2 text-sm font-semibold text-slate-950 dark:text-white">{reportName}</p>
+      <div className="mt-4 space-y-2.5">
+        {engineUsage.map((engine) => (
+          <div
+            key={engine.label}
+            className="flex items-center justify-between gap-3 rounded-2xl border border-slate-200/80 bg-slate-50/90 px-3 py-2.5 dark:border-slate-800/80 dark:bg-slate-900/70"
+          >
+            <div>
+              <p className="text-sm font-medium text-slate-900 dark:text-slate-100">{engine.label}</p>
+              <p className="text-xs text-slate-500 dark:text-slate-400">{engine.detail}</p>
+            </div>
+            <span
+              className={`inline-flex rounded-full px-2.5 py-1 text-[0.68rem] font-semibold uppercase tracking-[0.12em] ${
+                engine.used
+                  ? "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/50 dark:text-emerald-200"
+                  : "bg-slate-200 text-slate-600 dark:bg-slate-800 dark:text-slate-300"
+              }`}
+            >
+              {engine.badge}
+            </span>
+          </div>
+        ))}
+      </div>
+      <div className="mt-4 flex justify-end">
+        <button
+          type="button"
+          onClick={onOpenReport}
+          className="inline-flex items-center justify-center rounded-full bg-viro-600 px-3.5 py-2 text-sm font-semibold text-white transition hover:bg-viro-700 focus:outline-none focus:ring-2 focus:ring-viro-400 focus:ring-offset-2 dark:bg-viro-500 dark:hover:bg-viro-400 dark:focus:ring-offset-slate-950"
+        >
+          Open report
+        </button>
+      </div>
+    </div>
+  );
 }
 
 function normalizeDashboardSnapshot(payload = {}) {
@@ -651,6 +694,7 @@ function AppContent() {
   const invalidationInFlightRef = useRef(false);
   const lastActivityTouchRef = useRef(0);
   const dashboardCacheRef = useRef(null);
+  const announcedEngineToastReportIdsRef = useRef(new Set());
   const activeReportId = activeReport?.id || null;
   const activeJobId = activeJob?.id || null;
   const activeJobStatus = activeJob?.status || null;
@@ -684,6 +728,46 @@ function AppContent() {
   );
   const themePalette = useMemo(() => getThemePalette(dashboardTheme), [dashboardTheme]);
   const routeTransitionKey = `${location.pathname}${location.search}`;
+
+  function runBackgroundTask(task) {
+    Promise.resolve(task).catch(() => {});
+  }
+
+  function announceReportEngineUsage(report, activeSession = session) {
+    if (!report?.id || !activeSession?.accessToken) {
+      return;
+    }
+
+    const engineUsage = getFileScanEngineUsage(report);
+    if (engineUsage.length === 0) {
+      return;
+    }
+
+    if (announcedEngineToastReportIdsRef.current.has(report.id)) {
+      return;
+    }
+
+    announcedEngineToastReportIdsRef.current.add(report.id);
+
+    const reportName = String(report?.file?.originalName || report?.fileName || "Completed file scan").trim() || "Completed file scan";
+
+    toast.custom(
+      (toastId) => (
+        <FileScanEngineToast
+          reportName={reportName}
+          engineUsage={engineUsage}
+          onOpenReport={() => {
+            toast.dismiss(toastId);
+            navigate("/app/history", { replace: false });
+            void openReport(report.id, activeSession);
+          }}
+        />
+      ),
+      {
+        duration: FILE_SCAN_ENGINE_POPUP_DURATION_MS
+      }
+    );
+  }
 
   useEffect(() => {
     if (typeof window === "undefined") {
@@ -1260,10 +1344,15 @@ function AppContent() {
   }, [session?.accessToken]);
 
   useEffect(() => {
+    announcedEngineToastReportIdsRef.current = new Set();
+  }, [session?.user?.id]);
+
+  useEffect(() => {
     if (!session || !activeJobId || isTerminalJob({ status: activeJobStatus })) {
       return;
     }
 
+    let cancelled = false;
     const timer = setInterval(async () => {
       try {
         const payload = await apiRequest(`/api/scans/jobs/${activeJobId}`, {
@@ -1273,18 +1362,28 @@ function AppContent() {
         const nextJob = payload?.job || null;
         const statusChanged = nextJob?.status !== activeJobStatus;
 
-        setActiveJob(nextJob);
-        setJobs((current) => current.map((job) => (job.id === activeJobId ? { ...job, ...nextJob } : job)));
+        if (!nextJob || cancelled) {
+          return;
+        }
+
+        startTransition(() => {
+          setActiveJob(nextJob);
+          setJobs((current) => {
+            const nextJobs = mergeCollectionById(current, [nextJob]);
+            updateDashboardCache(session, { jobs: nextJobs });
+            return nextJobs;
+          });
+        });
 
         if (statusChanged) {
-          await Promise.all([refreshJobs(session), refreshAnalytics(session)]);
+          runBackgroundTask(Promise.allSettled([refreshJobs(session), refreshAnalytics(session)]));
         }
 
         if (nextJob?.status === "completed" && nextJob.reportId) {
-          await openReport(nextJob.reportId, session);
-          await Promise.all([refreshReports(session), refreshNotifications(session), refreshAnalytics(session)]);
+          await syncCompletedReport(nextJob.reportId, session, { updateActiveSelection: activeReportId === nextJob.reportId });
+          runBackgroundTask(Promise.allSettled([refreshNotifications(session), refreshAnalytics(session)]));
         } else if (nextJob?.status === "failed" || nextJob?.status === "cancelled") {
-          await Promise.all([refreshNotifications(session), refreshAnalytics(session)]);
+          runBackgroundTask(Promise.allSettled([refreshNotifications(session), refreshAnalytics(session)]));
         }
       } catch (error) {
         if (Number(error?.status) === 429) {
@@ -1295,8 +1394,11 @@ function AppContent() {
       }
     }, ACTIVE_JOB_POLL_INTERVAL_MS);
 
-    return () => clearInterval(timer);
-  }, [activeJobId, activeJobStatus, session]);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+  }, [activeJobId, activeJobStatus, activeReportId, session]);
 
   useEffect(() => {
     setShareState({ url: "", expiresAt: "" });
@@ -1567,9 +1669,11 @@ function AppContent() {
 
     const payload = await apiRequest("/api/scans/jobs?limit=12", { authSession: activeSession });
     const nextJobs = Array.isArray(payload?.jobs) ? payload.jobs : [];
-    setJobs(nextJobs);
-    setActiveJob((current) => selectHighlightedJob(nextJobs, current));
-    updateDashboardCache(activeSession, { jobs: nextJobs });
+    startTransition(() => {
+      setJobs(nextJobs);
+      setActiveJob((current) => selectHighlightedJob(nextJobs, current));
+      updateDashboardCache(activeSession, { jobs: nextJobs });
+    });
   }
 
   async function refreshReports(activeSession = session) {
@@ -1581,8 +1685,10 @@ function AppContent() {
     const nextReports = Array.isArray(payload?.reports) ? payload.reports : [];
     const hasActiveReportInHistory = Boolean(activeReportId) && nextReports.some((report) => report.id === activeReportId);
     const needsActiveReportReload = hasActiveReportInHistory && !isDetailedReportPayload(activeReport);
-    setReports(nextReports);
-    updateDashboardCache(activeSession, { reports: nextReports });
+    startTransition(() => {
+      setReports(nextReports);
+      updateDashboardCache(activeSession, { reports: nextReports });
+    });
 
     if (nextReports.length === 0) {
       setActiveReport(null);
@@ -1710,6 +1816,42 @@ function AppContent() {
     return payload;
   }
 
+  async function fetchReportDetails(reportId, activeSession = session) {
+    if (!activeSession || !reportId) {
+      return null;
+    }
+
+    const payload = await apiRequest(`/api/scans/reports/${reportId}`, { authSession: activeSession });
+    return isDetailedReportPayload(payload?.report) ? payload.report : null;
+  }
+
+  async function syncCompletedReport(reportId, activeSession = session, { updateActiveSelection = false } = {}) {
+    const nextReport = await fetchReportDetails(reportId, activeSession);
+    if (!nextReport) {
+      return null;
+    }
+
+    startTransition(() => {
+      setReports((current) => {
+        const mergedReports = mergeCollectionById(current, [nextReport]);
+        updateDashboardCache(activeSession, { reports: mergedReports });
+        return mergedReports;
+      });
+
+      if (updateActiveSelection || activeReportId === nextReport.id) {
+        setActiveReport(nextReport);
+        updateDashboardCache(activeSession, { activeReport: nextReport });
+      }
+    });
+
+    if (updateActiveSelection || activeReportId === nextReport.id) {
+      runBackgroundTask(loadReportWorkspace(nextReport.id, activeSession));
+    }
+
+    announceReportEngineUsage(nextReport, activeSession);
+    return nextReport;
+  }
+
   async function fetchNotificationsPage({ limit = 10, offset = 0 } = {}, activeSession = session) {
     if (!activeSession) {
       return {
@@ -1747,12 +1889,12 @@ function AppContent() {
       return null;
     }
 
-    const payload = await apiRequest(`/api/scans/reports/${reportId}`, { authSession: activeSession });
-    const nextReport = isDetailedReportPayload(payload?.report) ? payload.report : null;
+    const nextReport = await fetchReportDetails(reportId, activeSession);
     setActiveReport(nextReport);
     updateDashboardCache(activeSession, { activeReport: nextReport });
     if (nextReport?.id) {
       await loadReportWorkspace(nextReport.id, activeSession);
+      announceReportEngineUsage(nextReport, activeSession);
     }
     return nextReport;
   }
@@ -1982,13 +2124,20 @@ function AppContent() {
       });
 
       const queuedJobs = Array.isArray(payload?.jobs) ? payload.jobs : payload?.job ? [payload.job] : [];
-      setActiveJob(queuedJobs[0] || null);
+      startTransition(() => {
+        setActiveJob(queuedJobs[0] || null);
+        setJobs((current) => {
+          const nextJobs = mergeCollectionById(current, queuedJobs);
+          updateDashboardCache(session, { jobs: nextJobs });
+          return nextJobs;
+        });
+      });
       clearSelectedFiles();
       applyQuotaFromResponse(payload?.quota);
 
       toast.success(queuedJobs.length > 1 ? `${pluralize("scan job", queuedJobs.length)} queued.` : "Scan job queued.");
-      await Promise.all([refreshJobs(session), refreshNotifications(session), refreshAnalytics(session)]);
       navigate("/app/projects", { replace: false });
+      runBackgroundTask(Promise.allSettled([refreshJobs(session), refreshNotifications(session), refreshAnalytics(session)]));
     } catch (error) {
       if (session && error?.code === "SCAN_QUOTA_EXCEEDED") {
         await refreshNotifications(session);
@@ -2046,7 +2195,14 @@ function AppContent() {
       });
 
       const queuedJobs = Array.isArray(payload?.jobs) ? payload.jobs : payload?.job ? [payload.job] : [];
-      setActiveJob(queuedJobs[0] || null);
+      startTransition(() => {
+        setActiveJob(queuedJobs[0] || null);
+        setJobs((current) => {
+          const nextJobs = mergeCollectionById(current, queuedJobs);
+          updateDashboardCache(session, { jobs: nextJobs });
+          return nextJobs;
+        });
+      });
       applyQuotaFromResponse(payload?.quota);
 
       if (queuedJobs.length > 1) {
@@ -2054,8 +2210,8 @@ function AppContent() {
       } else {
         toast.success(extracted || payload?.extracted ? "Suspicious link extracted and queued." : "URL scan job queued.");
       }
-      await Promise.all([refreshJobs(session), refreshNotifications(session), refreshAnalytics(session)]);
       navigate("/app/projects", { replace: false });
+      runBackgroundTask(Promise.allSettled([refreshJobs(session), refreshNotifications(session), refreshAnalytics(session)]));
       return queuedJobs;
     } catch (error) {
       if (session && error?.code === "SCAN_QUOTA_EXCEEDED") {
@@ -2089,12 +2245,19 @@ function AppContent() {
       });
 
       const queuedJob = payload?.job || null;
-      setActiveJob(queuedJob);
+      startTransition(() => {
+        setActiveJob(queuedJob);
+        setJobs((current) => {
+          const nextJobs = mergeCollectionById(current, queuedJob ? [queuedJob] : []);
+          updateDashboardCache(session, { jobs: nextJobs });
+          return nextJobs;
+        });
+      });
       applyQuotaFromResponse(payload?.quota);
 
       toast.success("Website safety scan queued.");
-      await Promise.all([refreshJobs(session), refreshNotifications(session), refreshAnalytics(session), refreshReports(session)]);
       navigate("/app/website-safety", { replace: false });
+      runBackgroundTask(Promise.allSettled([refreshJobs(session), refreshNotifications(session), refreshAnalytics(session)]));
       return queuedJob;
     } catch (error) {
       if (session && error?.code === "SCAN_QUOTA_EXCEEDED") {

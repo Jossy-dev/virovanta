@@ -383,6 +383,22 @@ describe("ViroVanta API", () => {
     expect(health.body.capabilities).toBeUndefined();
   });
 
+  it("surfaces signature engine readiness inside the detailed ready endpoint", async () => {
+    const app = await setupTestApp({
+      configOverrides: {
+        enableClamAv: false,
+        enableYara: false
+      }
+    });
+
+    const ready = await request(app).get("/api/health/ready");
+
+    expect(ready.status).toBe(200);
+    expect(ready.body.components.securityEngines).toBeTruthy();
+    expect(ready.body.components.securityEngines.clamav.status).toBe("disabled");
+    expect(ready.body.components.securityEngines.yara.status).toBe("disabled");
+  });
+
   it("returns lightweight ping responses for uptime monitors", async () => {
     const app = await setupTestApp();
 
@@ -1280,6 +1296,7 @@ describe("ViroVanta API", () => {
     expect(outsiderAnalytics.body.analytics.summary.maliciousReports).toBe(0);
     expect(outsiderAnalytics.body.analytics.postureBreakdown).toEqual([
       { label: "Clean", value: 1 },
+      { label: "Unknown", value: 0 },
       { label: "Suspicious", value: 0 },
       { label: "Malicious", value: 0 }
     ]);
@@ -1482,6 +1499,7 @@ describe("ViroVanta API", () => {
     expect(analytics.body.analytics.summary.maliciousReports).toBe(0);
     expect(analytics.body.analytics.postureBreakdown).toEqual([
       { label: "Clean", value: 1 },
+      { label: "Unknown", value: 0 },
       { label: "Suspicious", value: 1 },
       { label: "Malicious", value: 0 }
     ]);

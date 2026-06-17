@@ -4,9 +4,10 @@ import { ArrowUpRight, Download, MessageSquareText, Share2, Trash2 } from "lucid
 import { WidgetCard } from "../components/WidgetCard";
 import { filterCollection } from "../dashboardUtils";
 import { createStaggerContainerVariants, createStaggerItemVariants } from "../../ui/motionSystem";
+import { getReportSummaryReason, getVerdictQualifier } from "../../appUtils";
 
 const REPORTS_PAGE_SIZE = 12;
-const VERDICT_FILTER_VALUES = Object.freeze(["clean", "suspicious", "malicious"]);
+const VERDICT_FILTER_VALUES = Object.freeze(["clean", "unknown", "suspicious", "malicious"]);
 
 function normalizeVerdictValue(value) {
   const normalized = String(value || "")
@@ -18,6 +19,19 @@ function normalizeVerdictValue(value) {
   }
 
   return "";
+}
+
+function confidenceTone(level) {
+  const normalized = String(level || "").toLowerCase();
+  if (normalized === "high") {
+    return "border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-900/60 dark:bg-emerald-950/35 dark:text-emerald-300";
+  }
+
+  if (normalized === "low") {
+    return "border-rose-200 bg-rose-50 text-rose-700 dark:border-rose-900/60 dark:bg-rose-950/35 dark:text-rose-300";
+  }
+
+  return "border-amber-200 bg-amber-50 text-amber-700 dark:border-amber-900/60 dark:bg-amber-950/35 dark:text-amber-300";
 }
 
 function SkeletonBar({ className = "" }) {
@@ -90,6 +104,11 @@ export function ReportsView({
   const hasSelectedOrPendingReport = Boolean(selectedReport || pendingReportSummary);
   const selectedSourceType = pendingReportSummary?.sourceType || selectedReport?.sourceType || "file";
   const isWebTargetReport = selectedSourceType === "url" || selectedSourceType === "website";
+  const selectedConfidence = selectedReport?.confidence || null;
+  const selectedFileEvidence = !isWebTargetReport ? selectedReport?.technicalIndicators?.evidence || null : null;
+  const suspiciousStrings = Array.isArray(selectedFileEvidence?.suspiciousStrings) ? selectedFileEvidence.suspiciousStrings : [];
+  const structureAnomalies = Array.isArray(selectedFileEvidence?.structureAnomalies) ? selectedFileEvidence.structureAnomalies : [];
+  const nestedFileSummaries = Array.isArray(selectedFileEvidence?.nestedFiles) ? selectedFileEvidence.nestedFiles : [];
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [commentDraft, setCommentDraft] = useState("");
   const [workflowDraft, setWorkflowDraft] = useState({
@@ -255,7 +274,7 @@ export function ReportsView({
                           : "bg-slate-100 text-slate-600 dark:bg-slate-900 dark:text-slate-300"
                       }`}
                     >
-                      {report.verdict}
+                      {formatVerdictLabel(report.verdict)}
                     </span>
                   </motion.button>
                 );
@@ -431,6 +450,7 @@ export function ReportsView({
                 <div className="rounded-3xl border border-slate-200/80 px-4 py-4 dark:border-slate-800/80">
                   <p className="dashboard-label">Verdict</p>
                   <p className="mt-2 text-sm font-semibold text-slate-950 dark:text-white">{formatVerdictLabel(selectedReport.verdict)}</p>
+                  <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">{getVerdictQualifier(selectedReport.verdict) || "Review report context"}</p>
                 </div>
                 <div className="rounded-3xl border border-slate-200/80 px-4 py-4 dark:border-slate-800/80">
                   <p className="dashboard-label">{isWebTargetReport ? "URL hash (SHA256)" : "SHA256"}</p>
@@ -684,8 +704,113 @@ export function ReportsView({
 
             {shareError ? <p className="text-sm text-rose-600 dark:text-rose-300">{shareError}</p> : null}
 
+            {selectedConfidence || selectedFileEvidence ? (
+              <div className="grid gap-6 xl:grid-cols-[0.9fr_1.1fr]">
+                {selectedConfidence ? (
+                  <WidgetCard title="Confidence assessment" subtitle="How strong the supporting evidence is">
+                    <div className="space-y-4">
+                      <div className="flex items-start justify-between gap-4 rounded-3xl border border-slate-200/80 bg-slate-50/75 px-4 py-4 dark:border-slate-800/80 dark:bg-slate-900/45">
+                        <div>
+                          <p className="dashboard-label">Evidence confidence</p>
+                          <p className="mt-2 text-3xl font-semibold tracking-[-0.05em] text-slate-950 dark:text-white">
+                            {selectedConfidence.score}/100
+                          </p>
+                        </div>
+                        <span className={`rounded-full border px-3 py-1.5 text-xs font-medium ${confidenceTone(selectedConfidence.level)}`}>
+                          {selectedConfidence.level}
+                        </span>
+                      </div>
+                      <p className="text-sm leading-7 text-slate-600 dark:text-slate-300">{selectedConfidence.summary}</p>
+                      {Array.isArray(selectedConfidence.factors) && selectedConfidence.factors.length ? (
+                        <div className="space-y-3">
+                          {selectedConfidence.factors.map((factor) => (
+                            <div key={`${factor.label}-${factor.weight}`} className="rounded-2xl border border-slate-200/80 px-4 py-3 dark:border-slate-800/80">
+                              <div className="flex items-center justify-between gap-3">
+                                <p className="text-sm font-semibold text-slate-950 dark:text-white">{factor.label}</p>
+                                <span className="rounded-full bg-slate-100 px-2.5 py-1 text-[11px] text-slate-600 dark:bg-slate-900 dark:text-slate-300">
+                                  {factor.impact}
+                                </span>
+                              </div>
+                              <p className="mt-2 text-sm leading-7 text-slate-500 dark:text-slate-400">{factor.detail}</p>
+                            </div>
+                          ))}
+                        </div>
+                      ) : null}
+                    </div>
+                  </WidgetCard>
+                ) : null}
+
+                {selectedFileEvidence ? (
+                  <WidgetCard title="Technical evidence" subtitle="Strings, anomalies, and nested artifacts">
+                    <div className="space-y-4">
+                      {structureAnomalies.length ? (
+                        <div>
+                          <p className="dashboard-label">Structure anomalies</p>
+                          <div className="mt-3 space-y-3">
+                            {structureAnomalies.map((item) => (
+                              <div key={`${item.type}-${item.label}`} className="rounded-2xl border border-slate-200/80 px-4 py-3 dark:border-slate-800/80">
+                                <div className="flex items-center justify-between gap-3">
+                                  <p className="text-sm font-semibold text-slate-950 dark:text-white">{item.label}</p>
+                                  <span className="rounded-full bg-slate-100 px-2.5 py-1 text-[11px] text-slate-600 dark:bg-slate-900 dark:text-slate-300">
+                                    {item.severity}
+                                  </span>
+                                </div>
+                                <p className="mt-2 text-sm leading-7 text-slate-500 dark:text-slate-400">{item.detail}</p>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      ) : null}
+
+                      {suspiciousStrings.length ? (
+                        <div>
+                          <p className="dashboard-label">Suspicious strings</p>
+                          <div className="mt-3 flex flex-wrap gap-2">
+                            {suspiciousStrings.map((entry) => (
+                              <span key={entry} className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1.5 text-xs text-slate-600 dark:border-slate-800 dark:bg-slate-900 dark:text-slate-300">
+                                {entry}
+                              </span>
+                            ))}
+                          </div>
+                        </div>
+                      ) : null}
+
+                      {nestedFileSummaries.length ? (
+                        <div>
+                          <p className="dashboard-label">Nested file summaries</p>
+                          <div className="mt-3 space-y-3">
+                            {nestedFileSummaries.map((item) => (
+                              <div key={`${item.name}-${item.size}`} className="rounded-2xl border border-slate-200/80 px-4 py-3 dark:border-slate-800/80">
+                                <div className="flex flex-wrap items-center justify-between gap-3">
+                                  <p className="text-sm font-semibold text-slate-950 dark:text-white">{item.name}</p>
+                                  <span className="rounded-full bg-slate-100 px-2.5 py-1 text-[11px] text-slate-600 dark:bg-slate-900 dark:text-slate-300">
+                                    {item.verdict} • {item.riskScore}/100
+                                  </span>
+                                </div>
+                                <p className="mt-2 text-xs text-slate-500 dark:text-slate-400">{item.sizeDisplay}</p>
+                                <p className="mt-2 text-sm leading-7 text-slate-500 dark:text-slate-400">{item.topFinding}</p>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      ) : null}
+
+                      {!structureAnomalies.length && !suspiciousStrings.length && !nestedFileSummaries.length ? (
+                        <p className="text-sm leading-7 text-slate-500 dark:text-slate-400">
+                          No additional structured evidence was collected for this file beyond the core findings.
+                        </p>
+                      ) : null}
+                    </div>
+                  </WidgetCard>
+                ) : null}
+              </div>
+            ) : null}
+
             <div className="grid gap-6 xl:grid-cols-[1.15fr_0.85fr]">
               <WidgetCard title="Findings" subtitle="What the scanner detected">
+                <div className="mb-4 rounded-2xl border border-slate-200/80 bg-slate-50/80 px-4 py-3 text-sm leading-7 text-slate-600 dark:border-slate-800/80 dark:bg-slate-900/55 dark:text-slate-300">
+                  {getReportSummaryReason(selectedReport)}
+                </div>
                 {selectedReport.findings.length === 0 ? (
                   <p className="text-sm leading-7 text-slate-500 dark:text-slate-400">
                     No notable indicators were detected in this {isWebTargetReport ? "URL target" : "file"}.
@@ -701,7 +826,24 @@ export function ReportsView({
                           </span>
                         </div>
                         <p className="mt-2 text-sm leading-7 text-slate-500 dark:text-slate-400">{finding.description}</p>
+                        {finding.whyItMatters ? (
+                          <div className="mt-3 rounded-2xl border border-viro-100 bg-viro-50/70 px-4 py-3 text-sm leading-7 text-viro-800 dark:border-viro-900/60 dark:bg-viro-950/30 dark:text-viro-200">
+                            <span className="block text-[11px] font-semibold uppercase tracking-[0.14em] text-viro-700/80 dark:text-viro-300/80">
+                              Why this matters
+                            </span>
+                            <p className="mt-1">{finding.whyItMatters}</p>
+                          </div>
+                        ) : null}
                         <p className="mt-2 break-all font-mono text-xs text-slate-500 dark:text-slate-400">{finding.evidence}</p>
+                        {Array.isArray(finding.evidenceItems) && finding.evidenceItems.length ? (
+                          <div className="mt-3 flex flex-wrap gap-2">
+                            {finding.evidenceItems.map((item) => (
+                              <span key={item} className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1.5 text-xs text-slate-600 dark:border-slate-800 dark:bg-slate-900 dark:text-slate-300">
+                                {item}
+                              </span>
+                            ))}
+                          </div>
+                        ) : null}
                       </div>
                     ))}
                   </div>
@@ -719,8 +861,8 @@ export function ReportsView({
               </WidgetCard>
             </div>
 
-            {isWebTargetReport && selectedReport?.technicalIndicators ? (
-              <WidgetCard title="Technical Indicators" subtitle="Link analysis signals">
+            {selectedReport?.technicalIndicators && (isWebTargetReport || !selectedFileEvidence) ? (
+              <WidgetCard title="Technical Indicators" subtitle={isWebTargetReport ? "Link analysis signals" : "Structured scanner output"}>
                 <pre className="dashboard-scrollbar overflow-x-auto rounded-2xl border border-slate-200/80 bg-slate-50 p-3 text-xs text-slate-700 dark:border-slate-800/80 dark:bg-slate-900 dark:text-slate-300">
                   {JSON.stringify(selectedReport.technicalIndicators, null, 2)}
                 </pre>

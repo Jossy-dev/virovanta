@@ -210,7 +210,32 @@ const resolvedConfig = {
   authMutationRequestsPerWindow: envNumber("AUTH_MUTATION_REQUESTS_PER_WINDOW", 20, { min: 5, max: 500 }),
   authLookupRequestsPerWindow: envNumber("AUTH_LOOKUP_REQUESTS_PER_WINDOW", 60, { min: 10, max: 1000 }),
   enableClamAv: envBoolean("ENABLE_CLAMAV", true),
+  clamAvMode: envEnum("CLAMAV_MODE", ["clamscan", "clamdscan"], "clamscan"),
   clamScanBinary: envString("CLAMSCAN_BINARY", "clamscan"),
+  clamdScanBinary: envString("CLAMDSCAN_BINARY", "clamdscan"),
+  clamAvScanTimeoutMs: envNumber("CLAMAV_SCAN_TIMEOUT_MS", 90_000, { min: 5_000, max: 10 * 60 * 1000 }),
+  clamAvDatabaseDir: envString("CLAMAV_DATABASE_DIR", ""),
+  clamAvDefinitionMaxAgeHours: envNumber("CLAMAV_DEFINITION_MAX_AGE_HOURS", 72, { min: 1, max: 24 * 30 }),
+  clamAvOfficialDbOnly: envBoolean("CLAMAV_OFFICIAL_DB_ONLY", false),
+  clamAvMaxFileSizeMb: envNumber("CLAMAV_MAX_FILESIZE_MB", 40, { min: 1, max: 500 }),
+  clamAvMaxScanSizeMb: envNumber("CLAMAV_MAX_SCANSIZE_MB", 80, { min: 1, max: 2000 }),
+  clamAvMaxRecursion: envNumber("CLAMAV_MAX_RECURSION", 12, { min: 1, max: 64 }),
+  freshClamBinary: envString("FRESHCLAM_BINARY", "freshclam"),
+  freshClamConfigPath: envString("FRESHCLAM_CONFIG_PATH", ""),
+  freshClamTimeoutMs: envNumber("FRESHCLAM_TIMEOUT_MS", 10 * 60 * 1000, { min: 10_000, max: 60 * 60 * 1000 }),
+  enableYara: envBoolean("ENABLE_YARA", false),
+  yaraBinary: envString("YARA_BINARY", "yara"),
+  yaracBinary: envString("YARAC_BINARY", "yarac"),
+  yaraRulesPaths: envString("YARA_RULES_PATHS", ""),
+  yaraCompiledRulesPath: envString("YARA_COMPILED_RULES_PATH", ""),
+  yaraRulesRecursive: envBoolean("YARA_RULES_RECURSIVE", true),
+  yaraAutoCompile: envBoolean("YARA_AUTO_COMPILE", true),
+  yaraTimeoutMs: envNumber("YARA_TIMEOUT_MS", 15_000, { min: 1_000, max: 5 * 60 * 1000 }),
+  yaraCompileTimeoutMs: envNumber("YARA_COMPILE_TIMEOUT_MS", 60_000, { min: 1_000, max: 10 * 60 * 1000 }),
+  yaraMaxMatches: envNumber("YARA_MAX_MATCHES", 50, { min: 1, max: 1000 }),
+  yaraFastScan: envBoolean("YARA_FAST_SCAN", true),
+  yaraFailOnWarnings: envBoolean("YARA_FAIL_ON_WARNINGS", false),
+  yaraNoWarnings: envBoolean("YARA_NO_WARNINGS", false),
   virusTotalApiKey: envString("VIRUSTOTAL_API_KEY", ""),
   redisUrl,
   redisTls: envBoolean("REDIS_TLS", false),
@@ -372,6 +397,10 @@ function assertProductionSecurity(runtimeConfig) {
 
   if (runtimeConfig.queueProvider === "bullmq" && runtimeConfig.objectStorageProvider !== "s3") {
     issues.push("OBJECT_STORAGE_PROVIDER must be s3 when QUEUE_PROVIDER=bullmq.");
+  }
+
+  if (runtimeConfig.enableYara && !runtimeConfig.yaraRulesPaths && !runtimeConfig.yaraCompiledRulesPath) {
+    issues.push("YARA requires YARA_RULES_PATHS or YARA_COMPILED_RULES_PATH when ENABLE_YARA=true.");
   }
 
   if (runtimeConfig.objectStorageProvider === "s3") {

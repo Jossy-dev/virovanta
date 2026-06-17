@@ -160,6 +160,34 @@ The backend now enforces or supports:
 - Helmet, CORS allow-listing, request IDs, structured logging, and input validation
 - backend-owned authorization for application tables
 
+## Signature Engines
+
+File scanning now supports two optional external signature engines:
+
+- ClamAV
+  for known-malware signatures, with definition-age visibility and hardened scan options
+- YARA
+  for curated malware-hunting rule packs, with source-rule discovery and optional auto-compilation
+
+Operational commands:
+
+- `npm run check:clamav --prefix server`
+  run a quiet ClamAV smoke check and print a single success or failure line
+- `npm run check:signature-engines --prefix server`
+  inspect runtime readiness for ClamAV and YARA with concise status lines
+- `npm run clamav:update-defs --prefix server`
+  run `freshclam` and print a concise success or failure summary
+
+Important server env knobs:
+
+- `ENABLE_CLAMAV`, `CLAMAV_MODE`, `CLAMSCAN_BINARY`, `CLAMDSCAN_BINARY`
+- `CLAMAV_DATABASE_DIR`, `CLAMAV_DEFINITION_MAX_AGE_HOURS`
+- `FRESHCLAM_BINARY`, `FRESHCLAM_CONFIG_PATH`
+- `ENABLE_YARA`, `YARA_BINARY`, `YARAC_BINARY`
+- `YARA_RULES_PATHS` or `YARA_COMPILED_RULES_PATH`
+
+Readiness detail now includes `components.securityEngines` so definition drift or broken rule packs show up in operational health without taking the whole API down.
+
 Do not expose the application tables directly to the frontend. The intended model is:
 
 1. frontend uses Supabase for auth only

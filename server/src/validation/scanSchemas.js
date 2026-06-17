@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { REPORT_VERDICTS } from "../constants/reportVerdicts.js";
 
 export const SCAN_SOURCE_TYPES = Object.freeze(["file", "url", "website"]);
 
@@ -73,15 +74,30 @@ export const reportShareCreateSchema = z.object({
   ttlHours: z.number().int().min(1).max(24 * 30).optional().default(72)
 });
 
-const findingSchema = z.object({
-  id: z.string().min(1),
-  severity: z.string().min(1),
-  category: z.string().min(1),
-  weight: z.number().int().nonnegative(),
-  title: z.string().min(1),
-  description: z.string().min(1),
-  evidence: z.string().optional().default("")
-});
+const findingSchema = z
+  .object({
+    id: z.string().min(1),
+    severity: z.string().min(1),
+    category: z.string().min(1),
+    weight: z.number().int().nonnegative(),
+    title: z.string().min(1),
+    description: z.string().min(1),
+    evidence: z.string().optional().default(""),
+    whyItMatters: z.string().optional(),
+    evidenceItems: z.array(z.string()).optional(),
+    confidenceImpact: z.number().int().nonnegative().optional()
+  })
+  .passthrough();
+
+const reportConfidenceSchema = z
+  .object({
+    score: z.number().min(0).max(100),
+    level: z.enum(["low", "medium", "high"]),
+    summary: z.string().min(1),
+    factors: z.array(z.unknown()).optional(),
+    coverage: z.unknown().optional()
+  })
+  .passthrough();
 
 const reportFileSchema = z
   .object({
@@ -115,12 +131,13 @@ export const linkReportSchema = z.object({
   createdAt: z.string().min(1).optional(),
   completedAt: z.string().min(1).optional(),
   sourceType: z.literal("url"),
-  verdict: z.enum(["clean", "suspicious", "malicious"]),
+  verdict: z.enum(REPORT_VERDICTS),
   riskScore: z.number().min(0).max(100),
   file: reportFileSchema,
   findings: z.array(findingSchema),
   recommendations: z.array(z.string()),
   plainLanguageReasons: z.array(z.string()).optional(),
+  confidence: reportConfidenceSchema.optional(),
   technicalIndicators: z.unknown().optional(),
   engines: z.record(z.string(), z.unknown()),
   url: reportUrlSchema
@@ -131,12 +148,13 @@ export const websiteSafetyReportSchema = z.object({
   createdAt: z.string().min(1).optional(),
   completedAt: z.string().min(1).optional(),
   sourceType: z.literal("website"),
-  verdict: z.enum(["clean", "suspicious", "malicious"]),
+  verdict: z.enum(REPORT_VERDICTS),
   riskScore: z.number().min(0).max(100),
   file: reportFileSchema,
   findings: z.array(findingSchema),
   recommendations: z.array(z.string()),
   plainLanguageReasons: z.array(z.string()).optional(),
+  confidence: reportConfidenceSchema.optional(),
   technicalIndicators: z.unknown().optional(),
   websiteSafety: z.object({
     score: z.number().min(0).max(100),

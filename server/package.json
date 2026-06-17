@@ -14,9 +14,15 @@
     "start:worker:file": "BULLMQ_QUEUE_TOPOLOGY=split SCAN_WORKER_MODE=file node worker.js",
     "start:worker:link": "BULLMQ_QUEUE_TOPOLOGY=split SCAN_WORKER_MODE=link node worker.js",
     "test": "vitest run",
+    "test:file-scanner": "vitest run tests/fileScanner.*.test.js tests/fileScanner.corpusCoverage.test.js",
     "test:e2e": "vitest run tests/coreWorkflows.e2e.test.js tests/runtimeModes.test.js",
     "test:migrations": "vitest run tests/postgresMigrations.test.js",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "bench:file-scanner": "node ./scripts/runFileScannerBenchmark.mjs",
+    "check:clamav": "node ./scripts/checkClamAv.mjs",
+    "check:yara-pack": "node ./scripts/checkYaraRulePack.mjs",
+    "check:signature-engines": "node ./scripts/checkSignatureEngines.mjs",
+    "clamav:update-defs": "node ./scripts/refreshClamAvDefinitions.mjs"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1003.0",

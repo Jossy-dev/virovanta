@@ -31,7 +31,7 @@ function resolveUrlhausApiUrl(config) {
 async function queryVirusTotalUrl(url, config) {
   if (!config?.virusTotalApiKey) {
     return {
-      provider: "virustotal",
+      provider: "external_reputation",
       status: "disabled",
       reason: "missing_api_key"
     };
@@ -53,7 +53,7 @@ async function queryVirusTotalUrl(url, config) {
 
     if (response.status === 404) {
       return {
-        provider: "virustotal",
+        provider: "external_reputation",
         status: "not_found",
         reason: "url_not_indexed"
       };
@@ -61,7 +61,7 @@ async function queryVirusTotalUrl(url, config) {
 
     if (!response.ok) {
       return {
-        provider: "virustotal",
+        provider: "external_reputation",
         status: "error",
         reason: `http_${response.status}`
       };
@@ -75,7 +75,7 @@ async function queryVirusTotalUrl(url, config) {
     const undetected = Number(stats.undetected) || 0;
 
     return {
-      provider: "virustotal",
+      provider: "external_reputation",
       status: malicious > 0 || suspicious > 0 ? "flagged" : "clean",
       malicious,
       suspicious,
@@ -85,7 +85,7 @@ async function queryVirusTotalUrl(url, config) {
     };
   } catch (error) {
     return {
-      provider: "virustotal",
+      provider: "external_reputation",
       status: error?.name === "AbortError" ? "timeout" : "error",
       reason: error?.name === "AbortError" ? "timeout" : "request_failed"
     };
@@ -245,7 +245,7 @@ export async function getUrlReputationSnapshot({ url, config }) {
           return provider.threatTypes || [];
         }
 
-        if (provider.provider === "virustotal") {
+        if (provider.provider === "external_reputation") {
           return provider.malicious > 0 ? ["MALWARE"] : provider.suspicious > 0 ? ["SUSPICIOUS"] : [];
         }
 

@@ -22,6 +22,7 @@ function createDashboardFetchMock({
   notifications = [],
   analytics = null,
   jobs = [],
+  jobDetailsById = {},
   reports = [],
   reportDetailsById = {},
   monitors = [],
@@ -30,7 +31,8 @@ function createDashboardFetchMock({
   auditEvents = [],
   userId = "user_1",
   onUrlResolve = null,
-  onUrlScanSubmit = null
+  onUrlScanSubmit = null,
+  onFileScanSubmit = null
 } = {}) {
   return vi.fn(async (input, init = {}) => {
     const url = String(input);
@@ -207,6 +209,64 @@ function createDashboardFetchMock({
         status: 200,
         headers: { "Content-Type": "application/json" }
       });
+    }
+
+    if (url.includes("/api/scans/jobs/")) {
+      const jobId = url.split("/api/scans/jobs/")[1]?.split("?")[0] || "";
+      const resolver = typeof jobDetailsById === "function" ? jobDetailsById : null;
+      const detailedJob = resolver ? resolver(jobId) : jobDetailsById[jobId] || jobs.find((job) => job.id === jobId) || null;
+      return new Response(JSON.stringify({ job: detailedJob }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" }
+      });
+    }
+
+    if (url.endsWith("/api/scans/jobs") && method === "POST") {
+      onFileScanSubmit?.(init?.body);
+      return new Response(
+        JSON.stringify({
+          job: {
+            id: "job_file_1",
+            sourceType: "file",
+            status: "queued",
+            createdAt: "2026-03-16T18:08:06.410Z",
+            startedAt: null,
+            completedAt: null,
+            originalName: "sample.txt",
+            fileSize: 18,
+            targetUrl: null,
+            reportId: null,
+            errorMessage: null
+          },
+          jobs: [
+            {
+              id: "job_file_1",
+              sourceType: "file",
+              status: "queued",
+              createdAt: "2026-03-16T18:08:06.410Z",
+              startedAt: null,
+              completedAt: null,
+              originalName: "sample.txt",
+              fileSize: 18,
+              targetUrl: null,
+              reportId: null,
+              errorMessage: null
+            }
+          ],
+          acceptedFiles: 1,
+          quota: {
+            allowed: true,
+            limit: 40,
+            used: 2,
+            remaining: 38,
+            windowStartedAt: "2026-03-15T19:18:06.304Z"
+          }
+        }),
+        {
+          status: 202,
+          headers: { "Content-Type": "application/json" }
+        }
+      );
     }
 
     if (url.includes("/api/scans/jobs")) {
@@ -414,6 +474,7 @@ function createDashboardFetchMock({
               ],
               postureBreakdown: [
                 { label: "Clean", value: 0 },
+                { label: "Unknown", value: 0 },
                 { label: "Suspicious", value: 0 },
                 { label: "Malicious", value: 0 }
               ],
@@ -833,7 +894,7 @@ describe("App", () => {
           type: "report_ready",
           tone: "success",
           title: "Report ready",
-          detail: "sample.txt finished scanning with a clean verdict.",
+          detail: "sample.txt finished scanning with no strong indicators found in the current pass.",
           createdAt: "2026-03-14T10:00:00.000Z",
           readAt: null
         }
@@ -853,7 +914,7 @@ describe("App", () => {
       expect(screen.getByLabelText(/select scan files/i)).toHaveAttribute("multiple");
       expect(screen.queryByText(/automation access/i)).not.toBeInTheDocument();
       await userEvent.click(screen.getByRole("button", { name: /notifications/i }));
-      expect(await screen.findByText(/sample\.txt finished scanning with a clean verdict\./i)).toBeInTheDocument();
+      expect(await screen.findByText(/sample\.txt finished scanning with no strong indicators found in the current pass\./i)).toBeInTheDocument();
 
       await userEvent.click(screen.getByRole("button", { name: /settings/i }));
 
@@ -1305,6 +1366,7 @@ describe("App", () => {
               timeSeries: [],
               postureBreakdown: [
                 { label: "Clean", value: 0 },
+                { label: "Unknown", value: 0 },
                 { label: "Suspicious", value: 0 },
                 { label: "Malicious", value: 0 }
               ],
@@ -1513,6 +1575,7 @@ describe("App", () => {
           ],
           postureBreakdown: [
             { label: "Clean", value: 1 },
+            { label: "Unknown", value: 0 },
             { label: "Suspicious", value: 0 },
             { label: "Malicious", value: 0 }
           ],

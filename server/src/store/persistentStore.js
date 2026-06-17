@@ -3,6 +3,7 @@ import fsp from "fs/promises";
 import path from "path";
 import { Pool } from "pg";
 import { applyStoreMigrations, buildStoreMigrations } from "./postgresMigrations.js";
+import { reportVerdictRank } from "../constants/reportVerdicts.js";
 import { hashSecret } from "../utils/security.js";
 
 const POSTGRES_WRITE_MAX_ATTEMPTS = 4;
@@ -76,12 +77,16 @@ function normalizeSourceType(value) {
 }
 
 function worstVerdictFromRank(rank) {
-  if (rank >= 3) {
+  if (rank >= 4) {
     return "malicious";
   }
 
-  if (rank === 2) {
+  if (rank === 3) {
     return "suspicious";
+  }
+
+  if (rank === 2) {
+    return "unknown";
   }
 
   return "clean";
@@ -394,7 +399,32 @@ function mapReportPayloadRow(row) {
     return null;
   }
 
-  return row.payload || null;
+  const payload = row.payload && typeof row.payload === "object" ? structuredClone(row.payload) : {};
+  const fileName =
+    String(payload?.fileName || "").trim() ||
+    String(row.file_name || "").trim() ||
+    String(payload?.file?.originalName || "").trim() ||
+    String(payload?.url?.final || "").trim() ||
+    String(payload?.url?.input || "").trim() ||
+    "Unknown target";
+  const fileSize = Number(payload?.fileSize);
+  const riskScore = Number(payload?.riskScore);
+
+  return {
+    ...payload,
+    id: payload.id || row.id || null,
+    ownerUserId: payload.ownerUserId || row.owner_user_id || null,
+    sourceType: payload.sourceType || normalizeSourceType(row.source_type),
+    queuedJobId: payload.queuedJobId || row.queued_job_id || null,
+    createdAt: payload.createdAt || toIsoOrNull(row.created_at),
+    completedAt: payload.completedAt || toIsoOrNull(row.completed_at),
+    verdict: payload.verdict || row.verdict || "unknown",
+    riskScore: Number.isFinite(riskScore) ? riskScore : Number(row.risk_score) || 0,
+    fileName,
+    fileSize: Number.isFinite(fileSize) ? fileSize : Number(row.file_size) || 0,
+    deletedAt: payload.deletedAt || toIsoOrNull(row.deleted_at),
+    deletedByUserId: payload.deletedByUserId || row.deleted_by_user_id || null
+  };
 }
 
 function normalizeLegacyState(input) {
@@ -3339,7 +3369,7 @@ export class PersistentStore {
           .map((item) => Date.parse(item.completedAt || item.createdAt || ""))
           .filter((value) => Number.isFinite(value))
           .sort((left, right) => left - right);
-        const ranks = previousMatches.map((item) => (item?.verdict === "malicious" ? 3 : item?.verdict === "suspicious" ? 2 : 1));
+        const ranks = previousMatches.map((item) => reportVerdictRank(item?.verdict));
 
         return {
           sha256: normalizedHash,
@@ -3362,8 +3392,9 @@ export class PersistentStore {
           MAX(completed_at) AS last_seen_at,
           MAX(
             CASE verdict
-              WHEN 'malicious' THEN 3
-              WHEN 'suspicious' THEN 2
+              WHEN 'malicious' THEN 4
+              WHEN 'suspicious' THEN 3
+              WHEN 'unknown' THEN 2
               ELSE 1
             END
           )::int AS worst_rank
@@ -3818,10 +3849,10 @@ export class PersistentStore {
 
     values.push(safeLimit);
     const result = await this.pool.query(
-      `SELECT payload FROM ${this.reportsTable} WHERE ${clauses.join(" AND ")} ORDER BY completed_at DESC NULLS LAST, created_at DESC LIMIT $${index}`,
+      `SELECT * FROM ${this.reportsTable} WHERE ${clauses.join(" AND ")} ORDER BY completed_at DESC NULLS LAST, created_at DESC LIMIT $${index}`,
       values
     );
-    return result.rows.map((row) => row.payload);
+    return result.rows.map(mapReportPayloadRow);
   }
 
   async softDeleteReport({ reportId, actingUserId, deletedAt }) {
@@ -3974,6 +4005,7 @@ export class PersistentStore {
           SELECT
             COUNT(*)::int AS total_reports,
             COUNT(*) FILTER (WHERE verdict = 'clean')::int AS clean_reports,
+            COUNT(*) FILTER (WHERE verdict = 'unknown')::int AS unknown_reports,
             COUNT(*) FILTER (WHERE verdict = 'suspicious')::int AS suspicious_reports,
             COUNT(*) FILTER (WHERE verdict = 'malicious')::int AS malicious_reports,
             AVG(risk_score)::float AS average_risk_score,
@@ -4058,6 +4090,7 @@ export class PersistentStore {
         `
           SELECT
             COUNT(*)::int AS reports,
+            COUNT(*) FILTER (WHERE verdict = 'clean')::int AS clean_reports,
             COUNT(*) FILTER (WHERE verdict IN ('suspicious', 'malicious'))::int AS flagged_reports,
             AVG(risk_score)::float AS average_risk_score
           FROM ${this.reportsTable}
@@ -4070,6 +4103,7 @@ export class PersistentStore {
         `
           SELECT
             COUNT(*)::int AS reports,
+            COUNT(*) FILTER (WHERE verdict = 'clean')::int AS clean_reports,
             COUNT(*) FILTER (WHERE verdict IN ('suspicious', 'malicious'))::int AS flagged_reports,
             AVG(risk_score)::float AS average_risk_score
           FROM ${this.reportsTable}
@@ -4148,6 +4182,7 @@ export class PersistentStore {
 
     const totalReports = Number(reportSummary.total_reports) || 0;
     const cleanReports = Number(reportSummary.clean_reports) || 0;
+    const unknownReports = Number(reportSummary.unknown_reports) || 0;
     const suspiciousReports = Number(reportSummary.suspicious_reports) || 0;
     const maliciousReports = Number(reportSummary.malicious_reports) || 0;
     const flaggedReports = suspiciousReports + maliciousReports;
@@ -4164,6 +4199,7 @@ export class PersistentStore {
         failedJobs: Number(jobSummary.failed_jobs) || 0,
         totalReports,
         cleanReports,
+        unknownReports,
         suspiciousReports,
         maliciousReports,
         flaggedReports,
@@ -4176,24 +4212,14 @@ export class PersistentStore {
         current: {
           reports: Number(currentReports.reports) || 0,
           flaggedReports: Number(currentReports.flagged_reports) || 0,
-          cleanRate:
-            Number(currentReports.reports) > 0
-              ? ((Number(currentReports.reports) || 0) - (Number(currentReports.flagged_reports) || 0)) /
-                  (Number(currentReports.reports) || 1) *
-                100
-              : 0,
+          cleanRate: Number(currentReports.reports) > 0 ? ((Number(currentReports.clean_reports) || 0) / (Number(currentReports.reports) || 1)) * 100 : 0,
           averageRiskScore: Number(currentReports.average_risk_score) || 0,
           failedJobs: Number(currentJobs.failed_jobs) || 0
         },
         previous: {
           reports: Number(previousReports.reports) || 0,
           flaggedReports: Number(previousReports.flagged_reports) || 0,
-          cleanRate:
-            Number(previousReports.reports) > 0
-              ? ((Number(previousReports.reports) || 0) - (Number(previousReports.flagged_reports) || 0)) /
-                  (Number(previousReports.reports) || 1) *
-                100
-              : 0,
+          cleanRate: Number(previousReports.reports) > 0 ? ((Number(previousReports.clean_reports) || 0) / (Number(previousReports.reports) || 1)) * 100 : 0,
           averageRiskScore: Number(previousReports.average_risk_score) || 0,
           failedJobs: Number(previousJobs.failed_jobs) || 0
         }
@@ -4201,6 +4227,7 @@ export class PersistentStore {
       timeSeries: buckets,
       postureBreakdown: [
         { label: 'Clean', value: cleanReports },
+        { label: 'Unknown', value: unknownReports },
         { label: 'Suspicious', value: suspiciousReports },
         { label: 'Malicious', value: maliciousReports }
       ],

@@ -740,12 +740,14 @@ print(res.json())`
           totalJobs: 22,
           activeJobs: 2,
           totalReports: 17,
+          unknownReports: 0,
           suspiciousReports: 4,
           maliciousReports: 1,
           cleanReports: 12
         },
         postureBreakdown: [
           { label: "Clean", value: 12 },
+          { label: "Unknown", value: 0 },
           { label: "Suspicious", value: 4 },
           { label: "Malicious", value: 1 }
         ]

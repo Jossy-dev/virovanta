@@ -29,6 +29,7 @@ function renderAnalyticsView() {
         },
         postureBreakdown: [
           { label: "Clean", value: 4 },
+          { label: "Unknown", value: 0 },
           { label: "Suspicious", value: 2 },
           { label: "Malicious", value: 0 }
         ],

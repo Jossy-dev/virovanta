@@ -21,6 +21,7 @@ import { createPublicRouter } from "../routes/publicRoutes.js";
 import { createScanRouter } from "../routes/scanRoutes.js";
 import { createWorkspaceRouter } from "../routes/workspaceRoutes.js";
 import { scanUploadedFile } from "../scanner/fileScanner.js";
+import { collectSignatureEngineRuntimeStatus } from "../scanner/signatureEngines.js";
 import { scanTargetUrl } from "../scanner/urlScanner.js";
 import { scanWebsiteSafetyTarget } from "../scanner/websiteSafetyScanner.js";
 import { AuthService } from "../services/authService.js";
@@ -148,7 +149,7 @@ export async function createApp(options = {}) {
   }
 
   async function collectRuntimeState() {
-    const [storeStatus, queueStatus] = await Promise.all([
+    const [storeStatus, queueStatus, securityEnginesStatus] = await Promise.all([
       store.getOperationalStatus().catch((error) => ({
         status: "error",
         ready: false,
@@ -163,7 +164,20 @@ export async function createApp(options = {}) {
           }
         ]
       })),
-      Promise.resolve(scanQueueService.getOperationalStatus())
+      Promise.resolve(scanQueueService.getOperationalStatus()),
+      collectSignatureEngineRuntimeStatus(runtimeConfig).catch((error) => ({
+        status: "error",
+        ready: true,
+        alerts: [
+          {
+            component: "security-engines",
+            severity: "warning",
+            message: error?.message || "Signature engine health check failed.",
+            code: error?.code || null,
+            occurredAt: new Date().toISOString()
+          }
+        ]
+      }))
     ]);
     const objectStorageStatus = objectStorageService.getOperationalStatus();
     const rateLimitStatus = {
@@ -173,7 +187,7 @@ export async function createApp(options = {}) {
       connectionState: "memory"
     };
 
-    const alerts = [...(storeStatus.alerts || []), ...(queueStatus.alerts || [])];
+    const alerts = [...(storeStatus.alerts || []), ...(queueStatus.alerts || []), ...(securityEnginesStatus.alerts || [])];
 
     const ready = Boolean(storeStatus.ready) && Boolean(queueStatus.ready) && Boolean(rateLimitStatus.ready);
 
@@ -187,6 +201,7 @@ export async function createApp(options = {}) {
       components: {
         store: storeStatus,
         queue: queueStatus,
+        securityEngines: securityEnginesStatus,
         objectStorage: objectStorageStatus,
         rateLimit: rateLimitStatus
       },

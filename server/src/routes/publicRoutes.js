@@ -35,6 +35,7 @@ function toPublicReport(report, findingsLimit = 8) {
     },
     findings: report.findings.slice(0, findingsLimit),
     plainLanguageReasons: Array.isArray(report.plainLanguageReasons) ? report.plainLanguageReasons.slice(0, findingsLimit) : [],
+    confidence: report.confidence || null,
     technicalIndicators: report.technicalIndicators || null,
     websiteSafety: report.websiteSafety || null,
     url: report.url || null,

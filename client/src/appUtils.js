@@ -1,5 +1,6 @@
 export const VERDICT_META = {
   clean: { label: "Clean", tone: "clean" },
+  unknown: { label: "Inconclusive", tone: "unknown" },
   suspicious: { label: "Suspicious", tone: "suspicious" },
   malicious: { label: "Malicious", tone: "malicious" }
 };
@@ -286,7 +287,65 @@ export function formatVerdictLabel(value) {
     return "-";
   }
 
+  if (normalized === "unknown") {
+    return "Inconclusive";
+  }
+
   return normalized.charAt(0).toUpperCase() + normalized.slice(1);
+}
+
+export function getVerdictQualifier(value) {
+  const normalized = String(value || "").trim().toLowerCase();
+
+  if (normalized === "clean") {
+    return "No strong indicators found";
+  }
+
+  if (normalized === "unknown") {
+    return "More evidence needed";
+  }
+
+  if (normalized === "suspicious") {
+    return "Manual review recommended";
+  }
+
+  if (normalized === "malicious") {
+    return "High-confidence malicious signals";
+  }
+
+  return "";
+}
+
+export function getReportSummaryReason(report) {
+  const explicitReason = Array.isArray(report?.plainLanguageReasons)
+    ? report.plainLanguageReasons.find((item) => String(item || "").trim())
+    : "";
+
+  if (explicitReason) {
+    return String(explicitReason).trim();
+  }
+
+  const normalizedVerdict = String(report?.verdict || "")
+    .trim()
+    .toLowerCase();
+
+  if (normalizedVerdict === "clean") {
+    return "No strong indicators were found in this first-pass scan.";
+  }
+
+  if (normalizedVerdict === "unknown") {
+    return "The current scan evidence is inconclusive.";
+  }
+
+  if (normalizedVerdict === "suspicious") {
+    return "This scan found risk signals that should be reviewed before trust is granted.";
+  }
+
+  if (normalizedVerdict === "malicious") {
+    return "This scan found strong malicious indicators or trusted detections.";
+  }
+
+  return "";
 }
 
 export function isPendingJob(job) {
@@ -325,6 +384,77 @@ export function selectHighlightedJob(jobList, currentJobId = "") {
   }
 
   return jobList[0];
+}
+
+function toTimestamp(value) {
+  const parsed = Date.parse(String(value || ""));
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function sortByMostRecent(items) {
+  return [...items].sort((left, right) => {
+    const rightTimestamp = toTimestamp(right?.completedAt || right?.createdAt);
+    const leftTimestamp = toTimestamp(left?.completedAt || left?.createdAt);
+    return rightTimestamp - leftTimestamp;
+  });
+}
+
+export function mergeCollectionById(currentItems, incomingItems) {
+  const map = new Map();
+
+  for (const item of Array.isArray(currentItems) ? currentItems : []) {
+    if (item?.id) {
+      map.set(item.id, item);
+    }
+  }
+
+  for (const item of Array.isArray(incomingItems) ? incomingItems : []) {
+    if (!item?.id) {
+      continue;
+    }
+
+    const existing = map.get(item.id) || {};
+    map.set(item.id, {
+      ...existing,
+      ...item
+    });
+  }
+
+  return sortByMostRecent(Array.from(map.values()));
+}
+
+function isFileSourceType(report) {
+  return report?.sourceType !== "url" && report?.sourceType !== "website";
+}
+
+function normalizeEngineStatus(value) {
+  return String(value || "")
+    .trim()
+    .toLowerCase();
+}
+
+function describeEngineUsage(label, engine, usedStatuses) {
+  const status = normalizeEngineStatus(engine?.status);
+  const used = usedStatuses.has(status);
+  const readableStatus = status ? status.replace(/_/g, " ") : "unknown";
+
+  return {
+    label,
+    used,
+    badge: used ? "Used" : "Not Used",
+    detail: `${label} status: ${readableStatus}`
+  };
+}
+
+export function getFileScanEngineUsage(report) {
+  if (!isFileSourceType(report)) {
+    return [];
+  }
+
+  return [
+    describeEngineUsage("ClamAV", report?.engines?.clamav, new Set(["clean", "infected"])),
+    describeEngineUsage("YARA", report?.engines?.yara, new Set(["clean", "matched"]))
+  ];
 }
 
 export function extractEmailIdentifier(email) {

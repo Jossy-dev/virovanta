@@ -375,6 +375,28 @@ function buildQueueProgressAndCancellationSql({
   `;
 }
 
+function buildUnknownVerdictSupportSql({
+  reportsTable,
+  monitorsTable
+}) {
+  return `
+    DO $$
+    BEGIN
+      IF EXISTS (SELECT 1 FROM pg_constraint WHERE conname = '${reportsTable}_verdict_check') THEN
+        EXECUTE 'ALTER TABLE ${reportsTable} DROP CONSTRAINT ${reportsTable}_verdict_check';
+      END IF;
+
+      EXECUTE 'ALTER TABLE ${reportsTable} ADD CONSTRAINT ${reportsTable}_verdict_check CHECK (verdict IN (''clean'', ''unknown'', ''suspicious'', ''malicious''))';
+
+      IF EXISTS (SELECT 1 FROM pg_constraint WHERE conname = '${monitorsTable}_verdict_check') THEN
+        EXECUTE 'ALTER TABLE ${monitorsTable} DROP CONSTRAINT ${monitorsTable}_verdict_check';
+      END IF;
+
+      EXECUTE 'ALTER TABLE ${monitorsTable} ADD CONSTRAINT ${monitorsTable}_verdict_check CHECK (last_verdict IS NULL OR last_verdict IN (''clean'', ''unknown'', ''suspicious'', ''malicious''))';
+    END $$;
+  `;
+}
+
 export function buildStoreMigrations(context) {
   const migrations = [
     {
@@ -392,6 +414,10 @@ export function buildStoreMigrations(context) {
     {
       name: "004_queue_progress_and_cancellation",
       sql: buildQueueProgressAndCancellationSql(context)
+    },
+    {
+      name: "005_unknown_report_verdict_support",
+      sql: buildUnknownVerdictSupportSql(context)
     }
   ];
 

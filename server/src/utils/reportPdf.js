@@ -214,6 +214,8 @@ function buildLegacySignalCards(report) {
   const severity = summarizeFindingsBySeverity(report?.findings || []);
   const riskScore = clampScore(report?.riskScore);
   const safetyScore = report?.websiteSafety?.score != null ? clampScore(report.websiteSafety.score) : clampScore(100 - riskScore);
+  const confidenceScore = clampScore(report?.confidence?.score);
+  const confidenceLevel = toTitleCase(report?.confidence?.level || "medium");
   const missingHeaders = Array.isArray(modules?.headers?.missing) ? modules.headers.missing.length : 0;
   const exposures = Array.isArray(modules?.vulnerabilityChecks?.exposures) ? modules.vulnerabilityChecks.exposures.length : 0;
   const domainAge = formatDomainAge(modules?.dnsDomain?.ageDays);
@@ -227,9 +229,9 @@ function buildLegacySignalCards(report) {
       border: BRAND_PANEL_BORDER
     },
     {
-      label: "Safety Score",
-      value: `${safetyScore}/100`,
-      detail: "Overall confidence",
+      label: report?.confidence ? "Confidence" : "Safety Score",
+      value: report?.confidence ? `${confidenceScore}/100` : `${safetyScore}/100`,
+      detail: report?.confidence ? `${confidenceLevel} evidence confidence` : "Overall confidence",
       background: SURFACE_BG,
       border: BORDER_COLOR
     },
@@ -656,6 +658,8 @@ function addExecutiveSummary(layout, report) {
   const verdict = toTitleCase(report?.verdict || "unknown");
   const riskScore = clampScore(report?.riskScore);
   const safetyScore = report?.websiteSafety?.score != null ? clampScore(report.websiteSafety.score) : clampScore(100 - riskScore);
+  const confidenceScore = clampScore(report?.confidence?.score);
+  const confidenceLevel = toTitleCase(report?.confidence?.level || "medium");
   const severity = summarizeFindingsBySeverity(report?.findings || []);
   const tone = toneForVerdict(report?.websiteSafety?.verdict || report?.verdict);
   const priorityFindings = buildPriorityFindingSummary(report);
@@ -770,6 +774,9 @@ function addExecutiveSummary(layout, report) {
   layout.keyValue("Verdict", verdict);
   layout.keyValue("Risk Score", `${riskScore}/100`);
   layout.keyValue("Safety Score", `${safetyScore}/100`);
+  if (report?.confidence) {
+    layout.keyValue("Evidence Confidence", `${confidenceScore}/100 (${confidenceLevel})`);
+  }
   layout.keyValue(
     "Finding Severity Summary",
     `Critical ${severity.critical}, High ${severity.high}, Medium ${severity.medium}, Low ${severity.low}, Info ${severity.info}`
@@ -795,6 +802,15 @@ function addExecutiveSummary(layout, report) {
       bold: true
     });
     priorityFindings.forEach((item) => layout.bullet(item, { indent: 10 }));
+  }
+
+  if (report?.confidence?.summary) {
+    layout.spacer(0.15);
+    layout.paragraph("Confidence assessment", {
+      size: 11,
+      bold: true
+    });
+    layout.bullet(report.confidence.summary, { indent: 10 });
   }
 }
 
@@ -882,10 +898,29 @@ function addFindings(layout, report) {
       size: 10.5,
       indent: 10
     });
+    if (finding?.whyItMatters) {
+      layout.paragraph(`Why this matters: ${finding.whyItMatters}`, {
+        size: 10.5,
+        indent: 10
+      });
+    }
     layout.keyValue("Evidence", finding?.evidence || "Not collected", {
       indent: 10,
       hideIfMissing: true
     });
+    if (Array.isArray(finding?.evidenceItems) && finding.evidenceItems.length > 0) {
+      layout.paragraph("Evidence details", {
+        size: 10.5,
+        bold: true,
+        indent: 10
+      });
+      finding.evidenceItems.slice(0, 6).forEach((item) => layout.bullet(item, { indent: 20, size: 10.2 }));
+    }
+    if (finding?.confidenceImpact != null) {
+      layout.keyValue("Confidence Impact", finding.confidenceImpact, {
+        indent: 10
+      });
+    }
     layout.spacer(0.2);
   });
 }

@@ -119,7 +119,7 @@ function collectTextCorpus(report) {
     report?.file?.detectedMimeType || "",
     report?.file?.magicType || "",
     report?.engines?.clamav?.detail || "",
-    report?.engines?.virustotal?.detail || ""
+    report?.engines?.externalReputation?.detail || report?.engines?.virustotal?.detail || ""
   );
 
   return chunks

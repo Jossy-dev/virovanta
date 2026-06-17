@@ -2160,6 +2160,11 @@ input {
   color: #1f6f4a;
 }
 
+.pill.unknown {
+  background: rgba(59, 130, 246, 0.12);
+  color: #1f4f8b;
+}
+
 .pill.suspicious,
 .pill.processing {
   background: var(--warn-soft);

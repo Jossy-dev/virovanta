@@ -78,14 +78,15 @@ describe("postgres migration runner", () => {
     });
 
     expect(state.createdMigrationTable).toBe(true);
-    expect(result.totalMigrations).toBe(4);
+    expect(result.totalMigrations).toBe(5);
     expect(result.appliedMigrations).toEqual([
       "001_initial_schema",
       "002_scale_hardening",
       "003_commercial_workspace_foundations",
-      "004_queue_progress_and_cancellation"
+      "004_queue_progress_and_cancellation",
+      "005_unknown_report_verdict_support"
     ]);
-    expect(state.applied).toHaveLength(4);
+    expect(state.applied).toHaveLength(5);
   });
 
   it("rejects checksum drift for an already recorded migration", async () => {
