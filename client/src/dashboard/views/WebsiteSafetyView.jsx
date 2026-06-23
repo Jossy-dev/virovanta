@@ -440,6 +440,11 @@ export function WebsiteSafetyView({
     [selectedWebsiteModules]
   );
   const redirectCount = Number(selectedWebsiteModules?.redirects?.count) || 0;
+  const navigationChain = Array.isArray(selectedWebsiteModules?.redirects?.navigationChain)
+    ? selectedWebsiteModules.redirects.navigationChain
+    : Array.isArray(selectedWebsiteReport?.url?.navigationChain)
+      ? selectedWebsiteReport.url.navigationChain
+      : [];
   const missingHeaderCount = (selectedWebsiteModules?.headers?.missing || []).length;
   const fetchAttemptCount = (selectedWebsiteModules?.fetch?.attempts || []).length;
   const spfPresent = Boolean(selectedWebsiteModules?.dnsDomain?.mailAuth?.spfPresent);
@@ -792,6 +797,48 @@ export function WebsiteSafetyView({
                     </ul>
                   )}
                 </div>
+
+                {navigationChain.length > 1 ? (
+                  <div className="rounded-2xl border border-slate-200/80 bg-white/80 px-3 py-3 dark:border-slate-800/80 dark:bg-slate-950/40">
+                    <div className="flex items-center justify-between gap-3">
+                      <div>
+                        <p className="dashboard-label">Resolution chain</p>
+                        <p className="mt-1 text-sm text-slate-600 dark:text-slate-300">
+                          Wrapper extraction and redirect steps captured before the final page was analyzed.
+                        </p>
+                      </div>
+                      <span className="inline-flex rounded-full bg-slate-100 px-2.5 py-1 text-[11px] font-semibold text-slate-700 dark:bg-slate-900 dark:text-slate-200">
+                        {navigationChain.length} steps
+                      </span>
+                    </div>
+                    <div className="mt-3 space-y-2">
+                      {navigationChain.map((step, index) => (
+                        <div
+                          key={`${step.kind || "step"}-${step.to || index}-${index}`}
+                          className="rounded-2xl border border-slate-200/70 px-3 py-3 dark:border-slate-800/80"
+                        >
+                          <div className="flex flex-wrap items-center gap-2">
+                            <span className="inline-flex h-6 min-w-6 items-center justify-center rounded-full bg-viro-100 px-2 text-[11px] font-semibold text-viro-700 dark:bg-viro-900/40 dark:text-viro-200">
+                              {index + 1}
+                            </span>
+                            <p className="text-sm font-semibold text-slate-900 dark:text-slate-100">{step.label || "Navigation step"}</p>
+                            {step.statusCode ? (
+                              <span className="inline-flex rounded-full bg-slate-100 px-2 py-0.5 text-[11px] font-medium text-slate-700 dark:bg-slate-900 dark:text-slate-300">
+                                {step.statusCode}
+                              </span>
+                            ) : null}
+                          </div>
+                          <div className="mt-2 space-y-1 text-xs text-slate-600 dark:text-slate-300">
+                            {step.from ? <p><span className="font-medium text-slate-800 dark:text-slate-100">From:</span> {step.from}</p> : null}
+                            <p><span className="font-medium text-slate-800 dark:text-slate-100">To:</span> {step.to || "Unknown"}</p>
+                            {step.wrapperLabel ? <p><span className="font-medium text-slate-800 dark:text-slate-100">Wrapper:</span> {step.wrapperLabel}</p> : null}
+                            {step.paramKey ? <p><span className="font-medium text-slate-800 dark:text-slate-100">Parameter:</span> {step.paramKey}</p> : null}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                ) : null}
 
                 <button
                   type="button"

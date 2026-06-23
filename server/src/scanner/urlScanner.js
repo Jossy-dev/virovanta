@@ -8,6 +8,7 @@ import fs from "fs/promises";
 import { config } from "../config.js";
 import { isPortAllowed, normalizeUrlInput } from "../utils/urlIntake.js";
 import { getUrlReputationSnapshot } from "../utils/urlReputation.js";
+import { buildNavigationChain, getDomainFamily, resolveWrapperChain } from "../utils/urlWrapperResolution.js";
 
 const DEFAULT_URL_TIMEOUT_MS = 12_000;
 const DEFAULT_MAX_REDIRECTS = 4;
@@ -678,7 +679,7 @@ function extractTitleFromHtml(bodySnippet) {
   return match?.[1]?.trim() || null;
 }
 
-function buildRecommendations({ verdict, blockedReason, redirects, statusCode }) {
+function buildRecommendations({ verdict, blockedReason, redirects, statusCode, wrapperChain = [] }) {
   const recommendations = [];
 
   if (blockedReason) {
@@ -692,6 +693,10 @@ function buildRecommendations({ verdict, blockedReason, redirects, statusCode })
 
   if ((redirects || []).length > 0) {
     recommendations.push("Review the redirect chain for unexpected domain changes.");
+  }
+
+  if ((wrapperChain || []).length > 0) {
+    recommendations.push("Inspect the wrapper extraction chain before trusting social, email, or shortener links.");
   }
 
   if (Number(statusCode) >= 400) {
@@ -810,6 +815,9 @@ export async function scanTargetUrl({ url, runtimeConfig = config, fileScanner =
   const findings = [];
   const matchedRules = [];
   let riskScore = 0;
+  const wrapperResolution = resolveWrapperChain(normalizedUrl);
+  const analysisStartUrl = wrapperResolution.analysisStartUrl || normalizedUrl;
+  const analysisStartParsed = new URL(analysisStartUrl);
 
   const addFinding = (ruleId, severity, category, weight, title, description, evidence) => {
     if (!matchedRules.includes(ruleId)) {
@@ -917,8 +925,45 @@ export async function scanTargetUrl({ url, runtimeConfig = config, fileScanner =
     );
   }
 
-  const fetchResult = await fetchWithSafeRedirects(normalizedUrl, runtimeConfig);
-  const finalUrl = fetchResult.finalUrl || normalizedUrl;
+  if (wrapperResolution.chain.length > 0) {
+    addFinding(
+      "url_known_redirect_wrapper",
+      "medium",
+      "Navigation",
+      12,
+      "Known redirect wrapper detected",
+      "The submitted link uses a wrapper or link-shim domain that can conceal the real destination until later in the chain.",
+      wrapperResolution.wrapperHosts.join(", ")
+    );
+
+    if (analysisStartParsed.hostname !== parsed.hostname) {
+      addFinding(
+        "url_nested_target_extracted",
+        "high",
+        "Navigation",
+        18,
+        "Nested destination extracted from wrapper",
+        "The visible submitted host differed from the extracted target hidden inside wrapper parameters.",
+        `${parsed.hostname} -> ${analysisStartParsed.hostname}`
+      );
+    }
+  }
+
+  const extractedKeywordMatches = countKeywordMatches(`${analysisStartParsed.hostname}${analysisStartParsed.pathname}${analysisStartParsed.search}`);
+  if (extractedKeywordMatches >= 2 && extractedKeywordMatches > keywordMatches) {
+    addFinding(
+      "url_extracted_target_keywords",
+      "high",
+      "Phishing",
+      18,
+      "Extracted target includes phishing-style keywords",
+      "The destination recovered from wrapper parameters includes multiple words commonly seen in credential-harvest links.",
+      `${extractedKeywordMatches} keyword matches`
+    );
+  }
+
+  const fetchResult = await fetchWithSafeRedirects(analysisStartUrl, runtimeConfig);
+  const finalUrl = fetchResult.finalUrl || analysisStartUrl;
   const bodySnippet = fetchResult.bodySnippet || "";
   const contentType = fetchResult.contentType || "unknown";
   const title = extractTitleFromHtml(bodySnippet);
@@ -975,6 +1020,45 @@ export async function scanTargetUrl({ url, runtimeConfig = config, fileScanner =
       "Cross-domain redirect detected",
       "The link redirected to a different hostname during retrieval.",
       finalUrl
+    );
+  }
+
+  let finalParsed = null;
+  try {
+    finalParsed = new URL(finalUrl);
+  } catch {
+    finalParsed = null;
+  }
+
+  if (
+    finalParsed &&
+    wrapperResolution.chain.length > 0 &&
+    getDomainFamily(finalParsed.hostname) &&
+    getDomainFamily(finalParsed.hostname) !== getDomainFamily(parsed.hostname)
+  ) {
+    addFinding(
+      "url_final_destination_mismatch",
+      "high",
+      "Navigation",
+      18,
+      "Final destination differs from visible submitted domain",
+      "The wrapped link resolved to a different domain family than the one initially visible to the user.",
+      `${parsed.hostname} -> ${finalParsed.hostname}`
+    );
+  }
+
+  const finalKeywordMatches = finalParsed
+    ? countKeywordMatches(`${finalParsed.hostname}${finalParsed.pathname}${finalParsed.search}`)
+    : 0;
+  if (finalKeywordMatches >= 2 && finalKeywordMatches > Math.max(keywordMatches, extractedKeywordMatches)) {
+    addFinding(
+      "url_final_destination_keywords",
+      "high",
+      "Phishing",
+      18,
+      "Final destination includes phishing-style keywords",
+      "The final destination uses multiple keywords commonly associated with account, payment, or credential scams.",
+      `${finalKeywordMatches} keyword matches`
     );
   }
 
@@ -1178,6 +1262,11 @@ export async function scanTargetUrl({ url, runtimeConfig = config, fileScanner =
   const boundedRiskScore = Math.max(0, Math.min(100, Math.round(riskScore)));
   const sortedFindings = sortFindings(findings);
   const verdict = determineVerdict(boundedRiskScore, sortedFindings);
+  const navigationChain = buildNavigationChain({
+    submittedUrl: normalizedUrl,
+    wrapperChain: wrapperResolution.chain,
+    redirects: fetchResult.redirects || []
+  });
 
   const reportBase = buildUrlReportBase({
     inputUrl,
@@ -1192,6 +1281,14 @@ export async function scanTargetUrl({ url, runtimeConfig = config, fileScanner =
     : ["No high-risk indicators were detected in this URL scan."];
 
   const technicalIndicators = {
+    wrapperResolution: {
+      status: wrapperResolution.status,
+      analysisStartUrl,
+      wrapperHosts: wrapperResolution.wrapperHosts,
+      extractedTargetUrl: wrapperResolution.extractedTargetUrl,
+      chain: wrapperResolution.chain
+    },
+    navigationChain,
     redirectCount: (fetchResult.redirects || []).length,
     resolvedAddresses: fetchResult.resolvedAddresses || [],
     statusCode: fetchResult.statusCode || null,
@@ -1225,6 +1322,7 @@ export async function scanTargetUrl({ url, runtimeConfig = config, fileScanner =
               : "URL retrieval failed.",
         statusCode: fetchResult.statusCode || null,
         finalUrl,
+        analysisStartUrl,
         redirects: fetchResult.redirects || [],
         truncated: Boolean(fetchResult.truncated)
       },
@@ -1242,16 +1340,20 @@ export async function scanTargetUrl({ url, runtimeConfig = config, fileScanner =
       verdict,
       blockedReason: fetchResult.blockedReason || null,
       redirects: fetchResult.redirects || [],
-      statusCode: fetchResult.statusCode || null
+      statusCode: fetchResult.statusCode || null,
+      wrapperChain: wrapperResolution.chain
     }),
     url: {
       ...reportBase.url,
       unicodeHostname,
       asciiHostname,
+      analysisStart: analysisStartUrl,
       statusCode: fetchResult.statusCode || null,
       contentType,
       contentDisposition: contentDisposition || null,
       title,
+      wrapperChain: wrapperResolution.chain,
+      navigationChain,
       redirects: fetchResult.redirects || [],
       resolvedAddresses: fetchResult.resolvedAddresses || [],
       truncated: Boolean(fetchResult.truncated)

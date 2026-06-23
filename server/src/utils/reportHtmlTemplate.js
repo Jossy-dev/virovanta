@@ -441,22 +441,27 @@ function buildSecurityHeadersTable(modules) {
 }
 
 function buildRedirectChain(modules) {
-  const chain = asArray(modules?.redirects?.chain);
-  if (chain.length === 0) {
+  const chain = asArray(modules?.redirects?.navigationChain);
+  const fallbackChain = asArray(modules?.redirects?.chain);
+  const entries = chain.length > 0 ? chain : fallbackChain;
+  if (entries.length === 0) {
     return `<p class="muted">No redirect chain captured for this target.</p>`;
   }
 
   return `
     <div class="chain-list">
-      ${chain
+      ${entries
         .map(
           (hop, index) => `
         <div class="chain-hop">
           <span class="chain-index">${index + 1}</span>
           <div class="chain-path">
+            <p><strong>Step:</strong> ${escapeHtml(hop?.label || "Redirect")}</p>
             <p><strong>From:</strong> ${escapeHtml(hop?.from || "Unknown")}</p>
             <p><strong>To:</strong> ${escapeHtml(hop?.to || "Unknown")}</p>
             <p><strong>Status:</strong> ${escapeHtml(String(hop?.statusCode || "N/A"))}</p>
+            ${hop?.wrapperLabel ? `<p><strong>Wrapper:</strong> ${escapeHtml(hop.wrapperLabel)}</p>` : ""}
+            ${hop?.paramKey ? `<p><strong>Parameter:</strong> ${escapeHtml(hop.paramKey)}</p>` : ""}
           </div>
         </div>
       `

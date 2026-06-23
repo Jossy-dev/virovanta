@@ -38,6 +38,23 @@ function SkeletonBar({ className = "" }) {
   return <span className={`block animate-pulse rounded bg-slate-200/85 dark:bg-slate-800/85 ${className}`} aria-hidden="true" />;
 }
 
+function describeNavigationChainStep(step) {
+  const kind = String(step?.kind || "").toLowerCase();
+  if (kind === "percent_decode") {
+    return "Decoded wrapper URL";
+  }
+
+  if (kind === "wrapper_param") {
+    return step?.wrapperLabel && step?.paramKey ? `${step.wrapperLabel} (${step.paramKey})` : "Extracted nested target";
+  }
+
+  if (kind === "http_redirect") {
+    return step?.statusCode ? `HTTP redirect (${step.statusCode})` : "HTTP redirect";
+  }
+
+  return step?.label || "Submitted URL";
+}
+
 export function ReportsView({
   reports,
   activeReport,
@@ -106,6 +123,7 @@ export function ReportsView({
   const isWebTargetReport = selectedSourceType === "url" || selectedSourceType === "website";
   const selectedConfidence = selectedReport?.confidence || null;
   const selectedFileEvidence = !isWebTargetReport ? selectedReport?.technicalIndicators?.evidence || null : null;
+  const selectedNavigationChain = Array.isArray(selectedReport?.url?.navigationChain) ? selectedReport.url.navigationChain : [];
   const suspiciousStrings = Array.isArray(selectedFileEvidence?.suspiciousStrings) ? selectedFileEvidence.suspiciousStrings : [];
   const structureAnomalies = Array.isArray(selectedFileEvidence?.structureAnomalies) ? selectedFileEvidence.structureAnomalies : [];
   const nestedFileSummaries = Array.isArray(selectedFileEvidence?.nestedFiles) ? selectedFileEvidence.nestedFiles : [];
@@ -459,17 +477,44 @@ export function ReportsView({
               </div>
 
               {isWebTargetReport ? (
-                <div className="mt-4 grid gap-4 sm:grid-cols-2">
-                  <div className="rounded-3xl border border-slate-200/80 px-4 py-4 dark:border-slate-800/80">
-                    <p className="dashboard-label">Final URL</p>
-                    <p className="mt-2 break-all text-xs text-slate-700 dark:text-slate-300">{selectedReport?.url?.final || selectedReport.file.originalName}</p>
+                <div className="mt-4 space-y-4">
+                  <div className="grid gap-4 sm:grid-cols-2">
+                    <div className="rounded-3xl border border-slate-200/80 px-4 py-4 dark:border-slate-800/80">
+                      <p className="dashboard-label">Final URL</p>
+                      <p className="mt-2 break-all text-xs text-slate-700 dark:text-slate-300">{selectedReport?.url?.final || selectedReport.file.originalName}</p>
+                    </div>
+                    <div className="rounded-3xl border border-slate-200/80 px-4 py-4 dark:border-slate-800/80">
+                      <p className="dashboard-label">Redirects</p>
+                      <p className="mt-2 text-sm font-semibold text-slate-950 dark:text-white">
+                        {Array.isArray(selectedReport?.url?.redirects) ? selectedReport.url.redirects.length : 0}
+                      </p>
+                    </div>
                   </div>
-                  <div className="rounded-3xl border border-slate-200/80 px-4 py-4 dark:border-slate-800/80">
-                    <p className="dashboard-label">Redirects</p>
-                    <p className="mt-2 text-sm font-semibold text-slate-950 dark:text-white">
-                      {Array.isArray(selectedReport?.url?.redirects) ? selectedReport.url.redirects.length : 0}
-                    </p>
-                  </div>
+                  {selectedNavigationChain.length > 0 ? (
+                    <div className="rounded-3xl border border-slate-200/80 px-4 py-4 dark:border-slate-800/80">
+                      <p className="dashboard-label">Resolution chain</p>
+                      <div className="mt-3 space-y-3">
+                        {selectedNavigationChain.map((step, index) => (
+                          <div key={`${step.kind || "step"}-${index}`} className="rounded-2xl border border-slate-200/70 bg-slate-50/80 px-3 py-3 dark:border-slate-800/70 dark:bg-slate-900/60">
+                            <div className="flex items-center justify-between gap-3">
+                              <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-500 dark:text-slate-400">
+                                Step {index + 1}
+                              </p>
+                              <span className="text-[11px] text-slate-500 dark:text-slate-400">{describeNavigationChainStep(step)}</span>
+                            </div>
+                            {step?.from ? (
+                              <p className="mt-2 break-all text-xs text-slate-500 dark:text-slate-400">
+                                <span className="font-semibold text-slate-600 dark:text-slate-300">From:</span> {step.from}
+                              </p>
+                            ) : null}
+                            <p className="mt-2 break-all text-xs text-slate-700 dark:text-slate-300">
+                              <span className="font-semibold text-slate-900 dark:text-white">To:</span> {step?.to || "Unknown"}
+                            </p>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  ) : null}
                 </div>
               ) : null}
             </section>

@@ -5,6 +5,7 @@ import tls from "tls";
 import { domainToASCII, domainToUnicode } from "url";
 import { config } from "../config.js";
 import { getUrlReputationSnapshot } from "../utils/urlReputation.js";
+import { buildNavigationChain, getDomainFamily, resolveWrapperChain } from "../utils/urlWrapperResolution.js";
 
 const DEFAULT_SCAN_TIMEOUT_MS = 12_000;
 const DEFAULT_MAX_REDIRECTS = 5;
@@ -1496,6 +1497,28 @@ function analyzeRedirects(redirects = []) {
   };
 }
 
+function normalizeNavigationChainEntry(entry) {
+  if (!entry || typeof entry !== "object") {
+    return null;
+  }
+
+  const to = String(entry.to || "").trim();
+  if (!to) {
+    return null;
+  }
+
+  return {
+    kind: entry.kind || "navigation",
+    label: entry.label || "Navigation step",
+    from: entry.from ? String(entry.from) : null,
+    to,
+    host: entry.host ? String(entry.host) : null,
+    paramKey: entry.paramKey ? String(entry.paramKey) : null,
+    wrapperLabel: entry.wrapperLabel ? String(entry.wrapperLabel) : null,
+    statusCode: Number(entry.statusCode) || null
+  };
+}
+
 function parseProbePathname(value) {
   try {
     const parsed = new URL(value, "https://scanner.invalid");
@@ -1926,6 +1949,14 @@ function buildRecommendations({ safetyVerdict, findings, moduleStatus }) {
     recommendations.push("Review outbound links for suspicious top-level domains before trusting embedded destinations.");
   }
 
+  if (
+    (findings || []).some((entry) =>
+      ["website_known_redirect_wrapper", "website_nested_target_extracted", "website_final_destination_mismatch"].includes(entry.id)
+    )
+  ) {
+    recommendations.push("Review the full wrapper extraction and redirect chain before trusting the visible submitted domain.");
+  }
+
   if ((findings || []).some((entry) => entry.id === "website_sensitive_path_exposed")) {
     recommendations.push("Restrict access to sensitive endpoints and verify that configuration files are not publicly accessible.");
   }
@@ -2074,6 +2105,7 @@ function buildWebsiteFindings({ modules, finalUrl }) {
   const vulnerabilityChecks = modules?.vulnerabilityChecks || {};
   const fetchModule = modules?.fetch || {};
   const ssl = modules?.ssl || {};
+  const urlModule = modules?.url || {};
 
   let parsedFinal = null;
   try {
@@ -2084,6 +2116,11 @@ function buildWebsiteFindings({ modules, finalUrl }) {
 
   const ageDaysRaw = dnsDomain?.ageDays;
   const domainAgeDays = typeof ageDaysRaw === "number" ? ageDaysRaw : Number.NaN;
+
+  const wrapperChain = Array.isArray(urlModule.wrapperChain) ? urlModule.wrapperChain.filter(Boolean) : [];
+  const analysisStartUrl = String(urlModule.analysisStart || "").trim();
+  const submittedUrl = String(urlModule.normalized || urlModule.input || "").trim();
+
   if (fetchModule.status === "blocked") {
     findings.push(
       createFinding(
@@ -2108,6 +2145,41 @@ function buildWebsiteFindings({ modules, finalUrl }) {
         12
       )
     );
+  }
+
+  if (wrapperChain.length > 0) {
+    findings.push(
+      createFinding(
+        "medium",
+        "website_known_redirect_wrapper",
+        "Navigation",
+        "Known redirect wrapper detected",
+        "The submitted website uses a link wrapper or warning interstitial that can conceal the real destination until later in the chain.",
+        (urlModule.wrapperHosts || []).join(", "),
+        12
+      )
+    );
+
+    try {
+      const submittedHost = new URL(submittedUrl).hostname;
+      const analysisStartHost = analysisStartUrl ? new URL(analysisStartUrl).hostname : submittedHost;
+
+      if (analysisStartHost && analysisStartHost !== submittedHost) {
+        findings.push(
+          createFinding(
+            "high",
+            "website_nested_target_extracted",
+            "Navigation",
+            "Nested destination extracted from wrapper",
+            "The visible submitted host differed from the hidden target recovered from wrapper parameters.",
+            `${submittedHost} -> ${analysisStartHost}`,
+            18
+          )
+        );
+      }
+    } catch {
+      // Ignore URL parsing errors and keep the rest of the assessment.
+    }
   }
 
   if ((headers.missing || []).length > 0) {
@@ -2220,6 +2292,25 @@ function buildWebsiteFindings({ modules, finalUrl }) {
         10
       )
     );
+  }
+
+  try {
+    const submittedHost = submittedUrl ? new URL(submittedUrl).hostname : "";
+    if (submittedHost && wrapperChain.length > 0 && getDomainFamily(parsedFinal.hostname) !== getDomainFamily(submittedHost)) {
+      findings.push(
+        createFinding(
+          "high",
+          "website_final_destination_mismatch",
+          "Navigation",
+          "Final destination differs from visible submitted domain",
+          "The wrapped link resolved to a different domain family than the one initially visible to the user.",
+          `${submittedHost} -> ${parsedFinal.hostname}`,
+          18
+        )
+      );
+    }
+  } catch {
+    // Ignore URL parsing errors and keep the rest of the assessment.
   }
 
   if ((content.phishingSignalScore || 0) >= 4) {
@@ -2477,6 +2568,29 @@ function normalizeWebsiteModules(modules = {}) {
       .filter(Boolean)
   };
 
+  const redirects = normalized?.redirects && typeof normalized.redirects === "object" ? normalized.redirects : {};
+  normalized.redirects = {
+    ...redirects,
+    chain: Array.isArray(redirects.chain)
+      ? redirects.chain
+          .map((entry) => {
+            if (!entry || typeof entry !== "object") {
+              return null;
+            }
+
+            return {
+              from: entry.from ? String(entry.from) : null,
+              to: entry.to ? String(entry.to) : null,
+              statusCode: Number(entry.statusCode) || null
+            };
+          })
+          .filter((entry) => entry?.to)
+      : [],
+    navigationChain: Array.isArray(redirects.navigationChain) ? redirects.navigationChain.map(normalizeNavigationChainEntry).filter(Boolean) : [],
+    wrapperChain: Array.isArray(redirects.wrapperChain) ? redirects.wrapperChain.map(normalizeNavigationChainEntry).filter(Boolean) : [],
+    wrapperHosts: Array.isArray(redirects.wrapperHosts) ? redirects.wrapperHosts.map((value) => String(value || "").trim()).filter(Boolean) : []
+  };
+
   return normalized;
 }
 
@@ -2522,7 +2636,13 @@ export function normalizeWebsiteSafetyReport(report) {
     dmarcPresent: Boolean(modules?.dnsDomain?.mailAuth?.dmarcPresent),
     securityTxtPresent: Boolean(modules?.discovery?.securityTxt?.found),
     robotsTxtPresent: Boolean(modules?.discovery?.robotsTxt?.found),
-    threatType
+    threatType,
+    wrapperResolution: {
+      status: modules?.redirects?.wrapperChain?.length > 0 ? "resolved" : "none",
+      wrapperHosts: modules?.redirects?.wrapperHosts || [],
+      extractedTargetUrl: modules?.url?.analysisStart || null
+    },
+    navigationChain: Array.isArray(modules?.redirects?.navigationChain) ? modules.redirects.navigationChain : []
   };
   normalizedReport.engines = {
     ...(normalizedReport.engines || {}),
@@ -2555,7 +2675,7 @@ export function normalizeWebsiteSafetyReport(report) {
   return normalizedReport;
 }
 
-function buildReportBase({ inputUrl, normalizedUrl, finalUrl, contentType = "", byteLength = 0 }) {
+function buildReportBase({ inputUrl, normalizedUrl, analysisStartUrl = "", finalUrl, contentType = "", byteLength = 0 }) {
   const hashes = hashText(normalizedUrl);
   const parsedFinal = new URL(finalUrl || normalizedUrl);
 
@@ -2580,6 +2700,7 @@ function buildReportBase({ inputUrl, normalizedUrl, finalUrl, contentType = "", 
     url: {
       input: inputUrl,
       normalized: normalizedUrl,
+      analysisStart: analysisStartUrl || normalizedUrl,
       final: finalUrl || normalizedUrl,
       protocol: parsedFinal.protocol.replace(/:$/, ""),
       hostname: parsedFinal.hostname
@@ -2660,6 +2781,8 @@ function summarizeReputationThreatType(reputation) {
 
 export async function scanWebsiteSafetyTarget({ url, runtimeConfig = config }) {
   const normalizedInput = normalizeWebsiteUrlInput(url);
+  const wrapperResolution = resolveWrapperChain(normalizedInput.normalizedUrl);
+  const analysisStartUrl = wrapperResolution.analysisStartUrl || normalizedInput.normalizedUrl;
   const initialGuard = await resolvePublicAddresses(normalizedInput.asciiHostname);
   if (!initialGuard.allowed) {
     return buildBlockedWebsiteReport({
@@ -2668,8 +2791,8 @@ export async function scanWebsiteSafetyTarget({ url, runtimeConfig = config }) {
     });
   }
 
-  const fetchResult = await fetchWithSafeRedirects(normalizedInput.normalizedUrl, runtimeConfig);
-  const finalUrl = fetchResult.finalUrl || normalizedInput.normalizedUrl;
+  const fetchResult = await fetchWithSafeRedirects(analysisStartUrl, runtimeConfig);
+  const finalUrl = fetchResult.finalUrl || analysisStartUrl;
 
   const finalParsed = new URL(finalUrl);
   const finalGuard = await resolvePublicAddresses(finalParsed.hostname);
@@ -2749,6 +2872,11 @@ export async function scanWebsiteSafetyTarget({ url, runtimeConfig = config }) {
     finalUrl
   });
   const redirects = analyzeRedirects(fetchResult.redirects || []);
+  const navigationChain = buildNavigationChain({
+    submittedUrl: normalizedInput.normalizedUrl,
+    wrapperChain: wrapperResolution.chain,
+    redirects: fetchResult.redirects || []
+  });
   const technologies = detectTechnologies({
     headers: fetchResult.headers || {},
     html: fetchResult.bodySnippet || ""
@@ -2781,10 +2909,20 @@ export async function scanWebsiteSafetyTarget({ url, runtimeConfig = config }) {
     url: {
       input: normalizedInput.inputUrl,
       normalized: normalizedInput.normalizedUrl,
+      analysisStart: analysisStartUrl,
       final: finalUrl,
       protocol: finalParsed.protocol.replace(/:$/, ""),
-      hostname: finalParsed.hostname
+      hostname: finalParsed.hostname,
+      wrapperHosts: wrapperResolution.wrapperHosts,
+      wrapperChain: wrapperResolution.chain,
+      navigationChain
     }
+  };
+  modules.redirects = {
+    ...modules.redirects,
+    navigationChain,
+    wrapperChain: wrapperResolution.chain,
+    wrapperHosts: wrapperResolution.wrapperHosts
   };
   const assessment = summarizeWebsiteAssessment({
     modules,
@@ -2797,6 +2935,7 @@ export async function scanWebsiteSafetyTarget({ url, runtimeConfig = config }) {
   const reportBase = buildReportBase({
     inputUrl: normalizedInput.inputUrl,
     normalizedUrl: normalizedInput.normalizedUrl,
+    analysisStartUrl,
     finalUrl,
     contentType: fetchResult.contentType || "",
     byteLength: Number(fetchResult.byteLength) || 0
@@ -2818,6 +2957,12 @@ export async function scanWebsiteSafetyTarget({ url, runtimeConfig = config }) {
       resolvedAddresses: fetchResult.resolvedAddresses || {},
       threatType,
       fetchAttempts: fetchResult.attempts || [],
+      wrapperResolution: {
+        status: wrapperResolution.chain.length > 0 ? "resolved" : "none",
+        wrapperHosts: wrapperResolution.wrapperHosts,
+        extractedTargetUrl: wrapperResolution.extractedTargetUrl
+      },
+      navigationChain,
       spfPresent: Boolean(dnsDomain?.mailAuth?.spfPresent),
       dmarcPresent: Boolean(dnsDomain?.mailAuth?.dmarcPresent),
       securityTxtPresent: Boolean(discovery?.securityTxt?.found),
@@ -2853,6 +2998,8 @@ export async function scanWebsiteSafetyTarget({ url, runtimeConfig = config }) {
       statusCode: fetchResult.statusCode || null,
       contentType: fetchResult.contentType || null,
       redirects: redirects.chain,
+      wrapperChain: wrapperResolution.chain,
+      navigationChain,
       resolvedAddresses: fetchResult.resolvedAddresses || {},
       truncated: Boolean(fetchResult.truncated)
     }

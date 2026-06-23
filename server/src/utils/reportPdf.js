@@ -875,6 +875,32 @@ function addTargetProfile(layout, report) {
     layout.keyValue("HTTP Status", report.url.statusCode, { indent: 10, hideIfMissing: true });
     layout.keyValue("Content Type", report.url.contentType, { indent: 10, hideIfMissing: true });
     layout.keyValue("Body Truncated", report.url.truncated, { indent: 10, hideIfMissing: true });
+
+    if (Array.isArray(report?.url?.navigationChain) && report.url.navigationChain.length > 0) {
+      layout.spacer(0.2);
+      layout.paragraph("Resolution Chain", {
+        size: 11,
+        bold: true
+      });
+      report.url.navigationChain.slice(0, 12).forEach((step, index) => {
+        const label =
+          step?.kind === "wrapper_param"
+            ? step?.wrapperLabel && step?.paramKey
+              ? `${step.wrapperLabel} (${step.paramKey})`
+              : "Extracted nested target"
+            : step?.kind === "percent_decode"
+              ? "Decoded wrapper URL"
+              : step?.kind === "http_redirect"
+                ? `HTTP redirect${step?.statusCode ? ` (${step.statusCode})` : ""}`
+                : step?.label || "Submitted URL";
+        const fromText = step?.from ? ` from ${step.from}` : "";
+        const toText = step?.to ? ` to ${step.to}` : "";
+        layout.bullet(`${index + 1}. ${label}${fromText}${toText}`, {
+          indent: 10,
+          size: 10.2
+        });
+      });
+    }
   }
 }
 
@@ -969,6 +995,7 @@ function addWebsiteDeepAnalysis(layout, report) {
   });
   layout.keyValue("ASCII Hostname", modules?.normalization?.asciiHostname || "Not collected", { indent: 10 });
   layout.keyValue("Unicode Hostname", modules?.normalization?.unicodeHostname || "Not collected", { indent: 10 });
+  layout.keyValue("Analysis Start URL", modules?.url?.analysisStart, { indent: 10, hideIfMissing: true });
   layout.keyValue("Domain Age", formatDomainAge(modules?.dnsDomain?.ageDays, { includeDays: true }), {
     indent: 10,
     hideIfMissing: modules?.dnsDomain?.ageDays == null
@@ -1019,6 +1046,16 @@ function addWebsiteDeepAnalysis(layout, report) {
   layout.keyValue("Suspicious External Links", modules?.content?.suspiciousExternalLinks, { indent: 10, hideIfMissing: true });
   layout.keyValue("Redirect Count", modules?.redirects?.count, { indent: 10, hideIfMissing: true });
   layout.keyValue("Cross-domain Redirect Count", modules?.redirects?.crossDomainCount, { indent: 10, hideIfMissing: true });
+  layout.keyValue(
+    "Resolution Chain",
+    (modules?.redirects?.navigationChain || []).map((entry) => {
+      const label = entry?.label || "Navigation step";
+      const target = entry?.to || "Unknown";
+      const statusCode = entry?.statusCode ? ` [${entry.statusCode}]` : "";
+      return `${label}: ${target}${statusCode}`;
+    }),
+    { indent: 10, hideIfMissing: !(modules?.redirects?.navigationChain || []).length }
+  );
   layout.keyValue("Threat Intel Flagged", modules?.reputation?.flagged, { indent: 10, hideIfMissing: true });
   layout.keyValue("Flagged Providers", modules?.reputation?.flaggedProviders, { indent: 10, hideIfMissing: true });
   layout.keyValue("Detected Technologies", (modules?.technology?.technologies || []).map((entry) => `${entry.category}: ${entry.value}`), {

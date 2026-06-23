@@ -138,6 +138,31 @@ describe("website safety scanner", () => {
           });
         }
 
+        if (normalizedUrl === "https://t.co/LXtg5UMy39?ssr=true") {
+          return new Response("", {
+            status: 302,
+            headers: {
+              location: "https://contactparcelfedex.com/"
+            }
+          });
+        }
+
+        if (normalizedUrl === "https://contactparcelfedex.com/") {
+          return htmlResponse(`
+            <html>
+              <head><title>Parcel review required</title></head>
+              <body>
+                <h1>Urgent action required</h1>
+                <p>Please verify your account to release your package.</p>
+                <form method="post" action="/submit">
+                  <input type="password" name="password" />
+                </form>
+                <script>eval(atob("Y29uc29sZS5sb2coJ3Rlc3QnKQ=="));</script>
+              </body>
+            </html>
+          `);
+        }
+
         if (normalizedUrl === "https://data.iana.org/rdap/dns.json") {
           return jsonResponse({
             services: [
@@ -157,6 +182,28 @@ describe("website safety scanner", () => {
               }
             ],
             nameservers: [{ ldhName: "ns1.example.net" }, { ldhName: "ns2.example.net" }],
+            entities: [
+              {
+                roles: ["registrar"],
+                vcardArray: ["vcard", [["fn", {}, "text", "Example Registrar"]]]
+              }
+            ]
+          });
+        }
+
+        if (
+          normalizedUrl === "https://rdap.org/domain/contactparcelfedex.com" ||
+          normalizedUrl === "https://rdap.verisign.com/com/v1/domain/contactparcelfedex.com"
+        ) {
+          return jsonResponse({
+            ldhName: "contactparcelfedex.com",
+            events: [
+              {
+                eventAction: "registration",
+                eventDate: "2026-05-18T00:00:00Z"
+              }
+            ],
+            nameservers: [{ ldhName: "ns1.phish.example" }, { ldhName: "ns2.phish.example" }],
             entities: [
               {
                 roles: ["registrar"],
@@ -251,6 +298,34 @@ describe("website safety scanner", () => {
           return emptyResponse(404, { "content-type": "text/plain" });
         }
 
+        if (normalizedUrl.startsWith("https://contactparcelfedex.com/.well-known/security.txt")) {
+          return emptyResponse(404, { "content-type": "text/plain" });
+        }
+
+        if (normalizedUrl.startsWith("https://contactparcelfedex.com/robots.txt")) {
+          return emptyResponse(200, { "content-type": "text/plain" });
+        }
+
+        if (
+          [
+            "https://contactparcelfedex.com/.env",
+            "https://contactparcelfedex.com/.git/config",
+            "https://contactparcelfedex.com/config.php",
+            "https://contactparcelfedex.com/backup.zip",
+            "https://contactparcelfedex.com/phpinfo.php",
+            "https://contactparcelfedex.com/admin",
+            "https://contactparcelfedex.com/login",
+            "https://contactparcelfedex.com/wp-admin",
+            "https://contactparcelfedex.com/administrator"
+          ].includes(normalizedUrl)
+        ) {
+          return emptyResponse(404, { "content-type": "text/plain" });
+        }
+
+        if (normalizedUrl.startsWith("https://contactparcelfedex.com/")) {
+          return emptyResponse(404, { "content-type": "text/plain" });
+        }
+
         throw new Error(`Unexpected fetch: ${normalizedUrl}`);
       })
     );
@@ -315,6 +390,44 @@ describe("website safety scanner", () => {
     expect(report.websiteSafety.modules.dnsDomain.rdap.abuseEmail).toBe("abuse@example.dev");
     expect(report.websiteSafety.modules.dnsDomain.rdap.domainStatus).toContain("client transfer prohibited");
     expect(report.findings.some((item) => item.id === "website_domain_new")).toBe(false);
+  });
+
+  it("unwraps social warning links and analyzes the real destination chain", async () => {
+    const report = await scanWebsiteSafetyTarget({
+      url: "https://www.facebook.com/flx/warn/?u=https%3A%2F%2Ft.co%2FLXtg5UMy39%3Fssr%3Dtrue",
+      runtimeConfig: FAST_TEST_CONFIG
+    });
+
+    expect(report.sourceType).toBe("website");
+    expect(report.url.normalized).toContain("facebook.com/flx/warn/");
+    expect(report.url.analysisStart).toBe("https://t.co/LXtg5UMy39?ssr=true");
+    expect(report.url.final).toBe("https://contactparcelfedex.com/");
+    expect(report.url.hostname).toBe("contactparcelfedex.com");
+    expect(report.websiteSafety.modules.url.analysisStart).toBe("https://t.co/LXtg5UMy39?ssr=true");
+    expect(report.websiteSafety.modules.redirects.navigationChain.some((step) => step.kind === "wrapper_param")).toBe(true);
+    expect(report.websiteSafety.modules.redirects.navigationChain.some((step) => step.kind === "http_redirect")).toBe(true);
+    expect(report.technicalIndicators.wrapperResolution.wrapperHosts).toContain("www.facebook.com");
+    expect(report.findings.some((item) => item.id === "website_known_redirect_wrapper")).toBe(true);
+    expect(report.findings.some((item) => item.id === "website_nested_target_extracted")).toBe(true);
+    expect(report.findings.some((item) => item.id === "website_final_destination_mismatch")).toBe(true);
+  });
+
+  it("unwraps facebook login forwarding before analyzing the destination website", async () => {
+    const report = await scanWebsiteSafetyTarget({
+      url: "https://www.facebook.com/login/?next=https%3A%2F%2Fwww.facebook.com%2Fflx%2Fwarn%2F%3Fu%3Dhttps%253A%252F%252Ft.co%252FLXtg5UMy39%253Fssr%253Dtrue",
+      runtimeConfig: FAST_TEST_CONFIG
+    });
+
+    expect(report.sourceType).toBe("website");
+    expect(report.url.normalized).toContain("facebook.com/login/");
+    expect(report.url.analysisStart).toBe("https://t.co/LXtg5UMy39?ssr=true");
+    expect(report.url.final).toBe("https://contactparcelfedex.com/");
+    expect(report.url.hostname).toBe("contactparcelfedex.com");
+    expect(report.websiteSafety.modules.redirects.navigationChain.filter((step) => step.kind === "wrapper_param")).toHaveLength(2);
+    expect(report.technicalIndicators.wrapperResolution.wrapperHosts).toContain("www.facebook.com");
+    expect(report.findings.some((item) => item.id === "website_known_redirect_wrapper")).toBe(true);
+    expect(report.findings.some((item) => item.id === "website_nested_target_extracted")).toBe(true);
+    expect(report.findings.some((item) => item.id === "website_final_destination_mismatch")).toBe(true);
   });
 
   it("normalizes legacy website reports with unverified age and exposure claims", () => {
